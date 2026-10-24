@@ -1222,6 +1222,98 @@ def read_umiujaq_cables(raw) -> pd.DataFrame:
 
 
 # =============================================================================
+# Greenland: GEM (Greenland Ecosystem Monitoring) downloads
+# =============================================================================
+def _gem_table(zpath: Path) -> pd.DataFrame:
+    """The '_data.txt' table of a GEM download zip (tab separated, -9999 = missing)."""
+    with zipfile.ZipFile(zpath) as zf:
+        name = next(n for n in zf.namelist() if n.endswith("_data.txt"))
+        d = pd.read_csv(io.BytesIO(zf.read(name)), sep="\t", encoding="utf-8-sig",
+                        na_values=[-9999, "-9999"], low_memory=False)
+    d.columns = [str(c).strip() for c in d.columns]
+    return d
+
+
+def read_gem(raw) -> pd.DataFrame:
+    """
+    GEM downloads (data.g-e-m.dk, CC-BY-SA 4.0), one zip per dataset:
+      ZEROCALM-1 and ZEROCALM-2 active layer (CALM G1 and G2, Zackenberg): probe readings
+        at every grid node through the thaw season, 1996-2025. Survey mean and end-of-
+        season rule, as for the other grids. Same CALM codes as the CALM tables, so they
+        add the years those tables lack.
+      Ground temperatures, 0 C crossing rule: GeoBasis Disko AWS1 (5, 60, 175 cm,
+        1991-2018) and AWS2 profiles P1 (10-140 cm, 2012-2024) and P2 (5-350 cm,
+        2013-2024); ZEROCALM-2 upper, middle and lower profiles (to 2-2.5 m, 2012-2017).
+        Sensors at or above the surface ('0 cm', '+3cm') are not used.
+    Not read: shallow soil sensors (AWS2/3/4 soil temperature to 40 cm, Nuuk SoilEmp to
+    30 cm), Nuuk SoilVUE (2021-2024), and the meteorology, snow and moisture files.
+    """
+    zips = {z.name: z for z in files(raw, "*_10.17897_*.zip")}
+    if not zips:
+        return empty_records()
+    pos = _calm_positions(raw)
+    out = []
+
+    # active layer grids
+    pts = []
+    for key, code in (("ZEROCALM-1_Active_layer", "G1"), ("ZEROCALM-2_Active_layer", "G2")):
+        z = next((zips[n] for n in zips if n.startswith(key)), None)
+        if z is None:
+            continue
+        d = _gem_table(z)
+        d["obs_date"] = pd.to_datetime(d.Date, errors="coerce")
+        d["alt_cm"] = pd.to_numeric(d.Active_layer_cm, errors="coerce")
+        rec = _calm_record(code, pos, method="probe", source_file=z.name)
+        if not np.isfinite(rec["lat"]):
+            rec.update(lat=74.47, lon=-20.57, country="Greenland")
+        pts.append(pd.DataFrame(dict(**rec, obs_date=d.obs_date.values, alt_cm=d.alt_cm.values)))
+    if pts:
+        out.append(end_of_season(survey_means(pd.concat(pts, ignore_index=True))))
+
+    # ground-temperature profiles
+    profiles = {  # zip name start: (site id, name, lat, lon, method)
+        "AWS1-GroundTemperature": ("GEM_DISKO_AWS1", "Disko, Arctic Station AWS1", 69.25328, -53.52003,
+                                   "borehole_temp"),
+        "AWS2-GroundTemperatureP1": ("GEM_DISKO_AWS2_P1", "Disko, Arctic Station AWS2 profile P1",
+                                     69.25349, -53.51413, "borehole_temp"),
+        "AWS2-GroundTemperatureP2": ("GEM_DISKO_AWS2_P2", "Disko, Arctic Station AWS2 profile P2",
+                                     69.25349, -53.51413, "borehole_temp"),
+        "ZEROCALM-2 upper_Soil_temperature": ("GEM_ZC2_UPPER", "Zackenberg ZEROCALM-2 upper profile",
+                                              74.46571, -20.56367, "soil_temp"),
+        "ZEROCALM-2 middle_Soil_temperature": ("GEM_ZC2_MIDDLE", "Zackenberg ZEROCALM-2 middle profile",
+                                               74.46526, -20.56447, "soil_temp"),
+        "ZEROCALM-2_lower_Soil_temperature": ("GEM_ZC2_LOWER", "Zackenberg ZEROCALM-2 lower profile",
+                                              74.46505, -20.56554, "soil_temp"),
+    }
+    for start, (sid, name, lat, lon, method) in profiles.items():
+        z = next((zips[n] for n in zips if n.startswith(start)), None)
+        if z is None:
+            continue
+        d = _gem_table(z)
+        # depth from the column name: '..._60cm_..', '.. 100 cm_P2..', 'temperature_25_cm_..'
+        depth = {}
+        for c in d.columns:
+            m = re.search(r"(?<![+\d])(\d+(?:\.\d+)?)\s*_?cm", c)
+            if m and "+" not in c and c not in ("Date", "Time"):
+                depth[c] = float(m.group(1))
+        depth = {c: z_ for c, z_ in depth.items() if z_ > 0}
+        if len(depth) < 2:
+            continue
+        d["time"] = pd.to_datetime(d.Date, errors="coerce").dt.normalize()
+        t = d.melt(id_vars=["time"], value_vars=list(depth), var_name="c", value_name="temp_c")
+        t["depth_cm"] = t.c.map(depth)
+        t["temp_c"] = pd.to_numeric(t.temp_c, errors="coerce")
+        t = t.groupby(["time", "depth_cm"], as_index=False).temp_c.mean()      # daily means
+        t["source_site_id"] = sid
+        site = pd.DataFrame([dict(source_site_id=sid, site_name=name, lat=lat, lon=lon,
+                                  country="Greenland", source_file=z.name)])
+        out.append(records_from_profiles(t, site, method))
+    if not out:
+        return empty_records()
+    return finish(pd.concat(out, ignore_index=True), "gem")
+
+
+# =============================================================================
 # readers kept from the corridor project
 # =============================================================================
 def read_above_field(raw: Path) -> pd.DataFrame:
@@ -1288,6 +1380,7 @@ ADAPTERS = {
     "awi_soil_temp": read_awi_soil_temp,
     "stordalen": read_stordalen,
     "umiujaq_cable": read_umiujaq_cables,
+    "gem": read_gem,
     "above_field": read_above_field,
     "cusp": read_cusp,
 }

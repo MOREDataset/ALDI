@@ -91,7 +91,7 @@ CONFIG = {
                  "gsc_thaw_tube": 3, "parks_canada": 3, "ru_hms_alt": 3,
                  "calm_site_files": 3, "kwbs": 3, "allena": 3, "kytalyk": 3,
                  "samoylov_calm": 3, "arc_lter": 3, "bnz_lter": 3, "itex": 3,
-                 "illisarvik": 3, "stordalen": 3,
+                 "illisarvik": 3, "stordalen": 3, "gem": 3,
                  "usgs_npra": 4, "gsc_cable": 4, "awi_soil_temp": 4, "ngee_barrow": 4,
                  "uaf_stations": 4, "umiujaq_cable": 4,
                  "above_field": 5, "cusp": 6, "other": 7},

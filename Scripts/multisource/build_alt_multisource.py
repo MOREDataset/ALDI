@@ -103,6 +103,11 @@ SOURCES = {
                   "https://doi.org/10.5281/zenodo.10420396", "CC-BY 4.0"),
     "umiujaq_cable": ("Subsurface ground temperature, instrumented permafrost mound, Tasiapik Valley, "
                       "Umiujaq (Nordicana D)", "https://doi.org/10.5683/SP3/QSRW0I", "CC-BY 4.0"),
+    "gem": ("Greenland Ecosystem Monitoring (GEM): ZEROCALM-1/2 active layer (GeoBasis Zackenberg); ground "
+            "temperatures at GeoBasis Disko AWS1, AWS2 P1/P2 and ZEROCALM-2 upper/middle/lower",
+            "https://doi.org/10.17897/2Q7S-2876 ; 10.17897/4EE8-WE92 ; 10.17897/B2K2-0Q82 ; 10.17897/3T7W-7638 ; "
+            "10.17897/8HPH-H716 ; 10.17897/KCP6-QG90 ; 10.17897/D2NV-GN54 ; 10.17897/FX4T-2H83",
+            "CC-BY-SA 4.0 (GEM terms of use: cite each dataset DOI)"),
     "above_field": ("ABoVE: Soil thaw depth and moisture validation data (ORNL DAAC), repeat-visited plots",
                     "https://daac.ornl.gov (ABoVE_Soil_ThawDepth_Moisture_Validation)", "ORNL DAAC (cite dataset)"),
     "cusp": ("CUSP - CommUnity near-Surface Permafrost dataset v1.2 (only its sources not read elsewhere)",
@@ -123,8 +128,9 @@ NOT_USED = [
      "model output, not measurements"),
     ("GTN-P database, new downloads", "http://gtnpdatabase.org", "server returned 502 during the build; "
      "the grids downloaded for the corridor project are used"),
-    ("GEM Greenland (Zackenberg ZEROCALM, Disko)", "https://doi.org/10.17897/2Q7S-2876",
-     "needs a login; G1/G2 are read from the CALM workbooks instead"),
+    ("GEM Greenland: shallow soil temperature (GeoBasis Disko AWS2/AWS3/AWS4, Nuuk SoilEmp, SoilEmpSa, "
+     "SoilVUE Heath and Fen), meteorology, snow and soil moisture", "https://data.g-e-m.dk",
+     "sensors only to 20-50 cm, or 2021-2024 only (SoilVUE Fen to 100 cm); not ALT"),
     ("Yukon Permafrost Database", "https://data.geology.gov.yk.ca/permafrost",
      "only site locations could be downloaded (no temperature series)"),
     ("Nordicana D (other datasets)", "https://nordicana.cen.ulaval.ca", "server refused downloads (403); Umiujaq "
