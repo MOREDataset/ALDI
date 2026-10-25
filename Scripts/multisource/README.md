@@ -50,7 +50,26 @@ source with its DOI or URL and licence.
 
 Values with these flags stay in the files but are not used for the 8-year count or in
 the ALDI input: `lower_bound`, `wide_sensor_spacing`, `no_refreeze`, `talik`,
-`sensor_cap`, `calm_footnote`, `early_measurement`, `treatment`.
+`possible_talik`, `sensor_cap`, `calm_footnote`, `early_measurement`, `treatment`,
+`borehole_equilibration`.
+
+- `possible_talik`: Bonanza Creek LTER probing (interior Alaska). The probe, with
+  extensions, is pushed to the first hard frozen ground. Once the winter frost no longer
+  reaches the permafrost (a talik), that is the permafrost table or leftover seasonal
+  frost, not ALT; the series then jump between about 70 and 300 cm from one year to the
+  next. From the first year a series is deeper than 150 cm, that year and all later ones
+  are flagged (CONFIG `talik_onset_cm`). CALM flags its two Fairbanks-area sites, U18
+  and U19, as talik from about 1 m.
+- `borehole_equilibration`: the first year of each GSC Mackenzie cable, which reads about
+  6 % shallower than the second (CONFIG `equilibration_years`).
+
+Flags belong to the physical site, not to one source. After the series of a site are
+joined, `talik` and `possible_talik` apply to every later year of the site, `no_refreeze`
+to every record of that year, and the survey flags (`calm_footnote`, `sensor_cap`,
+`early_measurement`, `treatment`, `lower_bound`) to the copies of the same value in other
+sources. Without this, a year that CALM flags came back through an unflagged copy in
+GTN-P or BNZ LTER (Bonanza Creek U18 2011-2025, Pearl Creek U19 2015-2018, and 12
+early surveys at Russian and Canadian sites).
 
 Informational only: `nonmonotonic_profile`, `burned` and `burned_site`, `small_sample`,
 `unusual_year_regional`, `unusual_year_isolated`, `deep_thaw_check_talik`.
@@ -61,8 +80,8 @@ Informational only: `nonmonotonic_profile`, `burned` and `burned_site`, `small_s
 |---|---|
 | `alt_multisource_all_records.csv` | Every annual record from every source, before merging. |
 | `alt_multisource_annual.csv` | One row per site and year for the kept sites, with all flags and the value from each source. |
-| `alt_multisource_sites.csv` | One row per kept site: position, sources, method, years, and other kept sites within 1 km (`colocated_with`). |
-| `alt_multisource_for_ALDI.csv` | `site_id, Location, Lat, Long, Year, ALT_cm, source, method`, valid years only. |
+| `alt_multisource_sites.csv` | One row per kept site: position, sources, method, years, SD of the valid years, and other kept sites within 1 km (`colocated_with`). |
+| `alt_multisource_for_ALDI.csv` | `site_id, Location, Lat, Long, Year, ALT_cm, source, method, obs_doy, flag`, valid years only. `obs_doy` is the survey day where the source gives a date (later surveys read deeper, so it can be used as a control); `flag` holds the information flags. |
 | `source_inventory.csv` | Every source checked: what was read and used, or why it was not used. |
 | `data_credits.md` | Dataset citations, and the GTN-P data authors to credit (GTN-P data policy). |
 | `build_log.txt` | Everything the run printed. |

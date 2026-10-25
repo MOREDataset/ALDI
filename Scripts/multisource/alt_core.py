@@ -101,14 +101,38 @@ CONFIG = {
     "talik_from": {"U18": 2011, "U19": 2015},
     # CALM sites whose borehole value sits at the deepest sensor most years (lower bound).
     "sensor_cap_cm": {"U30": 120.0},
+    # Interior Alaska probing (Bonanza Creek LTER): the probe, with extensions, is pushed
+    # down to the first hard frozen ground. Once the winter frost no longer reaches the
+    # permafrost (a talik), that is the permafrost table or leftover seasonal frost, not
+    # ALT, and the series jump between ~70 and ~300 cm from one year to the next. CALM
+    # flags its two Fairbanks-area sites (U18, U19) as talik from a thaw depth of about
+    # 1 m. Here a talik is assumed from the first year a series of these sources is
+    # deeper than this (cm); that year and all later ones are flagged 'possible_talik'.
+    "talik_onset_cm": {"bnz_lter": 150.0},
+    # New boreholes: at the GSC Mackenzie cables the first year of a record reads about
+    # 6 % shallower than the second (median of 44 cables; the second and third years
+    # differ by 1.5 %), a sign that the ground around the new hole had not settled
+    # thermally. The first year of each series of these sources is flagged
+    # 'borehole_equilibration'.
+    "equilibration_years": {"gsc_cable": 1},
 }
 
 # Flags that make a value unusable for trend analysis (it stays in the files).
 # Matched as whole flags, so an informational flag such as 'deep_thaw_check_talik'
 # does not count as 'talik'.
-INVALID_FLAG_NAMES = ("calm_footnote", "talik", "sensor_cap", "wide_sensor_spacing",
-                      "lower_bound", "treatment", "early_measurement", "no_refreeze")
+INVALID_FLAG_NAMES = ("calm_footnote", "talik", "possible_talik", "sensor_cap",
+                      "wide_sensor_spacing", "lower_bound", "treatment", "early_measurement",
+                      "no_refreeze", "borehole_equilibration")
 INVALID_FLAGS = r"(?:^|;)(?:" + "|".join(INVALID_FLAG_NAMES) + r")(?:;|$)"
+
+# Flags that belong to the physical site, not to one source's copy of a value (applied
+# across sources after the series of one site are joined, in site_state_flags):
+#   STATE_FLAGS: the ground is in a talik from that year on -> every later year of the site;
+#   YEAR_STATE_FLAGS: the ground did not refreeze that winter -> every record of that year;
+#   COPY_FLAGS: something about that survey -> records of that year with the same value.
+STATE_FLAGS = ("talik", "possible_talik")
+YEAR_STATE_FLAGS = ("no_refreeze",)
+COPY_FLAGS = ("calm_footnote", "sensor_cap", "lower_bound", "treatment", "early_measurement")
 
 COUNTRY_ALIASES = {"United States": "USA", "United States of America": "USA", "US": "USA",
                    "United States (Alaska)": "USA", "Alaska": "USA",

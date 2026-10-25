@@ -39,8 +39,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from alt_core import (CONFIG, INVALID_FLAGS, LOG_LINES, files, haversine_km, log,  # noqa: E402
-                      method_family)
+from alt_core import (CONFIG, COPY_FLAGS, INVALID_FLAGS, LOG_LINES, STATE_FLAGS,  # noqa: E402
+                      YEAR_STATE_FLAGS, add_flag, files, haversine_km, log, method_family)
 from alt_sources import ADAPTERS  # noqa: E402
 
 # =============================================================================
@@ -270,6 +270,95 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
     return rec
 
 
+def _has_flag(flags: pd.Series, name: str) -> pd.Series:
+    return flags.fillna("").str.contains(r"(?:^|;)" + name + r"(?:;|$)")
+
+
+def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
+    """
+    Flags that belong to the physical site rather than to one source. Without this step a
+    year that one source flags (for example CALM's talik years at Bonanza Creek U18) comes
+    back through another source's unflagged copy of the same value (BNZ LTER, GTN-P).
+      1. Talik onset (CONFIG talik_onset_cm): in the listed sources, a probe or tube series
+         is flagged 'possible_talik' from the first year it is deeper than the threshold.
+      2. Borehole equilibration (CONFIG equilibration_years): the first years of each
+         series of the listed sources.
+      3. STATE_FLAGS ('talik', 'possible_talik'): every record of the site from the first
+         flagged year on.
+      4. YEAR_STATE_FLAGS ('no_refreeze'): every record of the site in that year.
+      5. COPY_FLAGS (CALM footnote, sensor cap, early survey, treatment, lower bound) and
+         censoring: records of the same site and year whose value is a copy of the flagged
+         one (within dup_agree_cm or dup_agree_frac); a lower bound also covers smaller
+         values. A different, deeper measurement in another source stays usable.
+    """
+    rec = rec.copy()
+    rec["flag"] = rec.flag.fillna("")
+    before = (~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)).sum()
+
+    # 1. talik onset in the listed probing sources
+    for src, thr in CONFIG["talik_onset_cm"].items():
+        m = (rec.source == src) & rec.method.isin(["probe", "thaw_tube"])
+        deep = rec[m & (rec.alt_cm > thr)]
+        onset = deep.groupby("source_site_id").year.min()
+        hit = m & (rec.year >= rec.source_site_id.map(onset).fillna(9999))
+        rec["flag"] = add_flag(rec.flag, hit & ~_has_flag(rec.flag, "possible_talik"), "possible_talik")
+        if len(onset):
+            log(f"  {src}: {len(onset)} series deeper than {thr:g} cm in some year; "
+                f"{int(hit.sum())} site-years from that year on flagged possible_talik")
+
+    # 2. first years of new boreholes
+    for src, n in CONFIG["equilibration_years"].items():
+        m = rec.source == src
+        first = rec[m].groupby("source_site_id").year.transform("min")
+        hit = m & (rec.year < first.reindex(rec.index).fillna(9999) + n)
+        rec["flag"] = add_flag(rec.flag, hit, "borehole_equilibration")
+        log(f"  {src}: first {n} year(s) of {rec[m].source_site_id.nunique()} series flagged "
+            f"borehole_equilibration ({int(hit.sum())} site-years)")
+
+    # 3. talik state from the first flagged year on
+    for f in STATE_FLAGS:
+        has = _has_flag(rec.flag, f)
+        onset = rec[has].groupby("site_id").year.min()
+        hit = (rec.year >= rec.site_id.map(onset).fillna(9999)) & ~has
+        rec["flag"] = add_flag(rec.flag, hit, f)
+        if hit.any():
+            log(f"  {f}: {int(hit.sum())} records of other sources or later years flagged "
+                f"({rec[hit].site_id.nunique()} sites)")
+
+    # 4. no refreeze: the whole site-year
+    for f in YEAR_STATE_FLAGS:
+        has = _has_flag(rec.flag, f)
+        sy = set(zip(rec.site_id[has], rec.year[has]))
+        hit = pd.Series([k in sy for k in zip(rec.site_id, rec.year)], index=rec.index) & ~has
+        rec["flag"] = add_flag(rec.flag, hit, f)
+        if hit.any():
+            log(f"  {f}: {int(hit.sum())} records of other sources in the same site-year flagged")
+
+    # 5. copies of a flagged or censored value
+    src_cols = ["site_id", "year", "alt_cm", "censored", "flag"]
+    flagged = rec[rec.censored | rec.flag.str.contains(
+        r"(?:^|;)(?:" + "|".join(COPY_FLAGS) + r")(?:;|$)")][src_cols]
+    if len(flagged):
+        pair = rec.reset_index().merge(flagged, on=["site_id", "year"], suffixes=("", "_f"))
+        tol = np.maximum(CONFIG["dup_agree_cm"], CONFIG["dup_agree_frac"] * pair.alt_cm_f)
+        same = (pair.alt_cm - pair.alt_cm_f).abs() <= tol
+        below_bound = pair.censored_f & (pair.alt_cm <= pair.alt_cm_f + tol)
+        n_flag = 0
+        for f in COPY_FLAGS:
+            hit = same & _has_flag(pair.flag_f, f) & ~_has_flag(pair.flag, f)
+            idx = pair.loc[hit, "index"].unique()
+            rec.loc[idx, "flag"] = add_flag(rec.loc[idx, "flag"], np.ones(len(idx), bool), f)
+            n_flag += len(idx)
+        idx = pair.loc[below_bound & ~pair.censored, "index"].unique()
+        rec.loc[idx, "censored"] = True
+        rec.loc[idx, "flag"] = add_flag(rec.loc[idx, "flag"], np.ones(len(idx), bool), "lower_bound")
+        log(f"  {n_flag} copies of flagged values and {len(idx)} copies of lower bounds in "
+            f"other sources flagged")
+    after = (~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)).sum()
+    log(f"  site-level flags: {before - after} more records not usable")
+    return rec
+
+
 def merge_site_years(rec: pd.DataFrame) -> pd.DataFrame:
     """
     One value per physical site and year: the valid record from the preferred source
@@ -383,6 +472,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> Non
 
     log("\n[merge]")
     rec = assign_physical_sites(drop_short_series(rec))
+    rec = site_state_flags(rec)
     an = merge_site_years(rec)
     ux = outlier_flags(an).reindex(an.index)
     has = ux != ""
@@ -408,6 +498,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> Non
                   site_note=("site_note", "first"))
              .reset_index())
     vs = valid.groupby("site_id").agg(n_years_valid=("year", "nunique"), median_alt_cm=("alt_cm", "median"),
+                                      sd_alt_cm=("alt_cm", "std"),
                                       first_valid_year=("year", "min"), last_valid_year=("year", "max"),
                                       n_years_before_1990=("year", lambda y: int((y < 1990).sum())))
     sites = sites.merge(vs, on="site_id", how="left")
@@ -422,8 +513,11 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> Non
     aldi["Lat"], aldi["Long"] = pos.lat, pos.lon
     aldi = aldi.rename(columns={"site_name": "Location", "year": "Year", "alt_cm": "ALT_cm"})
     aldi["Location"] = aldi.site_id.map(sites.set_index("site_id").site_name)
-    aldi[["site_id", "Location", "Lat", "Long", "Year", "ALT_cm", "source", "method"]].to_csv(
-        out / "alt_multisource_for_ALDI.csv", index=False)
+    # survey day of year where the source gives a date (probing): later surveys read
+    # deeper, so a drift of the survey date over the years can look like a trend
+    aldi["obs_doy"] = pd.to_datetime(aldi.obs_date, errors="coerce").dt.dayofyear
+    aldi[["site_id", "Location", "Lat", "Long", "Year", "ALT_cm", "source", "method",
+          "obs_doy", "flag"]].to_csv(out / "alt_multisource_for_ALDI.csv", index=False)
 
     # inventory: every reader, then the sources reviewed and not used
     inv = pd.DataFrame(inventory)
