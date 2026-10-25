@@ -103,6 +103,10 @@ SOURCES = {
                   "https://doi.org/10.5281/zenodo.10420396", "CC-BY 4.0"),
     "umiujaq_cable": ("Subsurface ground temperature, instrumented permafrost mound, Tasiapik Valley, "
                       "Umiujaq (Nordicana D)", "https://doi.org/10.5683/SP3/QSRW0I", "CC-BY 4.0"),
+    "canada_gt": ("A standardized permafrost ground temperature collection for Canada 2025, v0.9.3 "
+                  "(Meier-Legault, Brown, Gruber et al., ESSD 2026): ground temperature boreholes (type GT)",
+                  "https://doi.org/10.5281/zenodo.21042525 (concept doi:10.5281/zenodo.18022924)",
+                  "see the Zenodo record; cite the collection and each site's own reference"),
     "gem": ("Greenland Ecosystem Monitoring (GEM): ZEROCALM-1/2 active layer (GeoBasis Zackenberg); ground "
             "temperatures at GeoBasis Disko AWS1, AWS2 P1/P2 and ZEROCALM-2 upper/middle/lower",
             "https://doi.org/10.17897/2Q7S-2876 ; 10.17897/4EE8-WE92 ; 10.17897/B2K2-0Q82 ; 10.17897/3T7W-7638 ; "
@@ -131,10 +135,20 @@ NOT_USED = [
     ("GEM Greenland: shallow soil temperature (GeoBasis Disko AWS2/AWS3/AWS4, Nuuk SoilEmp, SoilEmpSa, "
      "SoilVUE Heath and Fen), meteorology, snow and soil moisture", "https://data.g-e-m.dk",
      "sensors only to 20-50 cm, or 2021-2024 only (SoilVUE Fen to 100 cm); not ALT"),
-    ("Yukon Permafrost Database", "https://data.geology.gov.yk.ca/permafrost",
-     "only site locations could be downloaded (no temperature series)"),
-    ("Nordicana D (other datasets)", "https://nordicana.cen.ulaval.ca", "server refused downloads (403); Umiujaq "
-     "came from Borealis"),
+    ("Yukon Permafrost Database (direct download)", "https://data.geology.gov.yk.ca/permafrost",
+     "only site locations could be downloaded; its temperature series come through the Canada "
+     "ground temperature collection (canada_gt)"),
+    ("Nordicana D (direct download)", "https://nordicana.cen.ulaval.ca", "server refused downloads (403); "
+     "Umiujaq came from Borealis, and the CEN Nunavik and Bylot Island cables (D-series, e.g. "
+     "doi:10.5885/45291SL-34F28A9491014AFD) come through the Canada ground temperature collection"),
+    ("Roshydromet daily soil temperature to 320 cm, version 3, 1963-2024 (Sherstiukov, RIHMI-WDC)",
+     "http://meteo.ru/data/soil-temperature/", "data only through a personal login (aisori-m.meteo.ru); "
+     "not downloaded. Station list of candidates: roshydromet_stations_to_request.csv"),
+    ("Pan-Arctic terrestrial in situ weather data set 1990-2023 (Rasmussen et al.)",
+     "https://zenodo.org/records/15388336", "soil temperature at 22 places north of 50 N, most only "
+     "to 10-50 cm; one (Marre-Sale, CALM R3, sensors to 200 cm) gives 8 thaw years before checks, and "
+     "that site is in the dataset from CALM probing. Its ground data come from CALM, GEM, NGEE, FMI "
+     "and CEN stations, which are read here from their originals or are too shallow"),
     ("Scotty Creek, NWT", "https://doi.org/10.5683/SP2/BTRLHO ; https://doi.org/10.5683/SP/OQDRJG",
      "thaw and talik studies shorter than 8 years; the long monitoring record is restricted"),
     ("Trail Valley Creek soil station (AWI)", "PANGAEA 962869-962875, 973138, 983873",
@@ -428,7 +442,24 @@ def gtnp_authors(raw_dirs) -> pd.DataFrame:
     return pd.DataFrame(rows).drop_duplicates()
 
 
-def write_credits(out: Path, inv: pd.DataFrame, raw_dirs) -> None:
+def canada_gt_credits(raw_dirs, valid: pd.DataFrame) -> list[str]:
+    """Creator, institution and reference of each Canada-collection series that gives a
+    used value (the collection asks users to cite each site's own reference too)."""
+    used = valid[valid.source == "canada_gt"]
+    metas = [m for m in files(raw_dirs, "site_metadata.csv") if (m.parent / "all_observations.zip").exists()]
+    if used.empty or not metas:
+        return []
+    ids = set(used.source_file.str.split(": ").str[-1])
+    meta = pd.read_csv(metas[-1], encoding="utf-8-sig")
+    meta = meta[meta.site_id.isin(ids)].fillna("")
+    lines = ["", "## Canada ground temperature collection: series used and their own references", ""]
+    for r in meta.sort_values("site_id").itertuples():
+        ref = r.references or r.metadata_link or "no reference given in the collection"
+        lines.append(f"- {r.site_id}: {r.creator_name}, {r.institution}. {ref}")
+    return lines
+
+
+def write_credits(out: Path, inv: pd.DataFrame, raw_dirs, valid: pd.DataFrame) -> None:
     used = inv[inv.status == "used"]
     lines = ["# Data credits", "",
              "Datasets that contribute site-years to the multi-source ALT dataset. Please cite them as "
@@ -444,6 +475,7 @@ def write_credits(out: Path, inv: pd.DataFrame, raw_dirs) -> None:
         for r in a.sort_values("site").itertuples():
             code = f" ({r.calm_code})" if r.calm_code else ""
             lines.append(f"- {r.site}{code}: {r.data_author or 'author not given'}, {r.url}")
+    lines += canada_gt_credits(raw_dirs, valid)
     (out / "data_credits.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -541,7 +573,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> Non
     cols = ["source", "title", "reference", "licence", "status", "series_read", "site_years_read",
             "sites_contributing", "site_years_used", "reason_not_used"]
     inv[cols].to_csv(out / "source_inventory.csv", index=False)
-    write_credits(out, inv, raw_dirs)
+    write_credits(out, inv, raw_dirs, valid)
 
     log(f"\nRESULT: {len(keep)} sites with >= {CONFIG['min_years']} valid annual values, "
         f"{len(valid)} valid site-years")
