@@ -44,14 +44,17 @@ source with its DOI or URL and licence.
     `wide_sensor_spacing`), or
   - the deepest thawed sensor did not clearly refreeze the following winter: its
     minimum from October to June stayed above -0.1 °C, the usual sensor accuracy
-    (flag `no_refreeze`).
+    (flag `no_refreeze`), or
+  - the last thawed sensor, the one the crossing is interpolated from, reads more than
+    1 °C warmer than the sensor above it. The annual maximum falls with depth, so its
+    depth label or the sensor is wrong (flag `profile_inversion`).
 
 ## Flags
 
 Values with these flags stay in the files but are not used for the 8-year count or in
 the ALDI input: `lower_bound`, `wide_sensor_spacing`, `no_refreeze`, `talik`,
 `possible_talik`, `sensor_cap`, `calm_footnote`, `early_measurement`, `treatment`,
-`borehole_equilibration`.
+`borehole_equilibration`, `profile_inversion`, `disturbed_site`, `sensor_problem`.
 
 - `possible_talik`: Bonanza Creek LTER probing (interior Alaska). The probe, with
   extensions, is pushed to the first hard frozen ground. Once the winter frost no longer
@@ -61,18 +64,36 @@ the ALDI input: `lower_bound`, `wide_sensor_spacing`, `no_refreeze`, `talik`,
   are flagged (CONFIG `talik_onset_cm`). CALM flags its two Fairbanks-area sites, U18
   and U19, as talik from about 1 m.
 - `borehole_equilibration`: the first year of each GSC Mackenzie cable, which reads about
-  6 % shallower than the second (CONFIG `equilibration_years`).
+  6 % shallower than the second (CONFIG `equilibration_years`), and the first year of a
+  Canada-collection cable whose record starts in May to August, i.e. that was installed
+  that summer (CONFIG `install_months`).
+- `disturbed_site`: Canada-collection sites that its compilers mark as disturbed
+  (highway embankments, mine sites, burned or cleared ground).
+- `sensor_problem`: Canada-collection years whose sensors are not comparable with the
+  rest of the record (Clearwater Lake LECCT02 and LECTOUR before 2006, LECTOUR from 2017,
+  Bylot Island BYLOTPD from 2013). CONFIG `sensor_problem_years` gives the evidence.
 
 Flags belong to the physical site, not to one source. After the series of a site are
 joined, `talik` and `possible_talik` apply to every later year of the site, `no_refreeze`
-to every record of that year, and the survey flags (`calm_footnote`, `sensor_cap`,
-`early_measurement`, `treatment`, `lower_bound`) to the copies of the same value in other
-sources. Without this, a year that CALM flags came back through an unflagged copy in
+to every record of that year, and the survey and borehole flags (`calm_footnote`,
+`sensor_cap`, `early_measurement`, `treatment`, `lower_bound`, `borehole_equilibration`,
+`disturbed_site`) to the copies of the same value in other sources. Without this, a year that CALM flags came back through an unflagged copy in
 GTN-P or BNZ LTER (Bonanza Creek U18 2011-2025, Pearl Creek U19 2015-2018, and 12
 early surveys at Russian and Canadian sites).
 
 Informational only: `nonmonotonic_profile`, `burned` and `burned_site`, `small_sample`,
 `unusual_year_regional`, `unusual_year_isolated`, `deep_thaw_check_talik`.
+
+## Canada ground temperature collection
+
+`read_canada_gt` reads the Canadian permafrost ground temperature collection 2025
+(Meier-Legault, Brown, Gruber et al., ESSD 2026; Zenodo doi:10.5281/zenodo.21042525):
+daily mean temperatures from about 430 boreholes and cables. Only ground-temperature
+sites are read. Two series within 300 m whose ALT agrees within 1 cm on at least 3
+uncensored years are copies of one borehole from two contributors and are merged.
+Series that the metadata calls the same borehole with new or other sensors are not
+merged, because a sensor change shifts the ALT. Cables also read from their originals
+(GSC Open File 9340, Umiujaq) are joined to those, and the originals stay preferred.
 
 ## Outputs
 
@@ -83,5 +104,5 @@ Informational only: `nonmonotonic_profile`, `burned` and `burned_site`, `small_s
 | `alt_multisource_sites.csv` | One row per kept site: position, sources, method, years, SD of the valid years, and other kept sites within 1 km (`colocated_with`). |
 | `alt_multisource_for_ALDI.csv` | `site_id, Location, Lat, Long, Year, ALT_cm, source, method, obs_doy, flag`, valid years only. `obs_doy` is the survey day where the source gives a date (later surveys read deeper, so it can be used as a control); `flag` holds the information flags. |
 | `source_inventory.csv` | Every source checked: what was read and used, or why it was not used. |
-| `data_credits.md` | Dataset citations, and the GTN-P data authors to credit (GTN-P data policy). |
+| `data_credits.md` | Dataset citations, the GTN-P data authors to credit (GTN-P data policy), and the creator and reference of each Canada-collection series used. |
 | `build_log.txt` | Everything the run printed. |

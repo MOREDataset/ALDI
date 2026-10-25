@@ -22,10 +22,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from alt_core import (CONFIG, add_flag, as_float, clean_cell, eml_sites, empty_records,
-                      end_of_season, files, finish, log, norm_calm_code, pangaea_events,
-                      parse_censored, read_pangaea_tab, records_from_profiles, survey_means,
-                      utm_to_latlon)
+from alt_core import (CONFIG, INVALID_FLAGS, add_flag, as_float, clean_cell, eml_sites,
+                      empty_records, end_of_season, files, finish, haversine_km, log,
+                      norm_calm_code, pangaea_events, parse_censored, read_pangaea_tab,
+                      records_from_profiles, survey_means, utm_to_latlon)
 
 
 # =============================================================================
@@ -1221,6 +1221,146 @@ def read_umiujaq_cables(raw) -> pd.DataFrame:
     return finish(records_from_profiles(t, sites, "borehole_temp"), "umiujaq_cable")
 
 
+def _merge_borehole_copies(rec: pd.DataFrame, sites: pd.DataFrame) -> pd.DataFrame:
+    """
+    The collection sometimes holds one borehole twice: from two contributors (Beaver Creek
+    'HPW_Shakwak_orig_natural' and 'BC-RES_YG4_natural_*' give the same ALT to 0.05 cm),
+    Two series are copies when they lie within 300 m and their ALT agrees
+    within copy_agree_cm (1 cm, median) on >= 3 shared years with an uncensored value
+    (lower bounds are not compared: two nearby cables whose deepest sensor sits at the
+    same depth would 'agree' every year without being copies). The members of a group
+    become one series, named after the member with the most valid years; it keeps all its
+    own years and takes from the other members only the years it does not have.
+    Series that the metadata calls the same borehole but with new or other sensors
+    (BYLOTPB_a, SALTSIL_T109) are not merged: a sensor change shifts the ALT (BYLOTPB
+    reads 78-81 cm in 2007-2015, BYLOTPB_a 96-107 cm from 2016), so splicing them would
+    make a step look like a trend. They stay separate series.
+    """
+    ids = sorted(rec.source_site_id.unique())
+    parent = {i: i for i in ids}
+
+    def root(i):
+        while parent[i] != i:
+            i = parent[i]
+        return i
+
+    pos = sites.set_index("source_site_id").loc[ids, ["lat", "lon"]]
+    ser = {k: g.set_index("year").alt_cm for k, g in rec[~rec.censored].groupby("source_site_id")}
+    ser = {i: ser.get(i, pd.Series(dtype=float)) for i in ids}
+    for i, a in enumerate(ids):
+        d = haversine_km(pos.lat.iat[i], pos.lon.iat[i], pos.lat.to_numpy(), pos.lon.to_numpy())
+        for j in np.where(d <= 0.3)[0]:
+            b = ids[j]
+            if j <= i or root(a) == root(b):
+                continue
+            common = ser[a].index.intersection(ser[b].index)
+            if len(common) >= 3 and (ser[a][common] - ser[b][common]).abs().median() <= CONFIG["copy_agree_cm"]:
+                parent[root(a)] = root(b)
+    groups = pd.Series({i: root(i) for i in ids})
+    rec = rec.copy()
+    rec["grp"] = rec.source_site_id.map(groups)
+    rec["valid"] = ~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)
+    out = []
+    for g, r in rec.groupby("grp"):
+        members = r.source_site_id.unique()
+        if len(members) == 1:
+            out.append(r)
+            continue
+        size = r.groupby("source_site_id").agg(v=("valid", "sum"), n=("year", "size"))
+        order = size.sort_values(["v", "n"], ascending=False).index.tolist()
+        r = r.assign(o=r.source_site_id.map({m: k for k, m in enumerate(order)}))
+        r = r.sort_values(["year", "o"]).drop_duplicates("year").drop(columns="o")
+        main, others = order[0], order[1:]
+        site = sites.set_index("source_site_id").loc[main]
+        r["source_site_id"], r["site_name"], r["lat"], r["lon"] = main, site.site_name, site.lat, site.lon
+        r["site_note"] = (f"{site.site_note}; same borehole as {', '.join(others)} (years missing "
+                          f"in {main} taken from them)")
+        log(f"    {main}: merged with {', '.join(others)} (same borehole)")
+        out.append(r)
+    return pd.concat(out, ignore_index=True).drop(columns=["grp", "valid"])
+
+
+def read_canada_gt(raw) -> pd.DataFrame:
+    """
+    Canadian permafrost ground temperature collection 2025 (Meier-Legault et al., Zenodo
+    doi:10.5281/zenodo.21042525): daily mean ground temperatures from ~430 boreholes and
+    cables of many groups (GSC, CEN, Yukon and NWT geological surveys, ECCC climate
+    stations, UAF, universities), cleaned and put in one format, 1960-2025. Only ground
+    temperature sites (type 'GT', not surface loggers). ALT from the 0 C crossing.
+      - The compilers mark each site as disturbed or not (highway embankments, mine
+        sites, burnt or cleared ground). Disturbed sites (disturbance = 1) are flagged
+        'disturbed_site' and not used: their ALT follows the disturbance, not the climate.
+        Unknown (-1) is kept and noted in site_note.
+      - Cables installed that summer (record starts in May-August): first year flagged
+        'borehole_equilibration' (CONFIG install_months).
+      - Years whose sensors are not comparable with the rest of the record (CONFIG
+        sensor_problem_years): flagged 'sensor_problem'.
+      - Copies of one borehole are merged (_merge_borehole_copies).
+    The same boreholes can also be in sources read directly (GSC Open File 9340 cables,
+    Umiujaq): the build joins them by position and agreement, and the direct source is
+    preferred (CONFIG priority).
+    """
+    zs = files(raw, "all_observations.zip")
+    metas = files(raw, "site_metadata.csv")
+    metas = [m for m in metas if (m.parent / "all_observations.zip").exists()]
+    if not zs or not metas:
+        return empty_records()
+    meta = pd.read_csv(metas[-1], encoding="utf-8-sig")
+    meta = meta[(meta.type == "GT") & (meta.latitude >= CONFIG["min_lat"])]
+    with zipfile.ZipFile(zs[-1]) as zf:
+        name = next(n for n in zf.namelist() if n.endswith(".csv"))
+        d = pd.read_csv(zf.open(name), usecols=["timestamp", "depth", "temperature", "site_id"],
+                        dtype={"depth": "float64", "temperature": "float64", "site_id": "str"})
+    d = d[d.site_id.isin(meta.site_id)]
+    t = pd.DataFrame(dict(source_site_id=d.site_id.to_numpy(),
+                          time=pd.to_datetime(d.timestamp.str.slice(0, 10), errors="coerce"),
+                          depth_cm=(d.depth * 100).round(1), temp_c=d.temperature))
+    t = t[t.depth_cm <= CONFIG["valid_alt_cm_borehole"][1]]
+    del d
+
+    def note(r):
+        parts = [str(r.institution)]
+        if r.disturbance == 1:
+            parts.append("disturbed site (collection metadata)")
+        elif r.disturbance == -1:
+            parts.append("disturbance unknown")
+        if r.bedrock == 1:
+            parts.append("borehole in bedrock")
+        if "ECCC" in str(r.institution):
+            parts.append("climate station soil thermometers read twice daily, 50 cm apart "
+                         "near the thaw front: values often fall on a sensor depth")
+        env = str(r.environment_description)
+        if env and env != "nan":
+            parts.append(re.sub(r"\s+", " ", env)[:150])
+        return "; ".join(parts)
+
+    sites = pd.DataFrame(dict(source_site_id=meta.site_id, site_name=meta.site_id,
+                              lat=meta.latitude, lon=meta.longitude, country="Canada",
+                              site_note=meta.apply(note, axis=1),
+                              source_file=metas[-1].parent.name + "|" + meta.site_id))
+    rec = records_from_profiles(t, sites, "borehole_temp")
+    if rec.empty:
+        return empty_records()
+    disturbed = rec.source_site_id.isin(meta.site_id[meta.disturbance == 1])
+    rec["flag"] = add_flag(rec.flag, disturbed, "disturbed_site")
+    start = t.groupby("source_site_id").time.min()
+    m0, m1 = CONFIG["install_months"]
+    installed = start[start.dt.month.between(m0, m1)].dt.year
+    first_year = rec.groupby("source_site_id").year.transform("min")
+    new_hole = (rec.year == first_year) & (rec.source_site_id.map(installed) == rec.year)
+    rec["flag"] = add_flag(rec.flag, new_hole, "borehole_equilibration")
+    bad = pd.Series(False, index=rec.index)
+    for sid, periods in CONFIG["sensor_problem_years"]["canada_gt"].items():
+        for y0, y1 in periods:
+            bad |= (rec.source_site_id == sid) & rec.year.between(y0, y1)
+    rec["flag"] = add_flag(rec.flag, bad, "sensor_problem")
+    log(f"  canada_gt: {int(disturbed.sum())} site-years at disturbed sites, {int(new_hole.sum())} "
+        f"installation years and {int(bad.sum())} years with sensor problems flagged")
+    rec = _merge_borehole_copies(rec, sites)
+    rec["source_file"] = rec.source_file.str.replace("|", "/all_observations.csv: ", regex=False)
+    return finish(rec, "canada_gt")
+
+
 # =============================================================================
 # Greenland: GEM (Greenland Ecosystem Monitoring) downloads
 # =============================================================================
@@ -1380,6 +1520,7 @@ ADAPTERS = {
     "awi_soil_temp": read_awi_soil_temp,
     "stordalen": read_stordalen,
     "umiujaq_cable": read_umiujaq_cables,
+    "canada_gt": read_canada_gt,
     "gem": read_gem,
     "above_field": read_above_field,
     "cusp": read_cusp,

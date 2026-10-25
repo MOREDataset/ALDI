@@ -64,6 +64,15 @@ CONFIG = {
     # sensor has data on at least min_winter_cover of the days of January-March.
     "refreeze_margin_c": 0.1,
     "min_winter_cover": 0.5,
+    # Temperature profiles: the annual maximum temperature falls with depth (the seasonal
+    # wave is damped as it goes down). When the last thawed sensor, the one the 0 C
+    # crossing is interpolated from, reads more than inversion_tol_c warmer than the
+    # sensor above it, its depth label or the sensor itself is wrong (GSC KP182M 2012:
+    # 13.8 C at 125 cm under 0.2 C at 112 cm; Clearwater Lake LECCT02 2001-2004: 2.9 C at
+    # 100 cm under 0.2 C at 80 cm). Such years are flagged 'profile_inversion' and not
+    # used. Other sensors are not checked: a cool moss-layer sensor near the surface
+    # (Parks Canada 2.5 cm) or a faulty deep one does not enter the interpolation.
+    "inversion_tol_c": 1.0,
     # Two records are the same physical site when they share a site key (CALM code or
     # station id), or lie within this distance and use the same method family.
     "dup_distance_km": 1.0,
@@ -94,7 +103,7 @@ CONFIG = {
                  "illisarvik": 3, "stordalen": 3, "gem": 3,
                  "usgs_npra": 4, "gsc_cable": 4, "awi_soil_temp": 4, "ngee_barrow": 4,
                  "uaf_stations": 4, "umiujaq_cable": 4,
-                 "above_field": 5, "cusp": 6, "other": 7},
+                 "canada_gt": 5, "above_field": 5, "cusp": 6, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -115,6 +124,31 @@ CONFIG = {
     # thermally. The first year of each series of these sources is flagged
     # 'borehole_equilibration'.
     "equilibration_years": {"gsc_cable": 1},
+    # The Canada ground temperature collection has no installation dates, but a record
+    # that starts in May-August had its cable put in that summer, so its first late-summer
+    # maximum is read within weeks of drilling. For those series the first year is flagged
+    # 'borehole_equilibration' too (36 such series with three good first years: the first
+    # year is shallower than the second in 58 %, the third in 28 %; e.g. UAF Mould Bay,
+    # drilled July 2004: 27 cm, then 40-69 cm).
+    "install_months": (5, 8),
+    # Canada collection series with years whose sensors are not comparable with the rest
+    # of the record (series id -> (first, last) years); flagged 'sensor_problem', not used.
+    #   LECCT02 and LECTOUR (Clearwater Lake, Nunavik, same coordinates): both cables were
+    #   re-instrumented in 2005 (new depth sets). Before, LECCT02's profile is not ordered
+    #   by depth (60 cm warmer than 50 cm, 100 cm than 80 cm) and the two series swap
+    #   values at the change (LECCT02 116 -> 45 cm, LECTOUR 62 -> 121 cm): the old records
+    #   mix the two cables. Years to 2005 not used.
+    #   LECTOUR from 2017: the whole profile is colder than in any year since 2006 (25 cm
+    #   maximum 11 C in 2017 and 6 C in 2018, 12-18 C before), in a normal summer at the
+    #   other Nunavik sites (2017).
+    #   BYLOTPD (Bylot Island, low-centred polygon): the summer maximum at 10 cm is
+    #   3.0-4.5 C in 1999-2012, then 2.2 C (2013) and 0.4-1.4 C in 2014-2022, while the
+    #   20 cm sensor of BYLOTPB 50 m away stays at 9-13 C; ALT falls from 50-66 to 30-39 cm.
+    #   The last two look like a change of the sensors' depth below the surface (burial,
+    #   ponding) or of the sensors, not of the ground.
+    "sensor_problem_years": {"canada_gt": {"LECCT02": [(1900, 2005)],
+                                           "LECTOUR": [(1900, 2005), (2017, 2100)],
+                                           "BYLOTPD": [(2013, 2100)]}},
 }
 
 # Flags that make a value unusable for trend analysis (it stays in the files).
@@ -122,17 +156,21 @@ CONFIG = {
 # does not count as 'talik'.
 INVALID_FLAG_NAMES = ("calm_footnote", "talik", "possible_talik", "sensor_cap",
                       "wide_sensor_spacing", "lower_bound", "treatment", "early_measurement",
-                      "no_refreeze", "borehole_equilibration")
+                      "no_refreeze", "borehole_equilibration", "disturbed_site",
+                      "profile_inversion", "sensor_problem")
 INVALID_FLAGS = r"(?:^|;)(?:" + "|".join(INVALID_FLAG_NAMES) + r")(?:;|$)"
 
 # Flags that belong to the physical site, not to one source's copy of a value (applied
 # across sources after the series of one site are joined, in site_state_flags):
 #   STATE_FLAGS: the ground is in a talik from that year on -> every later year of the site;
 #   YEAR_STATE_FLAGS: the ground did not refreeze that winter -> every record of that year;
-#   COPY_FLAGS: something about that survey -> records of that year with the same value.
+#   COPY_FLAGS: something about that survey or borehole (a new borehole's first year, a
+#   disturbed site) -> records of that year with the same value (the same data passed on
+#   through another source, e.g. a GSC cable also in the Canada collection).
 STATE_FLAGS = ("talik", "possible_talik")
 YEAR_STATE_FLAGS = ("no_refreeze",)
-COPY_FLAGS = ("calm_footnote", "sensor_cap", "lower_bound", "treatment", "early_measurement")
+COPY_FLAGS = ("calm_footnote", "sensor_cap", "lower_bound", "treatment", "early_measurement",
+              "borehole_equilibration", "disturbed_site")
 
 COUNTRY_ALIASES = {"United States": "USA", "United States of America": "USA", "US": "USA",
                    "United States (Alaska)": "USA", "Alaska": "USA",
@@ -362,16 +400,19 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
     the following winter (1 Oct - 30 Jun). If it does not, the year gets
     no_refreeze=True. When that sensor has too little January-March data the check is
     skipped (no_refreeze=False).
+    Profile check: inversion=True when the last thawed sensor reads more than
+    inversion_tol_c warmer than the sensor above it (mislabelled depth or faulty sensor).
     Returns one row per year: year, alt_cm, censored, n_sensors, deepest_cm, bracket_cm,
-    nonmonotonic (a deeper sensor is above 0 C again below the crossing), no_refreeze.
+    nonmonotonic (a deeper sensor is above 0 C again below the crossing), no_refreeze,
+    inversion.
     """
     if min_season_cover is None:
         min_season_cover = CONFIG["min_summer_cover"]
     t = temps.dropna(subset=["temp_c", "depth_cm"]).copy()
     t = t[t.depth_cm > 0]
     if t.empty:
-        return pd.DataFrame(columns=["year", "alt_cm", "censored", "n_sensors",
-                                     "deepest_cm", "bracket_cm", "nonmonotonic", "no_refreeze"])
+        return pd.DataFrame(columns=["year", "alt_cm", "censored", "n_sensors", "deepest_cm",
+                                     "bracket_cm", "nonmonotonic", "no_refreeze", "inversion"])
     t["time"] = pd.to_datetime(t["time"])
     t["year"] = t.time.dt.year
     late = t[t.time.dt.month.between(8, 9)]                 # 1 Aug - 30 Sep, 61 days
@@ -419,15 +460,18 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
         if i == len(v) - 1:
             out.append(dict(year=yr, alt_cm=d[i], censored=True, n_sensors=len(v),
                             deepest_cm=d[-1], bracket_cm=np.nan, nonmonotonic=False,
-                            no_refreeze=no_refreeze(yr, d[i])))
+                            no_refreeze=no_refreeze(yr, d[i]), inversion=False))
             continue
+        # last thawed sensor warmer than the thawed sensor above it
+        inversion = bool(i > int(np.argmax(above)) and v[i] > v[i - 1] + CONFIG["inversion_tol_c"])
         # the crossing lies between sensor i (above 0) and i+1 (at or below 0)
         z = d[i] + (d[i + 1] - d[i]) * (v[i] - zero_c) / (v[i] - v[i + 1])
         # bracket_cm: spacing of the two sensors around the crossing = interpolation
         # uncertainty (the true profile is not linear between sensors)
         out.append(dict(year=yr, alt_cm=z, censored=False, n_sensors=len(v),
                         deepest_cm=d[-1], bracket_cm=d[i + 1] - d[i],
-                        nonmonotonic=bool(above[i + 1:].any()), no_refreeze=no_refreeze(yr, d[i])))
+                        nonmonotonic=bool(above[i + 1:].any()), no_refreeze=no_refreeze(yr, d[i]),
+                        inversion=inversion))
     return pd.DataFrame(out)
 
 
@@ -463,6 +507,8 @@ def records_from_profiles(temps: pd.DataFrame, sites: pd.DataFrame, method: str,
                          "nonmonotonic_profile")
     a["flag"] = add_flag(a["flag"], a.pop("no_refreeze").fillna(False).astype(bool),
                          "no_refreeze")
+    a["flag"] = add_flag(a["flag"], a.pop("inversion").fillna(False).astype(bool),
+                         "profile_inversion")
     return a.drop(columns=["deepest_cm"])
 
 
