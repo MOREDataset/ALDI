@@ -31,7 +31,6 @@ year_start_month to 1 to get calendar years, as in the earlier script.
 import glob
 import math
 import os
-import time
 
 import numpy as np
 import pandas as pd
@@ -104,7 +103,8 @@ ERA5_BANDS = [
     "MAAT", "T_JJA_mean", "T_summer_mean", "T_summer_max", "T_thaw_mean", "T_winter_mean",
     "T_annual_range", "TDD", "FDD", "heat_wave_days",
     "P_annual", "P_summer", "rain_summer", "snowfall_winter",
-    "SWE_max", "snow_depth_max", "snow_depth_winter", "snow_off_doy", "snow_off_doy_last",
+    "SWE_max", "snow_depth_max", "snow_depth_winter", "snow_off_doy", "snow_off_after_window",
+    "snow_off_doy_last",
     "ROS_days", "soil_moisture", "soil_moisture_summer",
     "soil_T", "soil_T_winter_mean", "soil_T_winter_min",
     "albedo_annual", "SW_down_summer",
@@ -203,12 +203,27 @@ def era5_image(year, cfg=CONFIG):
     def doy(img):
         return ee.Image.constant(ee.Number(img.date().getRelative("day", "year")).add(1)).toFloat()
 
-    # SDO: first day of the window with snow depth below the threshold (manuscript definition)
-    snow_off = melt.map(lambda i: doy(i).updateMask(
+    # Land cells of ERA5-Land (sea cells are masked in every band). A land cell that is
+    # masked in one band below has a reason (no snow-off in the window, ...) and must not
+    # be filled from its neighbours like a sea cell (see _sample_grid).
+    land = yr.select(t).mean().mask().gt(0)
+    (y0, m0), (y1, m1) = _window_ymd(year, cfg["snow_off_months"])
+    first_doy = (pd.Timestamp(y0, m0, 1) - pd.Timestamp(y0, 1, 1)).days + 1
+    after_doy = (pd.Timestamp(y1, m1, 1) - pd.Timestamp(y0, 1, 1)).days + 1
+
+    # SDO: first day of the window with snow depth below the threshold (manuscript
+    # definition). Snow all through the window (late melt in the high Arctic): the day
+    # after the window, flagged by snow_off_after_window = 1 (a lower bound, not a gap,
+    # so these years are not lost).
+    off = melt.map(lambda i: doy(i).updateMask(
         i.select("snow_depth").lt(cfg["snow_off_depth_m"]))).min()
-    # extra: the day after the last snow day of the window (ignores short melt spells)
+    snow_off = off.unmask(after_doy).updateMask(land)
+    snow_off_late = off.mask().eq(0).updateMask(land)
+    # extra: the day after the last snow day of the window (ignores short melt spells);
+    # no snow day in the window: its first day
     snow_last = melt.map(lambda i: doy(i).updateMask(
-        i.select("snow_depth").gte(cfg["snow_off_depth_m"]))).max().add(1)
+        i.select("snow_depth").gte(cfg["snow_off_depth_m"]))).max().add(1) \
+        .unmask(first_doy).updateMask(land)
 
     def ros_day(i):
         return (i.select("snow_depth").gt(cfg["ros_snow_depth_m"])
@@ -243,6 +258,7 @@ def era5_image(year, cfg=CONFIG):
         snow.select("snow_depth").max().rename("snow_depth_max"),
         win.select("snow_depth").mean().rename("snow_depth_winter"),
         snow_off.rename("snow_off_doy"),
+        snow_off_late.rename("snow_off_after_window"),
         snow_last.rename("snow_off_doy_last"),
         win.map(ros_day).sum().rename("ROS_days"),
         yr.select("volumetric_soil_water_layer_1").mean().rename("soil_moisture"),
@@ -400,17 +416,25 @@ def static_image_set():
 # SAMPLING: images -> one table row per site
 # =============================================================================
 def _sample_grid(img, sites_fc, proj, flag_name):
-    """Value of the grid cell holding each site; a cell masked as sea or water is filled
-    with the mean of the land cells around it (3 x 3, then 5 x 5 cells). flag_name = 1
-    marks a filled value (coastal sites outside the ERA5-Land land mask)."""
+    """Value of the grid cell holding each site. A cell outside the land mask (sea or a
+    large lake: every band masked) takes the mean of the land cells around it: 3 x 3
+    cells, else 5 x 5, else 11 x 11 (about +-0.5 degree, the earlier 50 km fill).
+    flag_name = 0 for the site's own cell, 1, 2 or 3 for the fill used, so the filled
+    sites can be left out in a sensitivity run. A land cell masked in one band only
+    (e.g. no snow-off date) is not filled."""
     img = img.setDefaultProjection(proj)
     names = img.bandNames()
-    near1 = img.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=ee.Kernel.square(1),
-                                   skipMasked=False).rename(names)
-    near2 = img.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=ee.Kernel.square(2),
-                                   skipMasked=False).rename(names)
-    filled = img.unmask(near1, False).unmask(near2, False)
-    flag = img.select(0).mask().eq(0).rename(flag_name)
+    sea = img.select(0).mask().eq(0)
+
+    def near(r):
+        return img.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=ee.Kernel.square(r),
+                                      skipMasked=False).rename(names)
+
+    n1, n2, n5 = near(1), near(2), near(5)
+    fill = n1.unmask(n2, False).unmask(n5, False).updateMask(sea)
+    filled = img.unmask(fill, False)
+    flag = (ee.Image.constant(3).where(n2.select(0).mask().gt(0), 2)
+            .where(n1.select(0).mask().gt(0), 1).multiply(sea).rename(flag_name))
     return filled.addBands(flag).reduceRegions(collection=sites_fc, reducer=ee.Reducer.first(), crs=proj)
 
 
@@ -692,6 +716,30 @@ def permafrost_classes(sites, shapefile, max_snap_km=20.0):
     return out
 
 
+def region_clusters(sites, km=50.0):
+    """Region id per site: sites closer than km to another site of the region (single
+    linkage). Sites of one region share weather and often one ERA5-Land cell, so their
+    years are not independent; use region_id instead of site_id to cluster standard
+    errors in a robustness run."""
+    lat, lon = np.radians(sites["lat"].to_numpy(float)), np.radians(sites["lon"].to_numpy(float))
+    dlat = lat[:, None] - lat[None, :]
+    dlon = lon[:, None] - lon[None, :]
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat[:, None]) * np.cos(lat[None, :]) * np.sin(dlon / 2) ** 2
+    near = 2 * 6371.0088 * np.arcsin(np.sqrt(np.clip(a, 0, 1))) <= km
+    label = -np.ones(len(sites), int)
+    for i in range(len(sites)):
+        if label[i] >= 0:
+            continue
+        stack, label[i] = [i], i
+        while stack:
+            j = stack.pop()
+            for k in np.where(near[j] & (label < 0))[0]:
+                label[k] = i
+                stack.append(k)
+    first = {lab: n for n, lab in enumerate(dict.fromkeys(label))}
+    return pd.Series([f"R{first[l]:03d}" for l in label], index=sites["site_id"].to_numpy())
+
+
 def assemble_features(sites, drive_dir, coastline=None, ipa_shapefile=None, cfg=CONFIG,
                       out_csv=None):
     """Read all exports and return one row per site and year with every feature.
@@ -751,6 +799,12 @@ def assemble_features(sites, drive_dir, coastline=None, ipa_shapefile=None, cfg=
     else:
         print("WARNING: no static export found")
 
+    # groupings for clustered standard errors (robustness runs): the ERA5-Land cell
+    # (0.1 degree; sites of one cell get identical climate values) and 50 km regions
+    df["era5_cell"] = (np.round(df["lat"] * 10).astype(int).astype(str) + "_"
+                       + np.round(df["lon"] * 10).astype(int).astype(str))
+    df["region_id"] = df["site_id"].map(region_clusters(sites))
+
     # distance to coast and continentality
     s = sites.copy()
     try:
@@ -800,7 +854,11 @@ def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG):
     same names stay as they are; ALDI_causality.ipynb reads from that folder."""
     alt = pd.read_csv(alt_csv).rename(columns={"Year": "year"})
     alt = alt[alt["year"] >= cfg["first_year"]]
-    alt = alt[["site_id", "Location", "year", "ALT_cm", "source", "method"]].rename(columns={"ALT_cm": "Max"})
+    # obs_doy (survey day, probing sources) and flag (information flags such as
+    # burned_site or unusual_year_*) come with newer builds of the ALT file
+    extra = [c for c in ("obs_doy", "flag") if c in alt.columns]
+    alt = alt[["site_id", "Location", "year", "ALT_cm", "source", "method"] + extra].rename(
+        columns={"ALT_cm": "Max", "flag": "alt_flag"})
     res = pd.read_csv(aldi_results_csv)[["site_id", "class_classification", "class_confidence"]]
     data = alt.merge(features, on=["site_id", "year"], how="inner")
     n0 = data["site_id"].nunique()
@@ -843,7 +901,8 @@ FEATURES = [
     ("heat_wave_days", "JJA days with daily maximum air temperature > 20 C", "ERA5-Land daily", "days"),
     ("SWE_max", "Maximum daily snow water equivalent, Oct-Jun", "ERA5-Land daily", "m w.e."),
     ("snow_off_doy", "First day of Mar-Jun with snow depth < 2 mm", "ERA5-Land daily", "day of year"),
-    ("snow_off_doy_last", "Day after the last day of Mar-Jun with snow depth >= 2 mm (extra)", "ERA5-Land daily", "day of year"),
+    ("snow_off_after_window", "1 = snow depth stayed >= 2 mm all of Mar-Jun; snow_off_doy is then the day after the window (a lower bound)", "ERA5-Land daily", "0/1"),
+    ("snow_off_doy_last", "Day after the last day of Mar-Jun with snow depth >= 2 mm (extra); first day of the window when there was no snow", "ERA5-Land daily", "day of year"),
     ("P_summer", "Total JJA precipitation", "ERA5-Land daily", "mm"),
     ("P_annual", "Total precipitation over the ALT year", "ERA5-Land daily", "mm"),
     ("rain_summer", "JJA precipitation minus snowfall (extra)", "ERA5-Land daily", "mm"),
@@ -882,7 +941,9 @@ FEATURES = [
     ("wind_direction_winter", "Direction the Nov-Apr mean wind vector comes from (0 = north)", "ERA5-Land daily", "degrees"),
     ("u10_winter", "Nov-Apr mean eastward wind (direction as a component; use in regressions)", "ERA5-Land daily", "m/s"),
     ("v10_winter", "Nov-Apr mean northward wind", "ERA5-Land daily", "m/s"),
-    ("era5_filled", "1 if the site's ERA5-Land cell is sea and land cells around it were used", "ERA5-Land", "0/1"),
+    ("era5_cell", "ERA5-Land 0.1 degree cell of the site (sites of one cell get the same climate values)", "derived", "id"),
+    ("region_id", "Group of sites within 50 km of each other (single linkage), for clustering standard errors", "derived", "id"),
+    ("era5_filled", "0 = the site's own ERA5-Land cell; 1, 2, 3 = the cell is sea and the mean of the land cells in the 3 x 3, 5 x 5 or 11 x 11 cells around it is used", "ERA5-Land", "0-3"),
     ("lat", "Site latitude", "site table", "degrees"),
     ("lon", "Site longitude", "site table", "degrees"),
     ("elevation_m", "Mean elevation within 500 m", "Copernicus GLO-30 (2024_1)", "m"),
@@ -909,6 +970,9 @@ FEATURES = [
     ("clay_pct_0cm", "Clay at 0 cm", "OpenLandMap", "%"),
     ("sand_pct_0cm", "Sand at 0 cm", "OpenLandMap", "%"),
     ("silt_pct_0cm", "100 - sand - clay at 0 cm", "OpenLandMap", "%"),
+    ("Max", "ALT: site-mean end-of-season thaw depth (ALT_cm of the multi-source file; named Max for the notebook)", "multi-source ALT dataset", "cm"),
+    ("obs_doy", "Day of year of the probing survey, where the source gives a date (later surveys read deeper; usable as a control)", "multi-source ALT dataset", "day of year"),
+    ("alt_flag", "Information flags of the ALT value (burned_site, unusual_year_regional, unusual_year_isolated)", "multi-source ALT dataset", "text"),
     ("permafrostType", "Permafrost extent class of the site's polygon", "IPA map (Brown et al. 2002)", "class"),
     ("groundIceType", "Ground ice content class", "IPA map", "class"),
     ("landformType", "Lowland (thick overburden) or mountain (thin overburden)", "IPA map", "class"),
