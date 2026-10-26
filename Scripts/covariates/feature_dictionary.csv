@@ -1,0 +1,102 @@
+column,definition,source,units
+TDD,"Sum of daily mean air temperature above 0 C, May-Sep; corrected to the site elevation (CONFIG temperature_for_causal; TDD_grid = ERA5-Land cell, TDD_ds = corrected)",ERA5-Land daily + GLO-30,degree-days
+FDD,Sum of |daily mean air temperature| below 0 C over the ALT year (same choice as TDD; no winter correction by default),ERA5-Land daily + GLO-30,degree-days
+heat_wave_days,JJA days with daily maximum air temperature > 20 C (same choice as TDD),ERA5-Land daily + GLO-30,days
+heat_wave_days_p90,"JJA days with daily maximum air temperature above the site's own 90th percentile of 1991-2020 (extra; works in the high Arctic, where 20 C is rare)",ERA5-Land daily,days
+heat_wave_tmax_p90_C,The site threshold used by heat_wave_days_p90,ERA5-Land daily,C
+dz_era5_m,Site elevation (buffer mean) minus mean land elevation of its ERA5-Land cell; empty where the cell is sea,Copernicus GLO-30,m
+z_cell_era5,Mean land elevation of the site's ERA5-Land 0.1 degree cell (stands in for the model orography),Copernicus GLO-30,m
+temperature_corrected,1 = the temperature columns of this row are corrected to the site elevation,derived,0/1
+SWE_max,"Maximum daily snow water equivalent, Oct-Jun",ERA5-Land daily,m w.e.
+snow_off_doy,First day of Mar-Jun with snow depth < 2 mm,ERA5-Land daily,day of year
+snow_off_doy_era5land,snow_off_doy from ERA5-Land (always kept),ERA5-Land daily,day of year
+snow_off_doy_modis,Snow-off date at 500 m: the day that best splits Mar-Aug clear observations into snow before and no snow after (mean of the buffer pixels); from 2000,MOD10A1 + MYD10A1 C6.1,day of year
+snow_off_modis_censored,1 = no snow at the start of March or snow all through August (date is a bound),MOD10A1 + MYD10A1,0/1
+snow_n_clear,Clear MODIS observations in Mar-Aug,MOD10A1 + MYD10A1,count
+snow_off_doy_combined,"MODIS snow-off from 2000; before, ERA5-Land shifted by the site's median MODIS minus ERA5-Land difference",MODIS / ERA5-Land,day of year
+snow_off_after_window,1 = snow depth stayed >= 2 mm all of Mar-Jun; snow_off_doy is then the day after the window (a lower bound),ERA5-Land daily,0/1
+snow_off_doy_last,Day after the last day of Mar-Jun with snow depth >= 2 mm (extra); first day of the window when there was no snow,ERA5-Land daily,day of year
+P_summer,Total JJA precipitation,ERA5-Land daily,mm
+P_annual,Total precipitation over the ALT year,ERA5-Land daily,mm
+rain_summer,JJA precipitation minus snowfall (extra),ERA5-Land daily,mm
+snowfall_winter,Nov-Apr snowfall (extra),ERA5-Land daily,mm w.e.
+soil_moisture,Mean volumetric soil water 0-7 cm over the ALT year,ERA5-Land daily,m3/m3
+soil_moisture_summer,JJA mean volumetric soil water 0-7 cm (extra),ERA5-Land daily,m3/m3
+NDWI_annual_mean,Copy of NDWI_gao_summer (CONFIG ndwi_for_causal); name kept for the notebook,Landsat C2 SR,-
+NDWI_gao_summer,"JJA mean Gao NDWI (NIR-SWIR1)/(NIR+SWIR1), clear snow-free land pixels in the site buffer",Landsat 5/7/8/9 C2 SR,-
+NDWI_mcfeeters_summer,"JJA mean McFeeters NDWI (green-NIR)/(green+NIR), same pixels",Landsat 5/7/8/9 C2 SR,-
+NDWI_n_obs,Mean number of clear JJA Landsat observations per pixel,Landsat C2,count
+NDVI_summer,"JJA mean NDVI; Landsat 30 m by default (CONFIG ndvi_for_causal), else NDVI_summer_modis_avhrr",Landsat C2 SR / MODIS / AVHRR,-
+NDVI_landsat_summer,"JJA mean NDVI from clear snow-free land Landsat pixels in the site buffer, TM/ETM+ converted to OLI",Landsat 5/7/8/9 C2 SR,-
+NDVI_summer_modis_avhrr,"JJA mean NDVI; MODIS 250 m from 2000, AVHRR 5 km adjusted to MODIS before",MOD13Q1+MYD13Q1 / AVHRR CDR V5,-
+NDVI_max,"Maximum NDVI over the ALT year; MODIS from 2000, adjusted AVHRR before",MOD13Q1+MYD13Q1 / AVHRR CDR V5,-
+LAI_summer,"JJA mean LAI; MODIS from 2000, adjusted AVHRR before",MOD15A2H / AVHRR CDR LAI V5,m2/m2
+FIRMS_fire_days,"Days with a FIRMS detection (confidence >= 30) within 1 km, ALT year; from 2001",FIRMS (MODIS),days
+FIRMS_fire_days_prev5,Fire days in the 5 previous ALT years (extra),FIRMS,days
+fire_persistent_source,1 if detections in >= 5 different years (possible gas flare; check),FIRMS,0/1
+burned_frac,Share of the site buffer mapped as burned in the ALT year (extra),MCD64A1,0-1
+ROS_days,"Nov-Apr days with snow depth > 5 mm, precipitation > 1 mm and daily mean T > 0 C",ERA5-Land daily,days
+MAAT,Mean air temperature over the ALT year,ERA5-Land daily,C
+T_JJA_mean,JJA mean air temperature (T_summer_mean is the same),ERA5-Land daily,C
+T_summer_max,Highest daily maximum air temperature of JJA,ERA5-Land daily,C
+T_thaw_mean,May-Sep mean air temperature,ERA5-Land daily,C
+T_winter_mean,Nov-Apr mean air temperature,ERA5-Land daily,C
+T_annual_range,Warmest minus coldest monthly mean air temperature of the ALT year,ERA5-Land monthly,C
+snow_depth_winter,Nov-Apr mean snow depth,ERA5-Land daily,m
+snow_depth_max,"Maximum daily snow depth, Oct-Jun",ERA5-Land daily,m
+soil_T,Mean soil temperature 0-7 cm over the ALT year,ERA5-Land daily,C
+soil_T_winter_mean,Nov-Apr mean soil temperature 0-7 cm,ERA5-Land daily,C
+soil_T_winter_min,"Lowest daily minimum soil temperature 0-7 cm, Nov-Apr",ERA5-Land daily,C
+albedo_annual,Mean forecast albedo over the ALT year,ERA5-Land daily,0-1
+LST_JJA_mean,"JJA mean land surface temperature, mean of day and night, clear-sky 8-day composites, 1 km; from 2000 (extra)",MOD11A2 + MYD11A2 C6.1,C
+LST_thaw_index,"May-Sep mean of positive 8-day LST times the days of the season (surface thawing index, extra)",MOD11A2 + MYD11A2 C6.1,degree-days
+albedo_summer_modis,"JJA mean white-sky shortwave albedo, full inversions, from 2000 (extra)",MCD43A3,0-1
+SW_down_summer,JJA mean daily downward shortwave radiation (extra),ERA5-Land daily,MJ/m2/day
+wind_speed_winter_mean,"Nov-Apr mean of daily wind speed (from daily mean u, v)",ERA5-Land daily,m/s
+wind_speed_winter_max,Nov-Apr maximum daily wind speed,ERA5-Land daily,m/s
+wind_speed_winter_p90,Nov-Apr 90th percentile of daily wind speed,ERA5-Land daily,m/s
+wind_direction_winter,Direction the Nov-Apr mean wind vector comes from (0 = north),ERA5-Land daily,degrees
+u10_winter,Nov-Apr mean eastward wind (direction as a component; use in regressions),ERA5-Land daily,m/s
+v10_winter,Nov-Apr mean northward wind,ERA5-Land daily,m/s
+era5_cell,ERA5-Land 0.1 degree cell of the site (sites of one cell get the same climate values),derived,id
+region_id,"Group of sites within 50 km of each other (single linkage), for clustering standard errors",derived,id
+era5_filled,"0 = the site's own ERA5-Land cell; 1, 2, 3 = the cell is sea and the mean of the land cells in the 3 x 3, 5 x 5 or 11 x 11 cells around it is used",ERA5-Land,0-3
+lat,Site latitude,site table,degrees
+lon,Site longitude,site table,degrees
+elevation_m,Mean elevation in the site buffer (buffer_m),Copernicus GLO-30 (2024_1),m
+slope_deg,Mean slope in the site buffer,Copernicus GLO-30,degrees
+aspect_deg,Dominant aspect in the site buffer (mean slope-weighted direction),Copernicus GLO-30,degrees
+northness,Mean cos(aspect) x sin(slope) in the site buffer (regression-friendly aspect),Copernicus GLO-30,-1 to 1
+eastness,Mean sin(aspect) x sin(slope) in the site buffer,Copernicus GLO-30,-1 to 1
+tpi,Mean elevation in the site buffer minus mean elevation within 3 km,Copernicus GLO-30,m
+tri,Standard deviation of elevation within 1 km,Copernicus GLO-30,m
+twi,"Topographic wetness index ln(a / tan slope), mean in the buffer (high = water collects)",MERIT Hydro v1.0.1 (90 m),-
+hand_m,"Height above the nearest drainage, mean in the buffer (low = wet, poorly drained)",MERIT Hydro v1.0.1 (90 m),m
+insolation_ratio_thaw,"Clear-sky direct sun on the site's slope over May-Sep relative to flat ground (below 1 = less sun, e.g. north slopes)","derived from slope, aspect, latitude",-
+buffer_m,"Radius over which the 10 m-1 km values of the site are averaged: max(footprint_m, coord_uncert_m) within 15-1000 m",derived,m
+footprint_m,"Half the side of the probing grid (CALM grid size), else 15 m for a borehole or tube and 50 m for other probing",PANGAEA 972777 / method,m
+coord_uncert_m,"Half the rounding step of the site coordinates, north-south (e.g. 925 m for degrees and minutes, 5.6 km for 0.1 degree)",derived,m
+coarse_location,1 = coordinates rounded to more than 1 km; fine covariates may describe ground next to the site,derived,0/1
+mtpi_alos,Multi-scale topographic position index (extra),CSP ERGo ALOS mTPI,m
+landform_alos,Most common ALOS landform class in the site buffer (extra),CSP ERGo ALOS landforms,class
+dist_to_coast_km,Distance to the nearest sea coast,Natural Earth 1:10m coastline,km
+continentality_dist,"log(1 + dist_to_coast_km), as in the earlier script",derived,-
+conrad_continentality,"Conrad index 1.7 A / sin(lat + 10) - 14, A = site-mean T_annual_range (extra)",derived,-
+landcover_esa_2020,Most common class in the site buffer,ESA WorldCover v100 (2020),class
+landcover_igbp,Most common IGBP class in the site buffer (per-pixel mode of 2001-2024),MCD12Q1,class
+soil_texture_0cm,"Most common USDA texture class in the site buffer, 0 cm (1 clay ... 12 sand)",OpenLandMap,class
+soil_texture_30cm,Same at 30 cm,OpenLandMap,class
+soc_gkg_0cm,"Soil organic carbon at 0 cm, mean in the site buffer",OpenLandMap,g/kg
+soc_gkg_30cm,Soil organic carbon at 30 cm,OpenLandMap,g/kg
+soc_gkg_avg_0_30cm,Depth-weighted mean SOC 0-30 cm,OpenLandMap,g/kg
+bulk_density_0cm,Bulk density at 0 cm,OpenLandMap,kg/m3
+bulk_density_30cm,Bulk density at 30 cm,OpenLandMap,kg/m3
+clay_pct_0cm,Clay at 0 cm,OpenLandMap,%
+sand_pct_0cm,Sand at 0 cm,OpenLandMap,%
+silt_pct_0cm,100 - sand - clay at 0 cm,OpenLandMap,%
+Max,ALT: site-mean end-of-season thaw depth (ALT_cm of the multi-source file; named Max for the notebook),multi-source ALT dataset,cm
+obs_doy,"Day of year of the probing survey, where the source gives a date (later surveys read deeper; usable as a control)",multi-source ALT dataset,day of year
+alt_flag,"Information flags of the ALT value (burned_site, unusual_year_regional, unusual_year_isolated)",multi-source ALT dataset,text
+permafrostType,Permafrost extent class of the site's polygon,IPA map (Brown et al. 2002),class
+groundIceType,Ground ice content class,IPA map,class
+landformType,Lowland (thick overburden) or mountain (thin overburden),IPA map,class
