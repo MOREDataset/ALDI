@@ -163,11 +163,11 @@ CONFIG = {
     "copy_agree_cm": 1.0,
     "copy_min_r": 0.98,
     # Series of one source are never joined (the source lists them as different plots),
-    # except in these collections of many packages, where one station can be published
-    # twice (a station file and a network table). There, only rules (c) and (d) of
-    # assign_physical_sites join them: same position and close agreement on >= 5
-    # shared years.
-    "join_within_source": ("tsp_alaska",),
+    # except in these collections of many files, where one station can be published
+    # twice (a station file and a network table; a daily workbook and its NSIDC copy).
+    # There, only rules (c) and (d) of assign_physical_sites join them: same position
+    # and close agreement on >= 5 shared years.
+    "join_within_source": ("tsp_alaska", "uaf_sites"),
     # NEON re-surveys its sensors and writes a new position row each time, mostly with
     # the same depth. A sensor counts as moved (frost heave) when its depth changes by
     # more than this within the plot-year.
@@ -2048,6 +2048,24 @@ def read_ngee_barrow(raw) -> pd.DataFrame:
     return finish(g, "ngee_barrow")
 
 
+def _location_from_rows(rows: list[str]):
+    """(lat, lon) from the 'Location:' line of a UAF station file (the first rows, as
+    text): 'N 70o09.677' W148o27.918'', '148.4653 W; 70.161283 N' or 'W 149.58; N 68.07'.
+    Without a 'Location' line, row 3 is used. None when no position is found."""
+    loc = next((r for r in rows if "location" in r.lower()), rows[2] if len(rows) > 2 else "")
+    dm = re.findall(r"([NW])\s*(\d+)o(\d+(?:\.\d+)?)", loc)
+    if dm:
+        v = {h: int(d) + float(m) / 60 for h, d, m in dm}
+        if "N" in v and "W" in v:
+            return (v["N"], -v["W"])
+        return None
+    n = re.search(r"(\d+\.\d+)\s*o?\s*N|N\s*(\d+\.\d+)", loc)
+    w = re.search(r"-?(\d+\.\d+)\s*o?\s*W|W\s*(\d+\.\d+)", loc)
+    if n and w:
+        return (float(n.group(1) or n.group(2)), -float(w.group(1) or w.group(2)))
+    return None
+
+
 def uaf_station_sheet(x: pd.DataFrame):
     """
     One sheet of a UAF Permafrost Lab station file, read without a header: title lines,
@@ -2055,20 +2073,9 @@ def uaf_station_sheet(x: pd.DataFrame):
     then a header row with the sensor depths in m ('0.025 m', 'Temp_MRC_0.125') and daily
     rows. Returns ((lat, lon) or None, long table time/depth_cm/temp_c or None).
     """
-    pos = None
     # the position line: row 3 in the workbooks; the csv versions split it into cells
-    rows = [" ".join(str(c) for c in x.iloc[i] if pd.notna(c)) for i in range(min(8, len(x)))]
-    loc = next((r for r in rows if "location" in r.lower()), rows[2] if len(rows) > 2 else "")
-    dm = re.findall(r"([NW])\s*(\d+)o(\d+(?:\.\d+)?)", loc)
-    if dm:
-        v = {h: int(d) + float(m) / 60 for h, d, m in dm}
-        if "N" in v and "W" in v:
-            pos = (v["N"], -v["W"])
-    else:
-        n = re.search(r"(\d+\.\d+)\s*o?\s*N|N\s*(\d+\.\d+)", loc)
-        w = re.search(r"-?(\d+\.\d+)\s*o?\s*W|W\s*(\d+\.\d+)", loc)
-        if n and w:
-            pos = (float(n.group(1) or n.group(2)), -float(w.group(1) or w.group(2)))
+    pos = _location_from_rows([" ".join(str(c) for c in x.iloc[i] if pd.notna(c))
+                               for i in range(min(8, len(x)))])
     # header row: the first row with at least three depth labels
     lab = lambda c: re.fullmatch(r"(?:Temp_MRC_)?(-?\d+\.\d+)\s*m?", str(c).strip())
     hr = next((i for i in range(min(30, len(x))) if sum(bool(lab(c)) for c in x.iloc[i]) >= 3), None)
@@ -3261,11 +3268,25 @@ def _uaf_station_file(p: Path, position):
             _TYPO_LOGGED.add(key)
             log(f"    {p.name} (and files like it): header position {pos[0]:.4f}, {pos[1]:.4f} is "
                 f"{haversine_km(pos[0], pos[1], listed[1], listed[2]):.0f} km from the station "
-                f"lists ({listed[0]}): the lists are used")
-        return [("", long, listed)]
-    name = str(x.iat[1, 0]).strip() if x.shape[0] > 1 else p.stem
+                f"lists or the site's other files ({listed[0]}): that position is used")
+        # the file keeps its own station name, so it joins the station's other files
+        return [("", long, (f"UAF {_uaf_station_name(x, p)}", listed[1], listed[2], listed[3]))]
     cty = "USA" if pos[1] < -141 else ""
-    return [("", long, (f"UAF {name}", round(pos[0], 4), round(pos[1], 4), cty))]
+    return [("", long, (f"UAF {_uaf_station_name(x, p)}", round(pos[0], 4), round(pos[1], 4), cty))]
+
+
+def _uaf_station_name(x: pd.DataFrame, p: Path) -> str:
+    """The station name of a UAF station file: the first cell of the first rows that is
+    not a title, position or site-description line (usually row 2: 'West Dock'), else
+    the station code that starts the file name (SL4_07.xls -> SL4)."""
+    for i in range(min(4, len(x))):
+        v = x.iat[i, 0]
+        t = "" if pd.isna(v) else str(v).strip()
+        if t and t.lower() != "nan" and not re.search(
+                r"location|temperature|elevation|slope|aspect|date|depth", t, re.I):
+            return t
+    m = re.match(r"[A-Za-z]+\d*", p.stem)
+    return m.group(0).upper() if m else p.stem
 
 
 _TSP_LOCATORS = {}
@@ -3279,6 +3300,7 @@ def read_uaf_sites(raw) -> pd.DataFrame:
       - the file's own 'Location:' line (station files, workbook or csv);
       - the station code of the file name in the Arctic Data Center station lists
         (US_CHS_102_..._daily.csv; _tsp_locator), which name the borehole;
+      - the median 'Location:' position of the station files of the same site folder;
       - the site page ('Latitude' and 'Longitude' text), which gives one position for
         the site.
     Most of these stations are also in the Arctic Data Center packages (tsp_alaska); the
@@ -3306,12 +3328,42 @@ def read_uaf_sites(raw) -> pd.DataFrame:
         return (f"{API['uaf_sites'].get(code, code)} (UAF {code.upper()})", float(la.group(1)),
                 -abs(float(lo.group(1))), "USA")                # all four sites are in Alaska (W)
 
+    folder_pos = {}
+
+    def folder_position(p: Path):
+        """The median 'Location:' position of the station files in the file's folder (one
+        UAF site), when at least 3 give one."""
+        d = p.parent
+        if d not in folder_pos:
+            pts = []
+            for q in sorted(d.iterdir()):
+                try:
+                    if q.suffix.lower() in (".xls", ".xlsx"):
+                        g = pd.read_excel(q, header=None, nrows=8, sheet_name=0)
+                        rows = [" ".join(str(c) for c in r if pd.notna(c)) for r in g.itertuples(index=False)]
+                    elif q.suffix.lower() == ".csv":
+                        with open(q, encoding="utf-8-sig", errors="replace") as f:
+                            rows = [f.readline().replace(",", " ") for _ in range(8)]
+                    else:
+                        continue
+                except Exception:
+                    continue
+                if any("location" in r.lower() for r in rows):
+                    pos = _location_from_rows(rows)
+                    if pos is not None:
+                        pts.append(pos)
+            folder_pos[d] = None if len(pts) < 3 else (
+                f"{API['uaf_sites'].get(d.name, d.name)} (UAF {d.name.upper()})",
+                round(float(np.median([a for a, _ in pts])), 4),
+                round(float(np.median([b for _, b in pts])), 4), "USA")
+        return folder_pos[d]
+
     def position(p: Path, sheet: str = ""):
         for loc in locators:
             q = loc(p)
             if q is not None:
                 return q
-        return page_position(p)
+        return folder_position(p) or page_position(p)
 
     return _profiles_from_folder(raw, API_FOLDERS["uaf_sites"], "uaf_sites", position,
                                  special=lambda p: _uaf_station_file(p, position),
