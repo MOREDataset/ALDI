@@ -66,6 +66,11 @@ CONFIG = {
     "winter_months": (11, 4),      # Nov-Apr: ROS (manuscript), winter means, wind, soil T winter
     "snow_season_months": (10, 6), # Oct-Jun: SWE_max, snow_depth_max (whole snow season before the thaw)
     "snow_off_months": (3, 6),     # SDO searched in Mar-Jun (manuscript)
+    # windows in the autumn BEFORE the ALT year's thaw (Oct-Nov / Oct-Dec of Y-1); they
+    # do not wrap over the new year, so they are shifted back one year explicitly
+    "freezeup_months": (10, 11),   # soil water when the ground freezes (sets the latent heat
+                                   # the next thaw season has to supply)
+    "early_winter_months": (10, 12),  # early snow insulates most (Zhang 2005, Rev. Geophys.)
 
     # --- thresholds from the manuscript table ---------------------------------
     "heat_wave_tmax_c": 20.0,      # HWD: JJA days with Tmax > 20 C
@@ -108,6 +113,14 @@ CONFIG = {
                                              # "grid" values (both are always written)
     "heat_wave_percentile": 90,    # heat_wave_days_p90: JJA days above the site's own 90th
     "heat_wave_ref_years": (1991, 2020),     # percentile of daily max temperature, 1991-2020
+
+    # --- thaw up to the survey day (TDD_to_survey) ------------------------------------
+    # ALT is measured on one day (obs_doy); thaw after that day cannot change it, so the
+    # degree-days are summed from 1 Jan to the survey day. Where the source gives no date:
+    # the site's median survey day, else this default (31 Aug, the end of the TDD window of
+    # the ALDI v5 driver definition). The daily exports end on 30 Sep (end of the ALT year),
+    # so later surveys are summed to 30 Sep (survey_after_window = 1).
+    "default_survey_doy": 243,
 
     # --- MODIS snow-off date (500 m, 2000 onward) ----------------------------------
     "modis_snow_months": (3, 8),   # Mar-Aug: wide enough for July melt in the high Arctic
@@ -159,6 +172,8 @@ ERA5_BANDS = [
     "SWE_max", "snow_depth_max", "snow_depth_winter", "snow_off_doy", "snow_off_after_window",
     "snow_off_doy_last",
     "ROS_days", "soil_moisture", "soil_moisture_summer",
+    "soil_moisture_root_summer", "soil_moisture_freezeup",
+    "snow_depth_early_winter", "snow_thermal_resistance_winter",
     "soil_T", "soil_T_winter_mean", "soil_T_winter_min",
     "albedo_annual", "SW_down_summer",
     "wind_speed_winter_mean", "wind_speed_winter_max", "wind_speed_winter_p90",
@@ -175,6 +190,7 @@ STATIC_BANDS = [
     "soil_texture_0cm", "soil_texture_30cm", "soc_0", "soc_10", "soc_30",
     "bulk_density_0cm", "bulk_density_30cm", "clay_pct_0cm", "sand_pct_0cm",
     "z_cell_era5", "twi", "hand_m",
+    "treecover2000_pct", "forest_loss_year", "water_occurrence_buffer", "water_frac_1km",
 ]
 ALL_GROUPS = ("static", "era5", "t2m_daily", "modis", "snowmelt", "avhrr", "landsat", "fire")
 
@@ -327,15 +343,35 @@ def era5_image(year, cfg=CONFIG):
     """ERA5-Land daily aggregates (0.1 degree): climate, snow, soil, wind."""
     daily = ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR")
 
-    def sub(months):
-        s, e = _window(year, months)
+    def sub(months, year_offset=0):
+        s, e = _window(year + year_offset, months)
         return daily.filterDate(s, e)
 
     yr = sub(alt_year_months(cfg))
     thaw, jja = sub(cfg["thaw_months"]), sub(cfg["summer_months"])
     win, snow = sub(cfg["winter_months"]), sub(cfg["snow_season_months"])
     melt = sub(cfg["snow_off_months"])
+    freezeup = sub(cfg["freezeup_months"], -1)        # Oct-Nov of Y-1
+    early = sub(cfg["early_winter_months"], -1)       # Oct-Dec of Y-1
     t = "temperature_2m"
+
+    def soil_water_0_100(i):
+        # depth-weighted 0-100 cm volumetric water (layers 0-7, 7-28, 28-100 cm)
+        return (i.select("volumetric_soil_water_layer_1").multiply(7)
+                .add(i.select("volumetric_soil_water_layer_2").multiply(21))
+                .add(i.select("volumetric_soil_water_layer_3").multiply(72)).divide(100))
+
+    def soil_water_7_100(i):
+        return (i.select("volumetric_soil_water_layer_2").multiply(21)
+                .add(i.select("volumetric_soil_water_layer_3").multiply(72)).divide(93))
+
+    def snow_resistance(i):
+        # thermal resistance of the snowpack, depth / k_eff (m2 K / W); k_eff from snow
+        # density with Sturm et al. (1997, J. Glaciol. 43, 26-41), k = 0.138 - 1.01 rho
+        # + 3.233 rho^2 (rho in g/cm3), valid 0.156-0.6 g/cm3, so rho is clipped to that range
+        rho = i.select("snow_density").divide(1000).clamp(0.156, 0.6)
+        k = rho.multiply(rho).multiply(3.233).subtract(rho.multiply(1.01)).add(0.138)
+        return i.select("snow_depth").divide(k)
 
     def doy(img):
         return ee.Image.constant(ee.Number(img.date().getRelative("day", "year")).add(1)).toFloat()
@@ -400,6 +436,10 @@ def era5_image(year, cfg=CONFIG):
         win.map(ros_day).sum().rename("ROS_days"),
         yr.select("volumetric_soil_water_layer_1").mean().rename("soil_moisture"),
         jja.select("volumetric_soil_water_layer_1").mean().rename("soil_moisture_summer"),
+        jja.map(soil_water_7_100).mean().rename("soil_moisture_root_summer"),
+        freezeup.map(soil_water_0_100).mean().rename("soil_moisture_freezeup"),
+        early.select("snow_depth").mean().rename("snow_depth_early_winter"),
+        win.map(snow_resistance).mean().rename("snow_thermal_resistance_winter"),
         yr.select("soil_temperature_level_1").mean().subtract(K0).rename("soil_T"),
         win.select("soil_temperature_level_1").mean().subtract(K0).rename("soil_T_winter_mean"),
         win.select("soil_temperature_level_1_min").min().subtract(K0).rename("soil_T_winter_min"),
@@ -649,7 +689,15 @@ def static_image_set():
              .addBands(merit.select(["hnd"], ["hand_m"])))
 
     olm = "OpenLandMap/SOL/"
+    hansen = ee.Image("UMD/hansen/global_forest_change_2023_v1_11")
+    gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").unmask(0)
     return {
+        # canopy shades the ground and holds snow; a recent loss year marks clearing or fire
+        "forest": hansen.select(["treecover2000"], ["treecover2000_pct"]).addBands(
+            hansen.select("lossyear").selfMask().add(2000).rename("forest_loss_year")),
+        # ponds and lakes next to a site warm the ground (taliks, thermokarst)
+        "water": gsw.rename("water_occurrence_buffer"),
+        "water_1km": gsw.gte(50).rename("water_frac_1km"),
         "hydro": hydro,
         "terrain": dem_col.map(tile_terrain).mosaic(),
         "dem": dem_col.mosaic(),
@@ -795,7 +843,12 @@ def static_collection(sites_fc, cfg=CONFIG):
                  .set(red(imgs["alos_lf"], mode, b(90), 90))
                  .set(red(imgs["alos_mtpi"], mean, b(270), 270))
                  .set(red(imgs["texture"], mode, b(250), 250))
-                 .set(red(imgs["soil"], mean, b(250), 250)))
+                 .set(red(imgs["soil"], mean, b(250), 250))
+                 .set(red(imgs["forest"].select("treecover2000_pct"), mean, b(30), 30))
+                 .set(red(imgs["forest"].select("forest_loss_year"), ee.Reducer.max(),
+                          g.buffer(cfg["fire_radius_m"]), 30))
+                 .set(red(imgs["water"], mean, b(30), 30))
+                 .set(red(imgs["water_1km"], mean, g.buffer(1000), 30)))
 
     return sites_fc.map(per_site), ["site_id"] + STATIC_BANDS
 
@@ -974,7 +1027,31 @@ def _temperature_indices(tm, tx, dates, year, cfg=CONFIG):
     return out
 
 
-def temperature_from_daily(drive_dir, dz_m, cfg=CONFIG):
+def survey_days(alt_csv, sites, cfg=CONFIG):
+    """Survey day of year per (site_id, year) for TDD_to_survey, and where it came from.
+
+    obs_doy of the ALT file where the source gives it ("observed"), else the site's median
+    obs_doy ("site_median"), else CONFIG default_survey_doy ("default")."""
+    alt = pd.read_csv(alt_csv).rename(columns={"Year": "year"})
+    obs = (alt.dropna(subset=["obs_doy"]).set_index(["site_id", "year"])["obs_doy"]
+           if "obs_doy" in alt.columns else pd.Series(dtype=float))
+    site_med = obs.groupby(level=0).median() if len(obs) else pd.Series(dtype=float)
+    years = range(cfg["first_year"], cfg["last_year"] + 1)
+    rows = []
+    for sid in sites["site_id"]:
+        for y in years:
+            if (sid, y) in obs.index:
+                rows.append((sid, y, float(obs[(sid, y)]), "observed"))
+            elif sid in site_med.index:
+                rows.append((sid, y, float(site_med[sid]), "site_median"))
+            else:
+                rows.append((sid, y, float(cfg["default_survey_doy"]), "default"))
+    out = pd.DataFrame(rows, columns=["site_id", "year", "survey_doy_used", "survey_doy_source"])
+    assert out["survey_doy_used"].between(150, 320).all(), "survey day outside Jun-Nov"
+    return out
+
+
+def temperature_from_daily(drive_dir, dz_m, cfg=CONFIG, survey=None):
     """Grid and elevation-corrected ("downscaled") temperature indices per site and year,
     from the daily exports (group t2m_daily).
 
@@ -984,7 +1061,10 @@ def temperature_from_daily(drive_dir, dz_m, cfg=CONFIG):
     site's elevation, not by a constant. heat_wave_days_p90 counts the JJA days above the
     site's own percentile of daily maximum temperature (heat_wave_ref_years); a relative
     threshold does not depend on the elevation offset, and in the high Arctic the fixed
-    20 C threshold is reached on almost no days."""
+    20 C threshold is reached on almost no days.
+
+    survey (optional, from survey_days): adds TDD_to_survey_grid / _ds, the degree-days
+    from 1 Jan to the survey day, and survey_after_window (survey after 30 Sep)."""
     import re
     raw, got = _read_group(drive_dir, "t2m_daily")
     if not len(raw):
@@ -1009,6 +1089,19 @@ def temperature_from_daily(drive_dir, dz_m, cfg=CONFIG):
             part[v + "_grid"] = grid[v]
             part[v + "_ds"] = ds[v]
         part["temperature_corrected"] = (~np.isnan(dz)).astype(int)
+        if survey is not None:
+            sd = survey.set_index(["site_id", "year"])["survey_doy_used"]
+            doy_site = np.array([sd.get((s_, year), np.nan) for s_ in sid], float)
+            assert np.isfinite(doy_site).all(), "a site has no survey day"
+            jan1 = pd.Timestamp(year, 1, 1)
+            day_doy = (dates - jan1).days.to_numpy() + 1        # <= 0 for Oct-Dec of Y-1
+            use = (day_doy[None, :] >= 1) & (day_doy[None, :] <= doy_site[:, None])
+            with np.errstate(all="ignore"):
+                for lab, arr in (("grid", tm), ("ds", tm + corr)):
+                    tdd = np.nansum(np.where(use, np.clip(arr, 0, None), 0.0), axis=1)
+                    tdd[np.isnan(tm).all(axis=1)] = np.nan
+                    part[f"TDD_to_survey_{lab}"] = tdd
+            part["survey_after_window"] = (doy_site > day_doy.max()).astype(int)
         rows.append(part)
         jja = _in_window(dates, year, cfg["summer_months"])
         for i, s_ in enumerate(sid):
@@ -1155,9 +1248,10 @@ def region_clusters(sites, km=50.0):
 
 
 def assemble_features(sites, drive_dir, coastline=None, ipa_shapefile=None, cfg=CONFIG,
-                      out_csv=None):
+                      out_csv=None, alt_csv=None):
     """Read all exports and return one row per site and year with every feature.
-    out_csv (optional) also writes it, e.g. ALDI_causal_features_complete.csv."""
+    out_csv (optional) also writes it, e.g. ALDI_causal_features_complete.csv.
+    alt_csv (optional, alt_multisource_for_ALDI.csv) gives the survey days for TDD_to_survey."""
     years = list(range(cfg["first_year"], cfg["last_year"] + 1))
     grid = pd.MultiIndex.from_product([sites["site_id"], years], names=["site_id", "year"]).to_frame(index=False)
     site_cols = [c for c in ("site_id", "lat", "lon", "buffer_m", "footprint_m", "coord_uncert_m",
@@ -1246,7 +1340,28 @@ def assemble_features(sites, drive_dir, coastline=None, ipa_shapefile=None, cfg=
         print("WARNING: no static export found")
 
     # elevation correction of air temperature, from the daily exports
-    df = _add_downscaled_temperature(df, drive_dir, cfg)
+    survey = survey_days(alt_csv, sites, cfg) if alt_csv else None
+    if survey is not None:
+        df = df.merge(survey, on=["site_id", "year"], how="left")
+    else:
+        print("WARNING: no alt_csv given; TDD_to_survey not computed")
+    df = _add_downscaled_temperature(df, drive_dir, cfg, survey)
+
+    # Stefan-type thaw terms: ALT grows with the square root of the thaw index
+    for v in ("TDD", "TDD_to_survey"):
+        if v in df:
+            df["sqrt_" + v] = np.sqrt(df[v].clip(lower=0))
+    # snow insulation seen by the model: winter ground surface minus air temperature
+    if {"soil_T_winter_mean", "T_winter_mean"} <= set(df.columns):
+        df["snow_insulation_offset"] = df["soil_T_winter_mean"] - df["T_winter_mean"]
+    # last year's thaw and rain: ALT carries over (residual heat, ice content of the
+    # transient layer); previous ALT year of the same site, empty for the first year
+    df = df.sort_values(["site_id", "year"]).reset_index(drop=True)
+    for v in ("TDD", "TDD_to_survey", "P_summer"):
+        if v in df:
+            prev = df.groupby("site_id")[v].shift(1)
+            gap = df.groupby("site_id")["year"].diff() != 1
+            df[v + "_prev"] = prev.where(~gap)
 
     # groupings for clustered standard errors (robustness runs): the ERA5-Land cell
     # (0.1 degree; sites of one cell get identical climate values) and 50 km regions
@@ -1285,7 +1400,7 @@ def assemble_features(sites, drive_dir, coastline=None, ipa_shapefile=None, cfg=
     return df
 
 
-def _add_downscaled_temperature(df, drive_dir, cfg=CONFIG):
+def _add_downscaled_temperature(df, drive_dir, cfg=CONFIG, survey=None):
     """Adds <var>_grid (ERA5-Land cell, from the era5 exports), <var>_ds (corrected to the
     site's elevation) and heat_wave_days_p90, and fills <var> with the version chosen in
     CONFIG temperature_for_causal (grid values where no corrected value exists)."""
@@ -1297,7 +1412,7 @@ def _add_downscaled_temperature(df, drive_dir, cfg=CONFIG):
         filled = df.groupby("site_id")["era5_filled"].max()
         dz[filled.reindex(dz.index).fillna(0) > 0] = np.nan
     df["dz_era5_m"] = df["site_id"].map(dz)
-    temp = temperature_from_daily(drive_dir, dz, cfg)
+    temp = temperature_from_daily(drive_dir, dz, cfg, survey)
     if not len(temp):
         print("WARNING: no t2m_daily exports; temperature not downscaled")
         return df
@@ -1319,6 +1434,9 @@ def _add_downscaled_temperature(df, drive_dir, cfg=CONFIG):
             df[v + "_grid"] = df[v + "_daily_grid"]
             df[v] = df[v + "_ds"] if cfg["temperature_for_causal"] == "downscaled" else df[v + "_grid"]
     df = df.drop(columns=[v + "_daily_grid" for v in TEMP_VARS], errors="ignore")
+    if "TDD_to_survey_ds" in df:
+        df["TDD_to_survey"] = (df["TDD_to_survey_ds"] if cfg["temperature_for_causal"] == "downscaled"
+                               else df["TDD_to_survey_grid"])
     n_big = (dz.abs() > 100).sum()
     print(f"Temperature: {cfg['temperature_for_causal']} values used; {n_big} sites are more than "
           f"100 m above or below their ERA5-Land cell (about 0.65 C in summer)")
@@ -1332,7 +1450,8 @@ def _read_group_static(drive_dir):
     return pd.read_csv(files[-1]), files[-1]
 
 
-def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG):
+def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG,
+                    aldi_class_column=None):
     """Join ALT, features and ALDI classes into the files ALDI_causality.ipynb reads.
 
     The ALT column is named 'Max' so the notebook runs unchanged (outcome="Max"); here it
@@ -1340,7 +1459,11 @@ def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG):
     ALDI notebook does the same internally).
 
     Use a new out_dir (for example .../UND/Index/multisource/) so the v4 files with the
-    same names stay as they are; ALDI_causality.ipynb reads from that folder."""
+    same names stay as they are; ALDI_causality.ipynb reads from that folder.
+
+    aldi_results_csv can be the v4 notebook output (class_classification) or the ALDI v5.1
+    output (Scripts/aldi/run_aldi.py: class_site or class_pooled). With v5.1, the class
+    named by aldi_class_column is copied to class_classification so the notebook runs."""
     alt = pd.read_csv(alt_csv).rename(columns={"Year": "year"})
     alt = alt[alt["year"] >= cfg["first_year"]]
     # obs_doy (survey day, probing sources) and flag (information flags such as
@@ -1348,7 +1471,15 @@ def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG):
     extra = [c for c in ("obs_doy", "flag") if c in alt.columns]
     alt = alt[["site_id", "Location", "year", "ALT_cm", "source", "method"] + extra].rename(
         columns={"ALT_cm": "Max", "flag": "alt_flag"})
-    res = pd.read_csv(aldi_results_csv)[["site_id", "class_classification", "class_confidence"]]
+    res = pd.read_csv(aldi_results_csv)
+    if "class_classification" in res.columns:          # v4 notebook output
+        res = res[["site_id", "class_classification", "class_confidence"]]
+    else:                                               # ALDI v5.1 output
+        if aldi_class_column not in ("class_site", "class_pooled"):
+            raise ValueError("ALDI v5.1 results: give aldi_class_column='class_site' or 'class_pooled'")
+        res = res[["site_id", aldi_class_column, "region_id", "rate_pct_dec", "rate_pooled"]].rename(
+            columns={aldi_class_column: "class_classification", "region_id": "aldi_region_id"})
+        res["class_confidence"] = ""
     data = alt.merge(features, on=["site_id", "year"], how="inner")
     n0 = data["site_id"].nunique()
     data = data.merge(res, on="site_id", how="inner")
@@ -1368,8 +1499,8 @@ def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG):
     # Every subset the notebook reads is written, empty (header only) when no site falls in
     # it, so an older file with the same name is never picked up by mistake.
     write(data)
-    classes = ["rapid_thickening", "gradual_thickening", "no_trend", "gradual_thinning",
-               "rapid_thinning", "transitional"]
+    classes = ["rapid_thickening", "gradual_thickening", "no_trend", "stable", "gradual_thinning",
+               "rapid_thinning", "transitional", "indeterminate"]
     for cls in classes + sorted(set(data["class_classification"]) - set(classes)):
         write(data[data["class_classification"] == cls], f"_{cls}")
     zones = ["Continuous", "Discontinuous", "Sporadic", "Isolated", "Unknown"]
@@ -1387,7 +1518,17 @@ FEATURES = [
     # column, definition, source, units
     ("TDD", "Sum of daily mean air temperature above 0 C, May-Sep; corrected to the site elevation (CONFIG temperature_for_causal; TDD_grid = ERA5-Land cell, TDD_ds = corrected)", "ERA5-Land daily + GLO-30", "degree-days"),
     ("FDD", "Sum of |daily mean air temperature| below 0 C over the ALT year (same choice as TDD; no winter correction by default)", "ERA5-Land daily + GLO-30", "degree-days"),
-    ("heat_wave_days", "JJA days with daily maximum air temperature > 20 C (same choice as TDD)", "ERA5-Land daily + GLO-30", "days"),
+    ("TDD_to_survey", "Sum of daily mean air temperature above 0 C from 1 Jan to the survey day (survey_doy_used), elevation-corrected like TDD; thaw after the survey cannot change the measured ALT, so this matches the outcome better than May-Sep TDD (preferred thermal treatment)", "ERA5-Land daily + GLO-30", "degree-days"),
+    ("TDD_to_survey_grid", "TDD_to_survey of the ERA5-Land cell (no elevation correction)", "ERA5-Land daily", "degree-days"),
+    ("survey_doy_used", "Survey day used for TDD_to_survey", "ALT file / CONFIG", "day of year"),
+    ("survey_doy_source", "observed = the source's date; site_median = median survey day of the site; default = CONFIG default_survey_doy (31 Aug)", "derived", "text"),
+    ("survey_after_window", "1 = survey after 30 Sep; TDD_to_survey stops at 30 Sep (end of the ALT year)", "derived", "0/1"),
+    ("sqrt_TDD", "Square root of TDD (Stefan solution: ALT grows with the square root of the thaw index)", "derived", "degree-days^0.5"),
+    ("sqrt_TDD_to_survey", "Square root of TDD_to_survey", "derived", "degree-days^0.5"),
+    ("TDD_prev", "TDD of the previous ALT year of the site (empty for the first year); carry-over of heat and ground ice", "derived", "degree-days"),
+    ("TDD_to_survey_prev", "TDD_to_survey of the previous ALT year", "derived", "degree-days"),
+    ("P_summer_prev", "P_summer of the previous ALT year (wet late summer -> more ice to melt next year)", "derived", "mm"),
+    ("heat_wave_days", "JJA days with daily maximum air temperature > 20 C (same choice as TDD). Not recommended north of the treeline, where it is zero in most years; use heat_wave_days_p90", "ERA5-Land daily + GLO-30", "days"),
     ("heat_wave_days_p90", "JJA days with daily maximum air temperature above the site's own 90th percentile of 1991-2020 (extra; works in the high Arctic, where 20 C is rare)", "ERA5-Land daily", "days"),
     ("heat_wave_tmax_p90_C", "The site threshold used by heat_wave_days_p90", "ERA5-Land daily", "C"),
     ("dz_era5_m", "Site elevation (buffer mean) minus mean land elevation of its ERA5-Land cell; empty where the cell is sea", "Copernicus GLO-30", "m"),
@@ -1408,6 +1549,8 @@ FEATURES = [
     ("snowfall_winter", "Nov-Apr snowfall (extra)", "ERA5-Land daily", "mm w.e."),
     ("soil_moisture", "Mean volumetric soil water 0-7 cm over the ALT year", "ERA5-Land daily", "m3/m3"),
     ("soil_moisture_summer", "JJA mean volumetric soil water 0-7 cm (extra)", "ERA5-Land daily", "m3/m3"),
+    ("soil_moisture_root_summer", "JJA mean volumetric soil water 7-100 cm (layers 2-3, depth-weighted); the layer the thaw front moves through, unlike the 0-7 cm skin layer", "ERA5-Land daily", "m3/m3"),
+    ("soil_moisture_freezeup", "Oct-Nov (of the year before the thaw) mean volumetric soil water 0-100 cm, depth-weighted: the water that freezes and must be melted again (latent heat)", "ERA5-Land daily", "m3/m3"),
     ("NDWI_annual_mean", "Copy of NDWI_gao_summer (CONFIG ndwi_for_causal); name kept for the notebook", "Landsat C2 SR", "-"),
     ("NDWI_gao_summer", "JJA mean Gao NDWI (NIR-SWIR1)/(NIR+SWIR1), clear snow-free land pixels in the site buffer", "Landsat 5/7/8/9 C2 SR", "-"),
     ("NDWI_mcfeeters_summer", "JJA mean McFeeters NDWI (green-NIR)/(green+NIR), same pixels", "Landsat 5/7/8/9 C2 SR", "-"),
@@ -1430,10 +1573,13 @@ FEATURES = [
     ("T_annual_range", "Warmest minus coldest monthly mean air temperature of the ALT year", "ERA5-Land monthly", "C"),
     ("snow_depth_winter", "Nov-Apr mean snow depth", "ERA5-Land daily", "m"),
     ("snow_depth_max", "Maximum daily snow depth, Oct-Jun", "ERA5-Land daily", "m"),
+    ("snow_depth_early_winter", "Oct-Dec (before the thaw year) mean snow depth; early snow insulates the ground most", "ERA5-Land daily", "m"),
+    ("snow_thermal_resistance_winter", "Nov-Apr mean of snow depth / snow thermal conductivity, conductivity from ERA5-Land snow density (Sturm et al. 1997); combines depth and density in one insulation term", "ERA5-Land daily", "m2 K/W"),
+    ("snow_insulation_offset", "soil_T_winter_mean minus T_winter_mean: how much warmer the model ground surface is than the air in winter (snow insulation as ERA5-Land sees it)", "ERA5-Land daily", "C"),
     ("soil_T", "Mean soil temperature 0-7 cm over the ALT year", "ERA5-Land daily", "C"),
     ("soil_T_winter_mean", "Nov-Apr mean soil temperature 0-7 cm", "ERA5-Land daily", "C"),
     ("soil_T_winter_min", "Lowest daily minimum soil temperature 0-7 cm, Nov-Apr", "ERA5-Land daily", "C"),
-    ("albedo_annual", "Mean forecast albedo over the ALT year", "ERA5-Land daily", "0-1"),
+    ("albedo_annual", "Mean forecast albedo over the ALT year. Not recommended: ERA5-Land albedo is set by the model's snow cover and fixed vegetation tables, so it repeats the snow variables; use albedo_summer_modis for the surface", "ERA5-Land daily", "0-1"),
     ("LST_JJA_mean", "JJA mean land surface temperature, mean of day and night, clear-sky 8-day composites, 1 km; from 2000 (extra)", "MOD11A2 + MYD11A2 C6.1", "C"),
     ("LST_thaw_index", "May-Sep mean of positive 8-day LST times the days of the season (surface thawing index, extra)", "MOD11A2 + MYD11A2 C6.1", "degree-days"),
     ("albedo_summer_modis", "JJA mean white-sky shortwave albedo, full inversions, from 2000 (extra)", "MCD43A3", "0-1"),
@@ -1441,7 +1587,7 @@ FEATURES = [
     ("wind_speed_winter_mean", "Nov-Apr mean of daily wind speed (from daily mean u, v)", "ERA5-Land daily", "m/s"),
     ("wind_speed_winter_max", "Nov-Apr maximum daily wind speed", "ERA5-Land daily", "m/s"),
     ("wind_speed_winter_p90", "Nov-Apr 90th percentile of daily wind speed", "ERA5-Land daily", "m/s"),
-    ("wind_direction_winter", "Direction the Nov-Apr mean wind vector comes from (0 = north)", "ERA5-Land daily", "degrees"),
+    ("wind_direction_winter", "Direction the Nov-Apr mean wind vector comes from (0 = north). For description only: an angle cannot enter a linear model (359 and 1 degrees are neighbours); use u10_winter and v10_winter", "ERA5-Land daily", "degrees"),
     ("u10_winter", "Nov-Apr mean eastward wind (direction as a component; use in regressions)", "ERA5-Land daily", "m/s"),
     ("v10_winter", "Nov-Apr mean northward wind", "ERA5-Land daily", "m/s"),
     ("era5_cell", "ERA5-Land 0.1 degree cell of the site (sites of one cell get the same climate values)", "derived", "id"),
@@ -1458,6 +1604,10 @@ FEATURES = [
     ("tri", "Standard deviation of elevation within 1 km", "Copernicus GLO-30", "m"),
     ("twi", "Topographic wetness index ln(a / tan slope), mean in the buffer (high = water collects)", "MERIT Hydro v1.0.1 (90 m)", "-"),
     ("hand_m", "Height above the nearest drainage, mean in the buffer (low = wet, poorly drained)", "MERIT Hydro v1.0.1 (90 m)", "m"),
+    ("treecover2000_pct", "Tree canopy cover in 2000, mean in the site buffer (canopy shades the ground and holds snow)", "Hansen GFC v1.11 (30 m)", "%"),
+    ("forest_loss_year", "Most recent year of tree-cover loss within 1 km (fire, clearing); empty when none", "Hansen GFC v1.11 (30 m)", "year"),
+    ("water_occurrence_buffer", "Mean surface-water occurrence 1984-2021 in the site buffer (a value above 0 means ponding at the site)", "JRC Global Surface Water v1.4 (30 m)", "%"),
+    ("water_frac_1km", "Share of the area within 1 km that is water in at least half of the observations (ponds and lakes warm the ground nearby)", "JRC Global Surface Water v1.4 (30 m)", "0-1"),
     ("insolation_ratio_thaw", "Clear-sky direct sun on the site's slope over May-Sep relative to flat ground (below 1 = less sun, e.g. north slopes)", "derived from slope, aspect, latitude", "-"),
     ("buffer_m", "Radius over which the 10 m-1 km values of the site are averaged: max(footprint_m, coord_uncert_m) within 15-1000 m", "derived", "m"),
     ("footprint_m", "Half the side of the probing grid (CALM grid size), else 15 m for a borehole or tube and 50 m for other probing", "PANGAEA 972777 / method", "m"),
@@ -1466,7 +1616,7 @@ FEATURES = [
     ("mtpi_alos", "Multi-scale topographic position index (extra)", "CSP ERGo ALOS mTPI", "m"),
     ("landform_alos", "Most common ALOS landform class in the site buffer (extra)", "CSP ERGo ALOS landforms", "class"),
     ("dist_to_coast_km", "Distance to the nearest sea coast", "Natural Earth 1:10m coastline", "km"),
-    ("continentality_dist", "log(1 + dist_to_coast_km), as in the earlier script", "derived", "-"),
+    ("continentality_dist", "log(1 + dist_to_coast_km), as in the earlier script. Static: absorbed by site fixed effects (keep only for between-site summaries)", "derived", "-"),
     ("conrad_continentality", "Conrad index 1.7 A / sin(lat + 10) - 14, A = site-mean T_annual_range (extra)", "derived", "-"),
     ("landcover_esa_2020", "Most common class in the site buffer", "ESA WorldCover v100 (2020)", "class"),
     ("landcover_igbp", "Most common IGBP class in the site buffer (per-pixel mode of 2001-2024)", "MCD12Q1", "class"),

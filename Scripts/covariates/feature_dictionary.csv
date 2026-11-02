@@ -1,7 +1,17 @@
 column,definition,source,units
 TDD,"Sum of daily mean air temperature above 0 C, May-Sep; corrected to the site elevation (CONFIG temperature_for_causal; TDD_grid = ERA5-Land cell, TDD_ds = corrected)",ERA5-Land daily + GLO-30,degree-days
 FDD,Sum of |daily mean air temperature| below 0 C over the ALT year (same choice as TDD; no winter correction by default),ERA5-Land daily + GLO-30,degree-days
-heat_wave_days,JJA days with daily maximum air temperature > 20 C (same choice as TDD),ERA5-Land daily + GLO-30,days
+TDD_to_survey,"Sum of daily mean air temperature above 0 C from 1 Jan to the survey day (survey_doy_used), elevation-corrected like TDD; thaw after the survey cannot change the measured ALT, so this matches the outcome better than May-Sep TDD (preferred thermal treatment)",ERA5-Land daily + GLO-30,degree-days
+TDD_to_survey_grid,TDD_to_survey of the ERA5-Land cell (no elevation correction),ERA5-Land daily,degree-days
+survey_doy_used,Survey day used for TDD_to_survey,ALT file / CONFIG,day of year
+survey_doy_source,observed = the source's date; site_median = median survey day of the site; default = CONFIG default_survey_doy (31 Aug),derived,text
+survey_after_window,1 = survey after 30 Sep; TDD_to_survey stops at 30 Sep (end of the ALT year),derived,0/1
+sqrt_TDD,Square root of TDD (Stefan solution: ALT grows with the square root of the thaw index),derived,degree-days^0.5
+sqrt_TDD_to_survey,Square root of TDD_to_survey,derived,degree-days^0.5
+TDD_prev,TDD of the previous ALT year of the site (empty for the first year); carry-over of heat and ground ice,derived,degree-days
+TDD_to_survey_prev,TDD_to_survey of the previous ALT year,derived,degree-days
+P_summer_prev,P_summer of the previous ALT year (wet late summer -> more ice to melt next year),derived,mm
+heat_wave_days,"JJA days with daily maximum air temperature > 20 C (same choice as TDD). Not recommended north of the treeline, where it is zero in most years; use heat_wave_days_p90",ERA5-Land daily + GLO-30,days
 heat_wave_days_p90,"JJA days with daily maximum air temperature above the site's own 90th percentile of 1991-2020 (extra; works in the high Arctic, where 20 C is rare)",ERA5-Land daily,days
 heat_wave_tmax_p90_C,The site threshold used by heat_wave_days_p90,ERA5-Land daily,C
 dz_era5_m,Site elevation (buffer mean) minus mean land elevation of its ERA5-Land cell; empty where the cell is sea,Copernicus GLO-30,m
@@ -22,6 +32,8 @@ rain_summer,JJA precipitation minus snowfall (extra),ERA5-Land daily,mm
 snowfall_winter,Nov-Apr snowfall (extra),ERA5-Land daily,mm w.e.
 soil_moisture,Mean volumetric soil water 0-7 cm over the ALT year,ERA5-Land daily,m3/m3
 soil_moisture_summer,JJA mean volumetric soil water 0-7 cm (extra),ERA5-Land daily,m3/m3
+soil_moisture_root_summer,"JJA mean volumetric soil water 7-100 cm (layers 2-3, depth-weighted); the layer the thaw front moves through, unlike the 0-7 cm skin layer",ERA5-Land daily,m3/m3
+soil_moisture_freezeup,"Oct-Nov (of the year before the thaw) mean volumetric soil water 0-100 cm, depth-weighted: the water that freezes and must be melted again (latent heat)",ERA5-Land daily,m3/m3
 NDWI_annual_mean,Copy of NDWI_gao_summer (CONFIG ndwi_for_causal); name kept for the notebook,Landsat C2 SR,-
 NDWI_gao_summer,"JJA mean Gao NDWI (NIR-SWIR1)/(NIR+SWIR1), clear snow-free land pixels in the site buffer",Landsat 5/7/8/9 C2 SR,-
 NDWI_mcfeeters_summer,"JJA mean McFeeters NDWI (green-NIR)/(green+NIR), same pixels",Landsat 5/7/8/9 C2 SR,-
@@ -44,10 +56,13 @@ T_winter_mean,Nov-Apr mean air temperature,ERA5-Land daily,C
 T_annual_range,Warmest minus coldest monthly mean air temperature of the ALT year,ERA5-Land monthly,C
 snow_depth_winter,Nov-Apr mean snow depth,ERA5-Land daily,m
 snow_depth_max,"Maximum daily snow depth, Oct-Jun",ERA5-Land daily,m
+snow_depth_early_winter,Oct-Dec (before the thaw year) mean snow depth; early snow insulates the ground most,ERA5-Land daily,m
+snow_thermal_resistance_winter,"Nov-Apr mean of snow depth / snow thermal conductivity, conductivity from ERA5-Land snow density (Sturm et al. 1997); combines depth and density in one insulation term",ERA5-Land daily,m2 K/W
+snow_insulation_offset,soil_T_winter_mean minus T_winter_mean: how much warmer the model ground surface is than the air in winter (snow insulation as ERA5-Land sees it),ERA5-Land daily,C
 soil_T,Mean soil temperature 0-7 cm over the ALT year,ERA5-Land daily,C
 soil_T_winter_mean,Nov-Apr mean soil temperature 0-7 cm,ERA5-Land daily,C
 soil_T_winter_min,"Lowest daily minimum soil temperature 0-7 cm, Nov-Apr",ERA5-Land daily,C
-albedo_annual,Mean forecast albedo over the ALT year,ERA5-Land daily,0-1
+albedo_annual,"Mean forecast albedo over the ALT year. Not recommended: ERA5-Land albedo is set by the model's snow cover and fixed vegetation tables, so it repeats the snow variables; use albedo_summer_modis for the surface",ERA5-Land daily,0-1
 LST_JJA_mean,"JJA mean land surface temperature, mean of day and night, clear-sky 8-day composites, 1 km; from 2000 (extra)",MOD11A2 + MYD11A2 C6.1,C
 LST_thaw_index,"May-Sep mean of positive 8-day LST times the days of the season (surface thawing index, extra)",MOD11A2 + MYD11A2 C6.1,degree-days
 albedo_summer_modis,"JJA mean white-sky shortwave albedo, full inversions, from 2000 (extra)",MCD43A3,0-1
@@ -55,7 +70,7 @@ SW_down_summer,JJA mean daily downward shortwave radiation (extra),ERA5-Land dai
 wind_speed_winter_mean,"Nov-Apr mean of daily wind speed (from daily mean u, v)",ERA5-Land daily,m/s
 wind_speed_winter_max,Nov-Apr maximum daily wind speed,ERA5-Land daily,m/s
 wind_speed_winter_p90,Nov-Apr 90th percentile of daily wind speed,ERA5-Land daily,m/s
-wind_direction_winter,Direction the Nov-Apr mean wind vector comes from (0 = north),ERA5-Land daily,degrees
+wind_direction_winter,Direction the Nov-Apr mean wind vector comes from (0 = north). For description only: an angle cannot enter a linear model (359 and 1 degrees are neighbours); use u10_winter and v10_winter,ERA5-Land daily,degrees
 u10_winter,Nov-Apr mean eastward wind (direction as a component; use in regressions),ERA5-Land daily,m/s
 v10_winter,Nov-Apr mean northward wind,ERA5-Land daily,m/s
 era5_cell,ERA5-Land 0.1 degree cell of the site (sites of one cell get the same climate values),derived,id
@@ -72,6 +87,10 @@ tpi,Mean elevation in the site buffer minus mean elevation within 3 km,Copernicu
 tri,Standard deviation of elevation within 1 km,Copernicus GLO-30,m
 twi,"Topographic wetness index ln(a / tan slope), mean in the buffer (high = water collects)",MERIT Hydro v1.0.1 (90 m),-
 hand_m,"Height above the nearest drainage, mean in the buffer (low = wet, poorly drained)",MERIT Hydro v1.0.1 (90 m),m
+treecover2000_pct,"Tree canopy cover in 2000, mean in the site buffer (canopy shades the ground and holds snow)",Hansen GFC v1.11 (30 m),%
+forest_loss_year,"Most recent year of tree-cover loss within 1 km (fire, clearing); empty when none",Hansen GFC v1.11 (30 m),year
+water_occurrence_buffer,Mean surface-water occurrence 1984-2021 in the site buffer (a value above 0 means ponding at the site),JRC Global Surface Water v1.4 (30 m),%
+water_frac_1km,Share of the area within 1 km that is water in at least half of the observations (ponds and lakes warm the ground nearby),JRC Global Surface Water v1.4 (30 m),0-1
 insolation_ratio_thaw,"Clear-sky direct sun on the site's slope over May-Sep relative to flat ground (below 1 = less sun, e.g. north slopes)","derived from slope, aspect, latitude",-
 buffer_m,"Radius over which the 10 m-1 km values of the site are averaged: max(footprint_m, coord_uncert_m) within 15-1000 m",derived,m
 footprint_m,"Half the side of the probing grid (CALM grid size), else 15 m for a borehole or tube and 50 m for other probing",PANGAEA 972777 / method,m
@@ -80,7 +99,7 @@ coarse_location,1 = coordinates rounded to more than 1 km; fine covariates may d
 mtpi_alos,Multi-scale topographic position index (extra),CSP ERGo ALOS mTPI,m
 landform_alos,Most common ALOS landform class in the site buffer (extra),CSP ERGo ALOS landforms,class
 dist_to_coast_km,Distance to the nearest sea coast,Natural Earth 1:10m coastline,km
-continentality_dist,"log(1 + dist_to_coast_km), as in the earlier script",derived,-
+continentality_dist,"log(1 + dist_to_coast_km), as in the earlier script. Static: absorbed by site fixed effects (keep only for between-site summaries)",derived,-
 conrad_continentality,"Conrad index 1.7 A / sin(lat + 10) - 14, A = site-mean T_annual_range (extra)",derived,-
 landcover_esa_2020,Most common class in the site buffer,ESA WorldCover v100 (2020),class
 landcover_igbp,Most common IGBP class in the site buffer (per-pixel mode of 2001-2024),MCD12Q1,class

@@ -5,6 +5,7 @@ Active layer thickness (ALT) is a key indicator of permafrost response to enviro
 ## Scripts
 
 - `Scripts/ALDI_Calculation_final.ipynb`: ALDI construction (trend tests, reversal detection, bootstrap, classes).
+- `Scripts/aldi/`: ALDI v5.1 (censored-aware Theil-Sen, %/decade rates with fixed margins, stable vs indeterminate, broken-stick reversal test, regional partial pooling and network trend; config, simulation check). See `Scripts/aldi/README.md`.
 - `Scripts/ALDI_causality.ipynb`: causal inference (site fixed effects and first differences) by ALDI class.
 - `Scripts/IndexVX_FiguresScriptV2.m`: figures (MATLAB).
 - `Scripts/multisource/`: builds the multi-source ALT input (CALM plus other networks, thaw tubes, boreholes and soil-temperature stations). See `Scripts/multisource/README.md`.

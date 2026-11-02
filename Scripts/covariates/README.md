@@ -146,6 +146,28 @@ confounders, mediators and the extra variables, with its definition, source and 
 
 ## Changes from the earlier script
 
+November 2026 (feature review):
+
+- **New, physically motivated features.**
+  - `TDD_to_survey`: degree-days from 1 Jan to the survey day. Thaw after the survey cannot change the measured ALT. The survey day comes from `obs_doy`, else the site's median survey day, else 31 Aug. Pass `alt_csv=` to `assemble_features`.
+  - `sqrt_TDD` and `sqrt_TDD_to_survey`: the Stefan form.
+  - `soil_moisture_root_summer` (7-100 cm): the layer the thaw front moves through. The 0-7 cm skin layer mostly follows recent rain.
+  - `soil_moisture_freezeup` (Oct-Nov before the thaw, 0-100 cm): the water that freezes and must be melted again.
+  - `snow_depth_early_winter` (Oct-Dec): early snow insulates most.
+  - `snow_thermal_resistance_winter`: snow depth divided by a density-based conductivity (Sturm et al. 1997).
+  - `snow_insulation_offset`: winter soil minus air temperature.
+  - `TDD_prev`, `TDD_to_survey_prev` and `P_summer_prev`: carry-over from the previous year.
+  - Static: `treecover2000_pct` and `forest_loss_year` (Hansen GFC v1.11), `water_occurrence_buffer` and `water_frac_1km` (JRC Global Surface Water v1.4).
+- **Not recommended as model inputs** (the columns are still written so older runs reproduce):
+  - `wind_direction_winter`: an angle cannot enter a linear model. `ALDI_causality.ipynb` now uses `u10_winter` and `v10_winter` in its place.
+  - `albedo_annual`: ERA5-Land albedo follows the model's own snow cover, so it repeats the snow variables. Use `albedo_summer_modis` for the surface.
+  - `heat_wave_days` with the fixed 20 °C threshold: zero in most high-Arctic years. Use `heat_wave_days_p90`.
+  - `T_summer_mean`: a copy of `T_JJA_mean`. Use one of them.
+  - Static terrain, soil and coast variables (`continentality_dist`, `lat`, `elevation_m`...): absorbed by site fixed effects. Keep them for between-site summaries only.
+  - `soil_T` and the other ERA5-Land soil temperatures: a model's ground thermal state, close to the outcome itself. Leave them out of the controls. The notebook already treats `soil_T` as a mediator.
+- **`build_augmented` reads ALDI v5.1 results** (`Scripts/aldi/`). Use `aldi_class_column='class_site'` or `'class_pooled'`.
+- These Earth Engine additions are untested here (no Earth Engine account): ERA5-Land `snow_density` and soil water layers 2-3, Hansen v1.11 and JRC GSW 1.4. `quick_test(sites)` shows within a minute whether they return values. The pandas-side additions were checked on synthetic daily exports.
+
 October 2026 (finer resolution): per-site buffers from the measurement footprint and
 coordinate precision; elevation-corrected air temperature from daily ERA5-Land
 (`TDD`, `FDD`, `MAAT`, `T_*`, `heat_wave_days`; `*_grid` keep the cell values);
