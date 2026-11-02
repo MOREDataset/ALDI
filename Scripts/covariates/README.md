@@ -11,7 +11,7 @@ causal notebook reads. `GEE_causal_features_colab.ipynb` runs it in Colab.
 | Input | Where it comes from |
 |---|---|
 | `site_footprints.csv` (optional) | probing grid size of the CALM sites, from `build_site_footprints()`; in the project's `alt_multisource/` folder. Put it next to `alt_multisource_for_ALDI.csv`. Without it, the footprint comes from the measurement method only |
-| `alt_multisource_for_ALDI.csv` | the multi-source dataset (`Scripts/multisource/`); in Drive at `UND/Index/alt_multisource/`, where the ALDI notebook reads it |
+| `alt_multisource_for_ALDI.csv` | the ALT target (`Scripts/alt_target/build_alt_target.py`); in Drive at `UND/Index/alt_multisource/`, where the ALDI notebook reads it |
 | `aldi_multisource_results.csv` | `ALDI_Calculation_final.ipynb` (run with `min_year=1990`); in Drive at `UND/Index/` |
 | `permaice.shp` (+ .shx, .dbf, .prj) | IPA Circum-Arctic Map of Permafrost and Ground-Ice Conditions (Brown et al. 2002, NSIDC GGD318), the same file the MATLAB script used; put it in `UND/Index/ggd318_map_circumarctic/` |
 | An Earth Engine Cloud project | <https://code.earthengine.google.com/register> |

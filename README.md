@@ -8,5 +8,5 @@ Active layer thickness (ALT) is a key indicator of permafrost response to enviro
 - `Scripts/aldi/`: ALDI v5.1 (censored-aware Theil-Sen, %/decade rates with fixed margins, stable vs indeterminate, broken-stick reversal test, regional partial pooling and network trend; config, simulation check). See `Scripts/aldi/README.md`.
 - `Scripts/ALDI_causality.ipynb`: causal inference (site fixed effects and first differences) by ALDI class.
 - `Scripts/IndexVX_FiguresScriptV2.m`: figures (MATLAB).
-- `Scripts/multisource/`: builds the multi-source ALT input (CALM plus other networks, thaw tubes, boreholes and soil-temperature stations). See `Scripts/multisource/README.md`.
+- `Scripts/alt_target/`: one script that downloads every ALT source, reads it and builds the ALT target (CALM plus other networks, thaw tubes, boreholes and soil-temperature stations). See `Scripts/alt_target/README.md`.
 - `Scripts/covariates/`: Google Earth Engine script and Colab notebook that extract the climate, snow, soil, vegetation, fire, terrain and permafrost-map covariates for every site and year, and write the input files of `ALDI_causality.ipynb`. See `Scripts/covariates/README.md`.
