@@ -2059,11 +2059,20 @@ def _location_from_rows(rows: list[str]):
         if "N" in v and "W" in v:
             return (v["N"], -v["W"])
         return None
-    n = re.search(r"(\d+\.\d+)\s*o?\s*N|N\s*(\d+\.\d+)", loc)
-    w = re.search(r"-?(\d+\.\d+)\s*o?\s*W|W\s*(\d+\.\d+)", loc)
-    if n and w:
-        return (float(n.group(1) or n.group(2)), -float(w.group(1) or w.group(2)))
-    return None
+    # decimal degrees: the letter is either before every number ('N 64.86781  W 147.78',
+    # 'W 149.58; N 68.07', 'N 68.07  E -149.58') or after it ('149.50 W, 68.47 N'). The
+    # side is taken from the first number, so a number is never paired with the next
+    # number's letter ('N 64.87  W 147.78' must not give W 64.87).
+    body = loc.split(":", 1)[-1].strip()
+    if re.match(r"[NSEW]\s*-?\d", body):
+        pairs = [(h, float(v)) for h, v in re.findall(r"([NSEW])\s*(-?\d+(?:\.\d+)?)", body)]
+    else:
+        pairs = [(h, float(v)) for v, h in re.findall(r"(-?\d+(?:\.\d+)?)\s*o?\s*([NSEW])\b", body)]
+    lat = next((v if h == "N" else -abs(v) for h, v in pairs if h in "NS"), None)
+    lon = next((v if h == "E" else -abs(v) for h, v in pairs if h in "EW"), None)
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    return (lat, lon)
 
 
 def uaf_station_sheet(x: pd.DataFrame):
@@ -2844,7 +2853,8 @@ def _profiles_from_folder(raw, folder: str, source: str, position, method="boreh
     t["time"] = pd.to_datetime(t.time).dt.normalize()
     # several tables of one station (one per year) are one series: same name and position
     s = pd.DataFrame(sites)
-    s["series"] = s.groupby(["site_name", "lat", "lon"]).source_site_id.transform("first")
+    s["name_key"] = s.site_name.map(_name_key)      # 'inter boil' = 'interboil'
+    s["series"] = s.groupby(["name_key", "lat", "lon"]).source_site_id.transform("first")
     if series_id is not None:
         first = s.drop_duplicates("series")
         new, used = {}, set()
@@ -2856,7 +2866,8 @@ def _profiles_from_folder(raw, folder: str, source: str, position, method="boreh
             new[ser] = sid
         s["series"] = s.series.map(new)
     t["source_site_id"] = t.source_site_id.map(s.set_index("source_site_id").series)
-    s = s.drop_duplicates("series").drop(columns="source_site_id").rename(columns={"series": "source_site_id"})
+    s = (s.drop_duplicates("series").drop(columns=["source_site_id", "name_key"])
+          .rename(columns={"series": "source_site_id"}))
     t = t.groupby(["source_site_id", "time", "depth_cm"], as_index=False).temp_c.mean()
     return finish(records_from_profiles(t, s, method, monthly=method.endswith("monthly")), source)
 
@@ -3241,9 +3252,10 @@ def _uaf_station_file(p: Path, position):
     position)]; a reason (str) for a single-date log ('Data date:' and a 'Depth, m'
     column: one borehole log, which cannot give ALT); or None when the file has another
     layout. The position is the file's own 'Location:' line, else position(p) (the
-    station lists). When both exist and are more than CONFIG station_typo_km apart, the
-    station lists win: a file header can carry a typo (WD1_06.xls gives N 70.166, the
-    latitude of Deadhorse, for West Dock at 70.38 N).
+    station lists). A header more than CONFIG station_typo_km from the median header of
+    the same station's other files in the folder (or, without 3 such files, from the
+    station lists) has a typo, and that reference position is used: WD1_06.xls gives
+    N 70.166, the latitude of Deadhorse, for West Dock at 70.38 N.
     """
     if p.suffix.lower() not in (".xls", ".xlsx", ".csv"):
         return None
@@ -3262,17 +3274,64 @@ def _uaf_station_file(p: Path, position):
     listed = position(p)
     if pos is None:
         return [("", long, listed)]
-    if listed is not None and haversine_km(pos[0], pos[1], listed[1], listed[2]) > CONFIG["station_typo_km"]:
-        key = (round(pos[0], 4), round(pos[1], 4), listed[0])
+    name = _uaf_station_name(x, p)
+    cty = "USA" if pos[1] < -141 else ""
+    # reference: the median header of this station's files in the folder (3 or more),
+    # else the station lists
+    same = _station_headers(p.parent).get(_name_key(name))
+    ref = (f"its {same[2]} files in {p.parent.name}", same[0], same[1]) if same else (
+        (f"the station lists ({listed[0]})", listed[1], listed[2]) if listed else None)
+    if ref is not None and haversine_km(pos[0], pos[1], ref[1], ref[2]) > CONFIG["station_typo_km"]:
+        key = (round(pos[0], 4), round(pos[1], 4), ref[0])
         if key not in _TYPO_LOGGED:                   # once per header position and station
             _TYPO_LOGGED.add(key)
-            log(f"    {p.name} (and files like it): header position {pos[0]:.4f}, {pos[1]:.4f} is "
-                f"{haversine_km(pos[0], pos[1], listed[1], listed[2]):.0f} km from the station "
-                f"lists or the site's other files ({listed[0]}): that position is used")
+            log(f"    {p.name}: header position {pos[0]:.4f}, {pos[1]:.4f} is "
+                f"{haversine_km(pos[0], pos[1], ref[1], ref[2]):.0f} km from {ref[0]}; "
+                f"the file is placed at {ref[1]:.4f}, {ref[2]:.4f} instead of its header")
         # the file keeps its own station name, so it joins the station's other files
-        return [("", long, (f"UAF {_uaf_station_name(x, p)}", listed[1], listed[2], listed[3]))]
-    cty = "USA" if pos[1] < -141 else ""
-    return [("", long, (f"UAF {_uaf_station_name(x, p)}", round(pos[0], 4), round(pos[1], 4), cty))]
+        return [("", long, (f"UAF {name}", round(ref[1], 4), round(ref[2], 4), cty))]
+    return [("", long, (f"UAF {name}", round(pos[0], 4), round(pos[1], 4), cty))]
+
+
+def _name_key(name: str) -> str:
+    """A station name for matching: letters and digits only, lower case ('New inter boil'
+    and 'New interboil' are the same station)."""
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+_HEADERS = {}
+
+
+def _station_headers(folder: Path) -> dict:
+    """{name key: (median lat, median lon, number of files)} of the UAF station files in a
+    folder that give a 'Location:' line, for stations with at least 3 such files. Only
+    the first rows of each file are read."""
+    if folder in _HEADERS:
+        return _HEADERS[folder]
+    pts = {}
+    for q in sorted(folder.iterdir()):
+        try:
+            if q.suffix.lower() in (".xls", ".xlsx"):
+                g = pd.read_excel(q, header=None, nrows=8, sheet_name=0)
+            elif q.suffix.lower() == ".csv":
+                with open(q, encoding="utf-8-sig", errors="replace") as f:
+                    lines = [f.readline() for _ in range(8)]
+                rows = list(csv.reader(lines))
+                width = max((len(r) for r in rows), default=0)
+                g = pd.DataFrame([r + [None] * (width - len(r)) for r in rows])
+            else:
+                continue
+        except Exception:
+            continue
+        rows = [" ".join(str(c) for c in r if pd.notna(c)) for r in g.itertuples(index=False)]
+        if not any("location" in r.lower() for r in rows):
+            continue
+        pos = _location_from_rows(rows)
+        if pos is not None:
+            pts.setdefault(_name_key(_uaf_station_name(g, q)), []).append(pos)
+    _HEADERS[folder] = {k: (float(np.median([a for a, _ in v])), float(np.median([b for _, b in v])), len(v))
+                        for k, v in pts.items() if len(v) >= 3}
+    return _HEADERS[folder]
 
 
 def _uaf_station_name(x: pd.DataFrame, p: Path) -> str:
@@ -3300,7 +3359,6 @@ def read_uaf_sites(raw) -> pd.DataFrame:
       - the file's own 'Location:' line (station files, workbook or csv);
       - the station code of the file name in the Arctic Data Center station lists
         (US_CHS_102_..._daily.csv; _tsp_locator), which name the borehole;
-      - the median 'Location:' position of the station files of the same site folder;
       - the site page ('Latitude' and 'Longitude' text), which gives one position for
         the site.
     Most of these stations are also in the Arctic Data Center packages (tsp_alaska); the
@@ -3328,42 +3386,12 @@ def read_uaf_sites(raw) -> pd.DataFrame:
         return (f"{API['uaf_sites'].get(code, code)} (UAF {code.upper()})", float(la.group(1)),
                 -abs(float(lo.group(1))), "USA")                # all four sites are in Alaska (W)
 
-    folder_pos = {}
-
-    def folder_position(p: Path):
-        """The median 'Location:' position of the station files in the file's folder (one
-        UAF site), when at least 3 give one."""
-        d = p.parent
-        if d not in folder_pos:
-            pts = []
-            for q in sorted(d.iterdir()):
-                try:
-                    if q.suffix.lower() in (".xls", ".xlsx"):
-                        g = pd.read_excel(q, header=None, nrows=8, sheet_name=0)
-                        rows = [" ".join(str(c) for c in r if pd.notna(c)) for r in g.itertuples(index=False)]
-                    elif q.suffix.lower() == ".csv":
-                        with open(q, encoding="utf-8-sig", errors="replace") as f:
-                            rows = [f.readline().replace(",", " ") for _ in range(8)]
-                    else:
-                        continue
-                except Exception:
-                    continue
-                if any("location" in r.lower() for r in rows):
-                    pos = _location_from_rows(rows)
-                    if pos is not None:
-                        pts.append(pos)
-            folder_pos[d] = None if len(pts) < 3 else (
-                f"{API['uaf_sites'].get(d.name, d.name)} (UAF {d.name.upper()})",
-                round(float(np.median([a for a, _ in pts])), 4),
-                round(float(np.median([b for _, b in pts])), 4), "USA")
-        return folder_pos[d]
-
     def position(p: Path, sheet: str = ""):
         for loc in locators:
             q = loc(p)
             if q is not None:
                 return q
-        return folder_position(p) or page_position(p)
+        return page_position(p)
 
     return _profiles_from_folder(raw, API_FOLDERS["uaf_sites"], "uaf_sites", position,
                                  special=lambda p: _uaf_station_file(p, position),
