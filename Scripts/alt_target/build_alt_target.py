@@ -2759,7 +2759,9 @@ def read_gtnp_platform(raw) -> pd.DataFrame:
             bid, meta = meta_of[dsid]
             parts = []
             for name, df in read_any_table(z):
-                long = temperature_long(df)
+                # GTN-P gives depths in metres; without the hint, a borehole deeper than
+                # 30 m would have its unitless depths read as cm
+                long = temperature_long(df, unit_hint="m")
                 if long is None:
                     _unread("gtnp_platform", f"{z.name}:{name}", "layout not recognised",
                             "|".join(map(str, df.columns[:30])))
