@@ -168,6 +168,13 @@ CONFIG = {
     # assign_physical_sites join them: same position and close agreement on >= 5
     # shared years.
     "join_within_source": ("tsp_alaska",),
+    # NEON re-surveys its sensors and writes a new position row each time, mostly with
+    # the same depth. A sensor counts as moved (frost heave) when its depth changes by
+    # more than this within the plot-year.
+    "neon_move_m": 0.02,
+    # A UAF station file whose header position is this far from the station lists has a
+    # typo in its header; the station lists are used (see _uaf_station_file).
+    "station_typo_km": 5.0,
     # Within-site screen on log(ALT): robust z beyond this is flagged (not removed).
     "outlier_robust_z": 4.0,
     # Source priority when the same site-year is in several sources (lower = preferred).
@@ -182,8 +189,10 @@ CONFIG = {
                  "canada_gt": 5, "above_field": 5, "cusp": 6,
                  # sources added in November 2026: their copies of known sites rank after
                  # the original data files; GTN-P grids rank as the old GTN-P exports
-                 "gtnp_platform_alt": 3, "gtnp_platform": 4, "tsp_alaska": 4, "uaf_sites": 4,
-                 "neon": 4, "syrdakh": 4, "metno": 4, "g02189": 8, "other": 7},
+                 # (UAF site files and NEON rank after the sources they repeat, so site
+                 # ids stay as they were)
+                 "gtnp_platform_alt": 3, "gtnp_platform": 4, "tsp_alaska": 4, "uaf_sites": 5,
+                 "neon": 5, "syrdakh": 4, "metno": 4, "g02189": 8, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -2779,6 +2788,9 @@ def _profiles_from_folder(raw, folder: str, source: str, position, method="boreh
                 except Exception as e:
                     _unread(source, str(p.relative_to(base)), f"cannot read: {type(e).__name__}: {e}"[:200])
                     continue
+                if isinstance(got, str):                # a file that cannot give ALT, and why
+                    _unread(source, str(p.relative_to(base)), got)
+                    continue
                 if got is not None:
                     for name, long, pos in got:
                         rel = f"{p.relative_to(base)}{(':' + name) if name else ''}"
@@ -2808,7 +2820,9 @@ def _profiles_from_folder(raw, folder: str, source: str, position, method="boreh
                             "|".join(map(str, df.columns[:30])))
                     continue
                 if long is None:
-                    _unread(source, rel, "layout not recognised", "|".join(map(str, df.columns[:30])))
+                    n = sum((_depth_from_name(c) or 0) > 0 for c in df.columns)
+                    why = "fewer than two sensors (cannot give ALT)" if n == 1 else "layout not recognised"
+                    _unread(source, rel, why, "|".join(map(str, df.columns[:30])))
                     continue
                 if (long.depth_cm.drop_duplicates() <= CONFIG["max_shallow_cm"]).sum() < 2:
                     continue                            # too deep to resolve ALT: not an error
@@ -3045,8 +3059,11 @@ def _tsp_locator(base: Path):
     position(path) for a TSP data file: by its file name in a station list, else by the
     longest listed station code that its name starts with (US_A09_012_2016_..._daily.csv
     -> US_A09_012; ru_03_0008_16.csv -> RU_03_0008; u22_05.csv -> U22), else by a
-    station name equal to its name (Kugurak_Cabin.csv -> 'Kugurak Cabin'). A station
-    listed in several years gets its median position, so its files form one series.
+    station name equal to its name (Kugurak_Cabin.csv -> 'Kugurak Cabin'), else by the one
+    station whose name words contain the file's name words or are contained in them
+    (Selawik_Thaw_Slump.csv -> 'Selawik ...'; only when all such stations are within 1 km).
+    A station listed in several years gets its median position, so its files form one
+    series.
     """
     t = _tsp_site_tables(base)
     by_code = {}
@@ -3080,9 +3097,28 @@ def _tsp_locator(base: Path):
         if tok in by_name:
             n, la, lo, c = by_name[tok]
             return (n, la, lo, country_of(c, lo))
+        words = _name_words(tok)
+        if words:
+            hits = [v for k, v in by_name.items()
+                    if (kw := _name_words(k)) and (kw <= words or words <= kw)]
+            if hits and max(haversine_km(hits[0][1], hits[0][2], h[1], h[2]) for h in hits) <= 1.0:
+                n, la, lo, c = hits[0]
+                return (n, la, lo, country_of(c, lo))
         return None
 
     return position, t
+
+
+# words that say nothing about which station a file belongs to
+_GENERIC_WORDS = {"daily", "hourly", "data", "temp", "temps", "temperature", "temperatures", "soil",
+                  "ground", "borehole", "boreholes", "site", "sites", "station", "csv", "xls", "xlsx",
+                  "the", "and", "all", "final", "raw", "qc", "level", "nsidc", "cadis", "arcdc"}
+
+
+def _name_words(tokens) -> set:
+    """The distinctive words of a name or file name (tokens from _code_tokens): letters
+    only, at least 3 characters, not generic."""
+    return {t for t in tokens if t.isalpha() and len(t) >= 3 and t not in _GENERIC_WORDS}
 
 
 def read_tsp_alaska(raw) -> pd.DataFrame:
@@ -3118,6 +3154,11 @@ def read_tsp_alaska(raw) -> pd.DataFrame:
             got = _uaf_station_file(p, position)
             if got is not None:
                 return got
+            if p.suffix.lower() == ".csv":
+                with open(p, encoding="utf-8-sig", errors="replace") as f:
+                    head = re.sub(r"[^a-z,]", "", f.readline().lower()).split(",")
+                if "sitecode" in head and "depth" in head and ("temp" in head or "temperature" in head):
+                    return _long_station_table(p, position)
             if "network_sampling_sites" in low:
                 # one long daily table: siteCode, siteName, latitude, longitude, temp3cm ...
                 d = pd.read_csv(p, encoding="utf-8-sig", na_values=["N/A", "NA"])
@@ -3137,11 +3178,43 @@ def read_tsp_alaska(raw) -> pd.DataFrame:
     return pd.concat(out, ignore_index=True) if out else empty_records()
 
 
+def _long_station_table(p: Path, position):
+    """
+    A long table of several stations (e.g. pf_borehole_daily_temps_nirpo_2021_2024.csv:
+    Date, Site.code, Depth, Temp): one series per station code, placed by its code in the
+    station lists. Depths have no unit: metres when the deepest is <= 30, else cm (as in
+    temperature_long); the sign is ignored (negative = below the surface).
+    """
+    d = pd.read_csv(p, encoding="utf-8-sig")
+    c = {re.sub(r"[^a-z]", "", str(k).lower()): k for k in d.columns}
+    code_c, dep_c = c["sitecode"], c["depth"]
+    tmp_c = c.get("temp") or c.get("temperature")
+    date_c = next((c[k] for k in ("date", "timestamp", "datetime", "time") if k in c), None)
+    if date_c is None:
+        return "layout not recognised"
+    got = []
+    for code, g in d.groupby(code_c):
+        dep = pd.to_numeric(g[dep_c], errors="coerce").abs()
+        long = pd.DataFrame(dict(time=pd.to_datetime(g[date_c], errors="coerce"),
+                                 depth_cm=dep * 100 if dep.max() <= 30 else dep,
+                                 temp_c=pd.to_numeric(g[tmp_c], errors="coerce"))).dropna()
+        got.append((str(code), long, position(Path(f"{code}.csv"))))
+    return got
+
+
 def _station_code(site_name: str):
-    """'APP 2009-012 (US_A09_012)' -> 'US_A09_012': the station code that a station list
-    gave (see _tsp_locator), used as a stable series id. None without a code."""
-    m = re.search(r"\(([A-Za-z0-9_]+)\)\s*$", str(site_name))
-    return m.group(1).upper() if m else None
+    """A stable series id from a station's name:
+      'APP 2009-012 (US_A09_012)' -> 'US_A09_012' (the code a station list gave, see
+      _tsp_locator); 'Chandalar Shelf (UAF CS1)' -> 'UAF_CS1' (a UAF site page);
+      'UAF West Dock' -> 'UAF_WEST_DOCK' (the name line of a UAF station file).
+    None without a code or name."""
+    s = str(site_name)
+    if s.startswith("UAF "):
+        return re.sub(r"\W+", "_", s).strip("_").upper()
+    m = re.search(r"\((UAF )?([A-Za-z0-9_]+)\)\s*$", s)
+    if not m:
+        return None
+    return ("UAF_" if m.group(1) else "") + m.group(2).upper()
 
 
 def _grid(p: Path) -> pd.DataFrame:
@@ -3158,8 +3231,12 @@ def _uaf_station_file(p: Path, position):
     """
     A UAF Permafrost Lab station file (workbook, or the same layout as csv): title lines,
     a 'Location:' line, then daily rows (uaf_station_sheet). Returns [(name, long table,
-    position)], or None when the file has another layout. The position is the file's own
-    'Location:' line, else position(p) (the station lists).
+    position)]; a reason (str) for a single-date log ('Data date:' and a 'Depth, m'
+    column: one borehole log, which cannot give ALT); or None when the file has another
+    layout. The position is the file's own 'Location:' line, else position(p) (the
+    station lists). When both exist and are more than CONFIG station_typo_km apart, the
+    station lists win: a file header can carry a typo (WD1_06.xls gives N 70.166, the
+    latitude of Deadhorse, for West Dock at 70.38 N).
     """
     if p.suffix.lower() not in (".xls", ".xlsx", ".csv"):
         return None
@@ -3169,17 +3246,30 @@ def _uaf_station_file(p: Path, position):
         if "location" not in head:
             return None                               # an ordinary table: generic reader
     x = _grid(p)
+    top = " ".join(str(v) for v in x.iloc[:20, :2].values.ravel() if pd.notna(v)).lower()
+    if "data date" in top and re.search(r"depth,?\s*m", top):
+        return "single-date profile (cannot give ALT)"
     pos, long = uaf_station_sheet(x)
     if long is None:
         return None
+    listed = position(p)
     if pos is None:
-        return [("", long, position(p))]
+        return [("", long, listed)]
+    if listed is not None and haversine_km(pos[0], pos[1], listed[1], listed[2]) > CONFIG["station_typo_km"]:
+        key = (round(pos[0], 4), round(pos[1], 4), listed[0])
+        if key not in _TYPO_LOGGED:                   # once per header position and station
+            _TYPO_LOGGED.add(key)
+            log(f"    {p.name} (and files like it): header position {pos[0]:.4f}, {pos[1]:.4f} is "
+                f"{haversine_km(pos[0], pos[1], listed[1], listed[2]):.0f} km from the station "
+                f"lists ({listed[0]}): the lists are used")
+        return [("", long, listed)]
     name = str(x.iat[1, 0]).strip() if x.shape[0] > 1 else p.stem
     cty = "USA" if pos[1] < -141 else ""
     return [("", long, (f"UAF {name}", round(pos[0], 4), round(pos[1], 4), cty))]
 
 
 _TSP_LOCATORS = {}
+_TYPO_LOGGED = set()
 
 
 def read_uaf_sites(raw) -> pd.DataFrame:
@@ -3235,7 +3325,9 @@ def read_neon(raw) -> pd.DataFrame:
     sensor positions (|zOffset|). Frost heave moves NEON sensors, so a plot-year (1
     January to 1 July of the next year, i.e. the thaw season and the refreeze winter
     the 0 C rule checks) is not used when
-      - any sensor of that plot changed position in that period (sensor_positions), or
+      - any sensor of that plot changed depth by more than CONFIG neon_move_m in that
+        period (sensor_positions; a new position row with the same depth is a
+        re-survey, not a move), or
       - a change-log entry of the product about heave names the site and plot and
         overlaps the period.
     Rejected plot-years are flagged 'sensor_moved' and not used.
@@ -3281,7 +3373,8 @@ def read_neon(raw) -> pd.DataFrame:
                 for year in sorted(g.date.dt.year.unique()):
                     y0, y1 = pd.Timestamp(year, 1, 1), pd.Timestamp(year + 1, 7, 1)
                     pp = p[(p.start < y1) & (p.end.isna() | (p.end > y0))]
-                    if pp.groupby("ver").size().gt(1).any() or any(
+                    z = pd.to_numeric(pp.zOffset, errors="coerce")
+                    if (z.groupby(pp.ver).agg(lambda v: v.max() - v.min()) > CONFIG["neon_move_m"]).any() or any(
                             _neon_heave_hit(c, site, hor, y0, y1) for c in heave):
                         moved.append((key, year))
     if not temps:
