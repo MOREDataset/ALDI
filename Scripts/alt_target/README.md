@@ -15,10 +15,15 @@ On the same raw files, the combined script gives the same four data outputs as t
 ## Run
 
 ```
-pip install numpy pandas requests xlrd openpyxl
+pip install numpy pandas requests xlrd openpyxl pdfplumber truststore
 pip install neonutilities xarray netCDF4        # only for NEON and MET Norway
 python build_alt_target.py --raw <raw folder> --out <output folder>
 ```
+
+- `pdfplumber` reads the GSC Open File 9340 tables. Without it the run stops with an error, so the GSC data are never dropped without notice.
+- `truststore` lets Python check web certificates with the computer's own certificate store. Some sites (the UAF pages) fail without it on Windows. Certificate checks stay on.
+- NEON needs your personal API token (free, from your neonscience.org account). Set it for the session before the run: `set NEON_TOKEN=...` in the Windows command prompt, `$env:NEON_TOKEN="..."` in PowerShell, or `export NEON_TOKEN=...` on Linux and macOS. The script never writes the token to a file. Without it, NEON is listed as "get by hand" and the other sources run as usual.
+- `--raw` takes several folders: files are read from all of them, and downloads go to the first.
 
 | Option | Use |
 |---|---|
@@ -67,14 +72,18 @@ These sources were in `fetch_new_sources.py` before. They now go through the sam
 |---|---|---|
 | `gtnp_platform` | GTN-P data platform boreholes (data.gtn-p.org) | Downloaded when the dataset spans at least 8 seasons from 1990. Read when at least two sensors are in the top 1.5 m. Boreholes that the platform marks as disturbed are flagged `disturbed_site`. |
 | `gtnp_platform_alt` | GTN-P data platform grids and transects | Same survey rules as the other grids. They join the CALM tables by CALM code. `check_source_agreement.csv` holds their yearly differences to PANGAEA 972777. |
-| `tsp_alaska` | Arctic Data Center permafrost-observatory packages: doi:10.18739/A2J34P (newest version) and the current Romanovsky packages | The station position comes from each package's metadata. A table whose station cannot be placed is not used. |
+| `tsp_alaska` | Arctic Data Center permafrost-observatory packages: doi:10.18739/A2J34P (newest version) and the current Romanovsky packages | The package metadata give only a region, so each data file is placed from the station lists inside the packages (the yearly SitesRoster files, `site_and_file_metadata.csv`, `Site_Information.csv`, the Russian `metadata.csv`, `cadis_list.xls`, `network_sampling_sites.csv`). A file is matched by its name, else by the longest station code its name starts with, else by station name. A file that cannot be placed is not used. Single-day profiles (one survey date) cannot give ALT and are skipped. When one station is published twice in the collection (a station file and the network table), the two series are joined only if they agree within 5 cm (or 10 %) on at least 5 shared years. |
 | `uaf_sites` | UAF Galbraith Lake, West Dock, Happy Valley and Chandalar Shelf | The position comes from the site page. |
 | `neon` | NEON soil temperature at BARR, TOOL and HEAL | A plot-year runs from 1 January to 1 July of the next year. It is flagged `sensor_moved` and not used when a sensor of the plot changed position, or when a heave entry in the product's change log covers it. |
-| `syrdakh` | Syrdakh, Yakutia (Zenodo 14619854) | The position comes from the record's metadata. |
+| `syrdakh` | Syrdakh, Yakutia (Zenodo 14619854) | Logger temperatures (good-quality values only) give ALT by the 0 °C rule; the late-September thaw-depth surveys are used as probe or tube values, and a depth beyond the tool is a lower bound. The files give no coordinates, so every series gets the centre of the study area (62.56 N, 130.9 E, from the data paper) with a note in `site_note`. |
 | `metno` | MET Norway permafrost stations | Most stations start in 2019, so they reach 8 years only from about 2027. |
-| `g02189` | NSIDC G02189 (Russian soil temperatures to 2000) | Used only as a check: every value is flagged `check_only` and never used. `check_pre2000_g02189.csv` compares it with the Russian ALT series of the same stations. |
+| `g02189` | NSIDC G02189 (Russian soil temperatures to 2000) | The files have only January and July monthly means, so the value is the July thaw depth: a lower limit of that year's ALT. Used only as a check: every value is flagged `check_only` and never used. `check_pre2000_g02189.csv` compares it with the Russian ALT series of the same station (ALT should be at least the July thaw depth). |
 
-Not all of these file layouts were known when the readers were written. If a reader cannot read a table, or cannot place it on the map, the table goes into `unread_tables.csv` and never enters the data. If that file is not empty after the first run, those tables need a specific reader.
+If a reader cannot read a table, or cannot place it on the map, the table goes into `unread_tables.csv` with the reason, and never enters the data.
+
+The first full run (2 November 2026) gave 341 sites. It could not read most of the Arctic Data Center, Syrdakh and G02189 files: their layouts were not known when the readers were written. Those three readers were rewritten from samples of the real files. The same run found that the GTN-P platform gave borehole depths in metres, which the general reader took as cm in boreholes deeper than 30 m; that is fixed.
+
+All temperature sources are reduced to daily means before the 0 °C rule, so every source is treated the same way.
 
 Two data requests are still open, by email: the Kilpisjärvi palsas (Verdonen, 2007-2021) and Janssonhaugen 1998-2019 (Isaksen, met.no).
 
