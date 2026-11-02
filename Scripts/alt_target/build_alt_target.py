@@ -20,8 +20,8 @@ profiles). It has three stages, run in this order:
                sources, applies the quality flags, keeps sites with at least
                CONFIG["min_years"] valid years, and writes the outputs.
 
-Run, from any folder (Python 3.10+; pip install numpy pandas requests xlrd openpyxl,
-and for NEON and MET Norway also neonutilities xarray netCDF4):
+Run, from any folder (Python 3.10+; pip install numpy pandas requests xlrd openpyxl pdfplumber
+truststore, and for NEON and MET Norway also neonutilities xarray netCDF4):
 
     python build_alt_target.py --raw <raw folder> --out <output folder>
 
@@ -66,8 +66,13 @@ import zipfile
 from pathlib import Path
 from urllib.parse import quote, urljoin
 
+import warnings
+
 import numpy as np
 import pandas as pd
+
+# the readers parse many date layouts; pandas warns each time it falls back to dateutil
+warnings.filterwarnings("ignore", message="Could not infer format")
 
 HERE = Path(__file__).resolve().parent
 
@@ -88,6 +93,10 @@ CONFIG = {
     # A temperature profile can give ALT only with at least two sensors in the top
     # max_shallow_cm (deeper boreholes are not read).
     "max_shallow_cm": 150.0,
+    # Syrdakh (Yakutia): the files and the Zenodo record give no coordinates, so every
+    # Syrdakh series gets this approximate centre of the study area (lat, lon), as given
+    # in the data paper. Logger positions may be in the record's .gpkg layers (not read).
+    "syrdakh_position": (62.56, 130.9),
     "exclude_countries": ["Mongolia", "Kazakhstan", "China", "Switzerland", "Italy",
                           "France", "Austria", "Spain", "Kyrgyzstan", "Argentina",
                           "Antarctica", "Germany", "Japan"],
@@ -153,6 +162,12 @@ CONFIG = {
     "copy_km": 2.0,
     "copy_agree_cm": 1.0,
     "copy_min_r": 0.98,
+    # Series of one source are never joined (the source lists them as different plots),
+    # except in these collections of many packages, where one station can be published
+    # twice (a station file and a network table). There, only rules (c) and (d) of
+    # assign_physical_sites join them: same position and close agreement on >= 5
+    # shared years.
+    "join_within_source": ("tsp_alaska",),
     # Within-site screen on log(ALT): robust z beyond this is flagged (not removed).
     "outlier_robust_z": 4.0,
     # Source priority when the same site-year is in several sources (lower = preferred).
@@ -702,6 +717,15 @@ _SESSION = None
 def _http():
     global _SESSION
     if _SESSION is None:
+        try:
+            # check TLS certificates against the computer's own certificate store (e.g. the
+            # Windows store), which knows the intermediate certificates that some servers
+            # do not send (permafrost.gi.alaska.edu failed on Windows without this).
+            # Verification stays on. pip install truststore
+            import truststore
+            truststore.inject_into_ssl()
+        except ImportError:
+            pass
         import requests                                   # only needed for stage 1
         _SESSION = requests.Session()
         _SESSION.headers["User-Agent"] = ("ALDI-alt-target/1.0 (research; "
@@ -709,10 +733,11 @@ def _http():
     return _SESSION
 
 
-def http_get(url, params=None, stream=False, tries=4):
-    """GET with retries on rate limits and server errors (2, 4, 8 s)."""
+def http_get(url, params=None, stream=False, tries=4, headers=None):
+    """GET with retries on rate limits and server errors (2, 4, 8 s). TLS certificates are
+    always verified."""
     for k in range(tries):
-        r = _http().get(url, params=params, timeout=300, stream=stream)
+        r = _http().get(url, params=params, timeout=300, stream=stream, headers=headers)
         if r.status_code in (429, 500, 502, 503, 504) and k < tries - 1:
             time.sleep(2 ** (k + 1))
             continue
@@ -792,7 +817,9 @@ def download_calm_table(raw: Path) -> None:
                     if re.search(r"summary.*\.xlsx?$", h, re.I)})
     if not links:
         DOWNLOAD_REPORT.append(dict(source="calm_summary", file=str(folder), url=API["calm_page"],
-                                    status="failed", note="no summary table link on the page"))
+                                    status="failed",
+                                    note="the CALM page no longer links the summary table: put your "
+                                         "saved CALM_Summary_table*.xls in the raw folder"))
     for u in links:
         name = u.split("/")[-1]
         if not name.startswith("CALM_Summary_table"):
@@ -935,17 +962,30 @@ def download_uaf_sites(raw: Path) -> None:
 def download_neon(raw: Path) -> None:
     """
     NEON soil temperature (DP1.00041.001) at BARR, TOOL and HEAL with neonutilities:
-    30-minute means with finalQF = 0, reduced to the daily maximum per plot and depth,
+    30-minute means with finalQF = 0, reduced to the daily mean per plot and depth (as the
+    other temperature sources, which are daily means),
     plus the sensor positions (depths and position changes) and the product's change log
     (frost-heave entries). The reader applies the heave rules.
     """
-    import neonutilities as nu                     # pip install neonutilities
+    import os
     folder = raw / API_FOLDERS["neon"]
     folder.mkdir(parents=True, exist_ok=True)
-    prod = http_get(f"https://data.neonscience.org/api/v0/products/{API['neon_product']}").json()["data"]
+    # NEON asks for a personal API token (free, from your neonscience.org account page).
+    # The script never stores it: set it for the session, e.g. in Windows
+    #   set NEON_TOKEN=<your token>     and on Linux/macOS   export NEON_TOKEN=<your token>
+    token = os.environ.get("NEON_TOKEN", "")
+    if not token:
+        DOWNLOAD_REPORT.append(dict(source="neon", file=str(folder), url="neonutilities",
+                                    status="get by hand",
+                                    note="NEON needs your personal API token: create one in your "
+                                         "neonscience.org account and set NEON_TOKEN before the run"))
+        return
+    import neonutilities as nu                     # pip install neonutilities
+    prod = http_get(f"https://data.neonscience.org/api/v0/products/{API['neon_product']}",
+                    headers={"X-API-Token": token}).json()["data"]
     (folder / "product.json").write_text(json.dumps(prod))
     for site in API["neon_sites"]:
-        cache = folder / f"{site}_daily_max.csv"
+        cache = folder / f"{site}_daily_mean.csv"
         if cache.exists():
             DOWNLOAD_REPORT.append(dict(source="neon", file=str(cache), url="neonutilities",
                                         status="already there", note=""))
@@ -953,7 +993,7 @@ def download_neon(raw: Path) -> None:
         try:
             d = nu.load_by_product(dpid=API["neon_product"], site=site, package="basic",
                                    timeindex="30", check_size=False, include_provisional=True,
-                                   progress=False)
+                                   progress=False, token=token)
         except Exception as e:
             DOWNLOAD_REPORT.append(dict(source="neon", file=str(cache), url="neonutilities",
                                         status="failed", note=str(e)[:300]))
@@ -961,7 +1001,7 @@ def download_neon(raw: Path) -> None:
         st = d["ST_30_minute"]
         st = st[st["finalQF"] == 0].copy()
         st["date"] = pd.to_datetime(st["startDateTime"]).dt.tz_localize(None).dt.normalize()
-        (st.groupby(["horizontalPosition", "verticalPosition", "date"])["soilTempMean"].max()
+        (st.groupby(["horizontalPosition", "verticalPosition", "date"])["soilTempMean"].mean()
          .reset_index().to_csv(cache, index=False))
         d["sensor_positions_00041"].to_csv(folder / f"{site}_sensor_positions.csv", index=False)
         DOWNLOAD_REPORT.append(dict(source="neon", file=str(cache), url="neonutilities",
@@ -998,7 +1038,8 @@ def download_g02189(raw: Path) -> None:
 
 def download_metno(raw: Path) -> None:
     """MET Norway permafrost stations (THREDDS, OPeNDAP; pip install xarray netCDF4):
-    daily maximum per depth, with the station position and name."""
+    daily mean per depth (as the other temperature sources), with the station position
+    and name."""
     import xarray as xr
     folder = raw / API_FOLDERS["metno"]
     folder.mkdir(parents=True, exist_ok=True)
@@ -1006,7 +1047,7 @@ def download_metno(raw: Path) -> None:
     (folder / "catalog.xml").write_text(cat)
     for st in sorted(set(re.findall(r'xlink:href="([^"]+)/catalog\.xml"', cat))):
         name = st.strip("/").split("/")[-1]
-        cache = folder / f"{name}_daily_max.csv"
+        cache = folder / f"{name}_daily_mean.csv"
         url = f"{API['metno_thredds']}/dodsC/{API['metno_catalog']}/{name}/{name}-aggregated.ncml"
         if cache.exists():
             DOWNLOAD_REPORT.append(dict(source="metno", file=str(cache), url=url,
@@ -1020,7 +1061,7 @@ def download_metno(raw: Path) -> None:
             dcol = next(c for c in df.columns if "depth" in c.lower())
             df = df.rename(columns={var: "temp_c", dcol: "depth_m"})
             df["date"] = pd.to_datetime(df["time"]).dt.normalize()
-            (df.groupby(["depth_m", "date"]).temp_c.max().reset_index()
+            (df.groupby(["depth_m", "date"]).temp_c.mean().reset_index()
              .assign(lat=float(ds.attrs.get("geospatial_lat_min", np.nan)),
                      lon=float(ds.attrs.get("geospatial_lon_min", np.nan)),
                      title=ds.attrs.get("title", name))
@@ -1276,10 +1317,11 @@ def _of9340_text(raw: Path):
         return None
     try:
         import pdfplumber
-    except ImportError:
-        log("    gsc: pdfplumber not installed; OF 9340 thaw-tube table skipped "
-            "(pip install pdfplumber)")
-        return None
+    except ImportError as e:
+        # without it the GSC thaw tubes 2006-2022 and all GSC cables are lost, so the
+        # reader fails (and the run ends with an error) instead of skipping quietly
+        raise ImportError("pdfplumber is needed to read GSC Open File 9340 "
+                          "(pip install pdfplumber)") from e
     with zipfile.ZipFile(z[-1]) as zf:
         pdf_name = next(n for n in zf.namelist() if n.lower().endswith(".pdf"))
         pdf = pdfplumber.open(io.BytesIO(zf.read(pdf_name)))
@@ -1997,6 +2039,50 @@ def read_ngee_barrow(raw) -> pd.DataFrame:
     return finish(g, "ngee_barrow")
 
 
+def uaf_station_sheet(x: pd.DataFrame):
+    """
+    One sheet of a UAF Permafrost Lab station file, read without a header: title lines,
+    a position line in row 3 ('N 70o09.677' W148o27.918'' or '148.4653 W; 70.161283 N'),
+    then a header row with the sensor depths in m ('0.025 m', 'Temp_MRC_0.125') and daily
+    rows. Returns ((lat, lon) or None, long table time/depth_cm/temp_c or None).
+    """
+    pos = None
+    loc = str(x.iat[2, 0]) if x.shape[0] > 2 else ""
+    dm = re.findall(r"([NW])\s*(\d+)o(\d+(?:\.\d+)?)", loc)
+    if dm:
+        v = {h: int(d) + float(m) / 60 for h, d, m in dm}
+        if "N" in v and "W" in v:
+            pos = (v["N"], -v["W"])
+    else:
+        n = re.search(r"(\d+\.\d+)\s*o?\s*N|N\s*(\d+\.\d+)", loc)
+        w = re.search(r"-?(\d+\.\d+)\s*o?\s*W|W\s*(\d+\.\d+)", loc)
+        if n and w:
+            pos = (float(n.group(1) or n.group(2)), -float(w.group(1) or w.group(2)))
+    # header row: the first row with at least three depth labels
+    lab = lambda c: re.fullmatch(r"(?:Temp_MRC_)?(-?\d+\.\d+)\s*m?", str(c).strip())
+    hr = next((i for i in range(min(30, len(x))) if sum(bool(lab(c)) for c in x.iloc[i]) >= 3), None)
+    if hr is None:
+        return pos, None
+    body = x.iloc[hr + 1:]
+
+    def as_dates(col):
+        v = pd.to_numeric(col, errors="coerce")
+        if v.notna().mean() > 0.5:                   # plain numbers (year, day, YYYYMMDD)
+            return pd.Series(pd.NaT, index=col.index)
+        return pd.to_datetime(col.astype(str).str[:10], format="%Y-%m-%d", errors="coerce")
+    tcol = max(range(min(5, x.shape[1])), key=lambda j: as_dates(body[j]).notna().mean())
+    time = as_dates(body[tcol])
+    parts = []
+    for j, c in enumerate(x.iloc[hr]):
+        m = lab(c)
+        if not m or j == tcol or float(m.group(1)) <= 0:
+            continue
+        v = pd.to_numeric(body[j], errors="coerce")
+        v[v.abs() >= 99] = np.nan
+        parts.append(pd.DataFrame(dict(time=time, depth_cm=round(float(m.group(1)) * 100, 1), temp_c=v)))
+    return pos, (pd.concat(parts) if parts else None)
+
+
 def read_uaf_stations(raw) -> pd.DataFrame:
     """
     UAF Permafrost Laboratory (V. Romanovsky) soil-temperature stations on the North Slope
@@ -2022,38 +2108,11 @@ def read_uaf_stations(raw) -> pd.DataFrame:
             continue
         x = (pd.read_excel(f, header=None, sheet_name=0) if f.suffix == ".xls" else
              pd.read_csv(f, header=None, encoding="latin-1", on_bad_lines="skip", engine="python"))
-        # position: 'N 70o09.677' W148o27.918'' or '148.4653 W; 70.161283 N' and similar
-        loc = str(x.iat[2, 0])
-        dm = re.findall(r"([NW])\s*(\d+)o(\d+(?:\.\d+)?)", loc)
-        if dm:
-            v = {h: int(d) + float(m) / 60 for h, d, m in dm}
-            pos.setdefault(code, (v.get("N"), -v.get("W")))
-        else:
-            n = re.search(r"(\d+\.\d+)\s*o?\s*N|N\s*(\d+\.\d+)", loc)
-            w = re.search(r"-?(\d+\.\d+)\s*o?\s*W|W\s*(\d+\.\d+)", loc)
-            if n and w:
-                pos.setdefault(code, (float(n.group(1) or n.group(2)), -float(w.group(1) or w.group(2))))
-        # header row: the first row with at least three depth labels
-        lab = lambda c: re.fullmatch(r"(?:Temp_MRC_)?(-?\d+\.\d+)\s*m?", str(c).strip())
-        hr = next((i for i in range(min(30, len(x))) if sum(bool(lab(c)) for c in x.iloc[i]) >= 3), None)
-        if hr is None:
-            continue
-        body = x.iloc[hr + 1:]
-        def as_dates(col):
-            v = pd.to_numeric(col, errors="coerce")
-            if v.notna().mean() > 0.5:                   # plain numbers (year, day, YYYYMMDD)
-                return pd.Series(pd.NaT, index=col.index)
-            return pd.to_datetime(col.astype(str).str[:10], format="%Y-%m-%d", errors="coerce")
-        tcol = max(range(min(5, x.shape[1])), key=lambda j: as_dates(body[j]).notna().mean())
-        time = as_dates(body[tcol])
-        for j, c in enumerate(x.iloc[hr]):
-            m = lab(c)
-            if not m or j == tcol or float(m.group(1)) <= 0:
-                continue
-            v = pd.to_numeric(body[j], errors="coerce")
-            v[v.abs() >= 99] = np.nan
-            temps.append(pd.DataFrame(dict(source_site_id="UAF_" + code, time=time,
-                                           depth_cm=round(float(m.group(1)) * 100, 1), temp_c=v)))
+        p, long = uaf_station_sheet(x)
+        if p is not None:
+            pos.setdefault(code, p)
+        if long is not None:
+            temps.append(long.assign(source_site_id="UAF_" + code))
     if not temps:
         return empty_records()
     t = pd.concat(temps).dropna(subset=["time", "temp_c"])
@@ -2550,21 +2609,34 @@ def read_above_field(raw: Path) -> pd.DataFrame:
 # unread_tables.csv, so a specific reader can be added; they never enter the data.
 UNREAD_TABLES: list[dict] = []
 
-_DEPTH_RE = re.compile(r"(-?\d+(?:[.,]\d+)?)\s*(cm|m)?\b", re.I)
+_DEPTH_RE = re.compile(r"([-+]?\d+(?:[.,]\d+)?)\s*(cm|m)?\b", re.I)
 
 
 def _depth_from_name(name: str):
-    """Depth (cm, or a unitless number) from a column name such as '0.2', '-0.50 m',
-    'T_20cm', '1.5m'. None when the column is not a depth."""
-    s = str(name).strip()
-    if re.search(r"(date|time|year|month|day|hour|flag|qf|qual|id|lat|lon|air|surf)", s, re.I):
+    """
+    Depth (cm, or a unitless number) from a column name such as '0.2', '-0.50 m',
+    'T_20cm', '1.5m', '0.2_meters', 'Temp_TMC_+000.50m', 'TP1_150cm'. A number with a
+    unit wins over one without (so 'TP1_2cm' is 2 cm, not 1); without a unit the last
+    number is taken. None when the column is not a depth.
+    """
+    s = str(name).strip().replace(",", ".").replace("_", " ")
+    s = re.sub(r"(?i)(centi)?met(er|re)s?\b", lambda m: "cm" if m.group(1) else "m", s)
+    if re.search(r"(date|time|year|month|day|hour|flag|qf|qual|id|lat|lon|air|surf|snow)", s, re.I):
         return None
-    m = _DEPTH_RE.search(s.replace(",", "."))
-    if not m:
+    found = list(_DEPTH_RE.finditer(s))
+    if not found:
         return None
+    m = next((f for f in found if f.group(2)), found[-1])
     v = abs(float(m.group(1)))
     unit = (m.group(2) or "").lower()
     return v if unit == "cm" else v * 100 if unit == "m" else v
+
+
+def _depth_has_unit(name) -> bool:
+    """True when a depth column name carries its unit ('0.2_meters', '20cm', '+000.50m')."""
+    s = str(name).replace(",", ".").replace("_", " ")
+    s = re.sub(r"(?i)(centi)?met(er|re)s?\b", lambda m: "cm" if m.group(1) else "m", s)
+    return any(f.group(2) for f in _DEPTH_RE.finditer(s))
 
 
 def temperature_long(df: pd.DataFrame, unit_hint: str | None = None) -> pd.DataFrame | None:
@@ -2574,6 +2646,17 @@ def temperature_long(df: pd.DataFrame, unit_hint: str | None = None) -> pd.DataF
     metres when every depth is <= 30, else cm (unit_hint 'm' or 'cm' overrides). Values
     outside -60..40 C are no-data codes. None when the layout is not recognised.
     """
+    if df.columns.duplicated().any():
+        # a repeated column name (e.g. two sensors labelled with the same depth) would
+        # make df[name] a table: number the repeats ('0.5', '0.5 #2'); same depth, and
+        # the readers average the readings of one depth
+        seen: dict = {}
+        names = []
+        for c in df.columns:
+            seen[c] = seen.get(c, 0) + 1
+            names.append(c if seen[c] == 1 else f"{c} #{seen[c]}")
+        df = df.copy()
+        df.columns = names
     cols = {str(c).lower().strip(): c for c in df.columns}
     tcol = next((cols[c] for c in cols if c in ("time", "datetime", "date_time", "timestamp",
                                                  "date", "startdatetime")), None)
@@ -2596,7 +2679,7 @@ def temperature_long(df: pd.DataFrame, unit_hint: str | None = None) -> pd.DataF
                  if v is not None and pd.to_numeric(df[c], errors="coerce").notna().mean() > 0.1}
         if len(depth) < 2:
             return None
-        unitless = [c for c in depth if not re.search(r"(cm|m)\b", str(c), re.I)]
+        unitless = [c for c in depth if not _depth_has_unit(c)]
         if unitless:
             unit = unit_hint or ("m" if max(depth[c] for c in unitless) <= 30 else "cm")
             for c in unitless:
@@ -2660,19 +2743,44 @@ def _unread(source: str, file: str, why: str, columns="") -> None:
 
 
 def _profiles_from_folder(raw, folder: str, source: str, position, method="borehole_temp",
-                          unit_hint=None) -> pd.DataFrame:
+                          unit_hint=None, special=None) -> pd.DataFrame:
     """
     Every table under raw/<folder> that is a temperature profile with at least two
     sensors in the top CONFIG max_shallow_cm becomes one series; ALT by the 0 C crossing
     rule (records_from_profiles). position(path, sheet) returns (name, lat, lon, country)
     or None when the position of that table is not known (the table is then not used).
+    special(path) may read a file itself: it returns a list of (name, long table, position)
+    (an empty list for files that are metadata, not data), or None to use the generic
+    reading. Sub-daily values are reduced to daily means, as the other temperature
+    sources are daily means.
     """
     temps, sites = [], []
+
+    def add(rel, long, pos):
+        key = re.sub(r"\W+", "_", rel)
+        temps.append(long.assign(source_site_id=key))
+        sites.append(dict(source_site_id=key, site_name=pos[0], lat=pos[1], lon=pos[2],
+                          country=pos[3], source_file=rel))
+
     for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
         base = Path(root) / folder
         for p in sorted(base.rglob("*")) if base.exists() else []:
             if not p.is_file() or p.suffix.lower() not in TABLE_EXT + (".zip",):
                 continue
+            if special is not None:
+                try:
+                    got = special(p)
+                except Exception as e:
+                    _unread(source, str(p.relative_to(base)), f"cannot read: {type(e).__name__}: {e}"[:200])
+                    continue
+                if got is not None:
+                    for name, long, pos in got:
+                        rel = f"{p.relative_to(base)}{(':' + name) if name else ''}"
+                        if pos is None:
+                            _unread(source, rel, "no station position found")
+                        elif (long.depth_cm.drop_duplicates() <= CONFIG["max_shallow_cm"]).sum() >= 2:
+                            add(rel, long, pos)
+                    continue
             try:
                 tabs = read_any_table(p)
             except Exception as e:
@@ -2680,7 +2788,19 @@ def _profiles_from_folder(raw, folder: str, source: str, position, method="boreh
                 continue
             for sheet, df in tabs:
                 rel = f"{p.relative_to(base)}{(':' + sheet) if sheet else ''}"
-                long = temperature_long(df, unit_hint)
+                lc = [str(c).lower() for c in df.columns]
+                if any(c.startswith("depth") for c in lc) and not any(
+                        ("date" in c or "time" in c) and df[df.columns[i]].nunique() > 3
+                        for i, c in enumerate(lc)):
+                    # one logged profile (depth, temperature) of a single day: cannot give ALT
+                    _unread(source, rel, "single-date profile (cannot give ALT)")
+                    continue
+                try:
+                    long = temperature_long(df, unit_hint)
+                except Exception as e:          # listed in unread_tables.csv, not lost silently
+                    _unread(source, rel, f"cannot read: {type(e).__name__}: {e}"[:200],
+                            "|".join(map(str, df.columns[:30])))
+                    continue
                 if long is None:
                     _unread(source, rel, "layout not recognised", "|".join(map(str, df.columns[:30])))
                     continue
@@ -2690,13 +2810,11 @@ def _profiles_from_folder(raw, folder: str, source: str, position, method="boreh
                 if pos is None:
                     _unread(source, rel, "no station position found")
                     continue
-                key = re.sub(r"\W+", "_", rel)
-                temps.append(long.assign(source_site_id=key))
-                sites.append(dict(source_site_id=key, site_name=pos[0], lat=pos[1], lon=pos[2],
-                                  country=pos[3], source_file=rel))
+                add(rel, long, pos)
     if not temps:
         return empty_records()
     t = pd.concat(temps, ignore_index=True)
+    t["time"] = pd.to_datetime(t.time).dt.normalize()
     # several tables of one station (one per year) are one series: same name and position
     s = pd.DataFrame(sites)
     s["series"] = s.groupby(["site_name", "lat", "lon"]).source_site_id.transform("first")
@@ -2838,26 +2956,175 @@ def read_gtnp_platform_alt(raw) -> pd.DataFrame:
     return finish(end_of_season(survey_means(pd.concat(pts, ignore_index=True))), "gtnp_platform_alt")
 
 
+def _code_tokens(s: str) -> tuple:
+    """'US_A09_012' and 'US_A09_012_2016_06_01_daily.csv' -> ('us','a','09','012',...);
+    'ru13_0001_12' -> ('ru','13','0001','12'); 'U22' -> ('u','22'). Letters and digits are
+    split, so station codes match file names whatever their separators."""
+    s = re.sub(r"\.(csv|txt|dat|xlsx?|tab)$", "", str(s).strip().lstrip("﻿").lower())
+    s = re.sub(r"([a-z])(\d)", r"\1_\2", s)
+    return tuple(t for t in re.split(r"[^a-z0-9]+", s) if t)
+
+
+_COUNTRY_CODES = {"US": "USA", "USA": "USA", "CA": "Canada", "CANADA": "Canada", "RU": "Russia",
+                  "RUSSIA": "Russia", "GL": "Greenland", "NO": "Norway", "SE": "Sweden",
+                  "FI": "Finland", "MN": "Mongolia", "KZ": "Kazakhstan"}
+
+
+def _tsp_site_tables(base: Path) -> pd.DataFrame:
+    """
+    Every station list in the Arctic Data Center packages: tables with a latitude and a
+    longitude column and a station code, file name or station name column (the yearly
+    SitesRoster files of the TSP packages, site_and_file_metadata.csv, Site_Information.csv,
+    the Russian metadata.csv, cadis_list.xls, network_sampling_sites.csv). One row per
+    listed station or file: code, file and name tokens, name, lat, lon, country.
+    """
+    rows = []
+    for p in sorted(base.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in (".csv", ".xls", ".xlsx"):
+            continue
+        try:
+            head = (pd.read_excel(p, header=None, nrows=3) if p.suffix.lower() != ".csv"
+                    else pd.read_csv(p, header=None, nrows=3, encoding="utf-8-sig",
+                                     on_bad_lines="skip", engine="python"))
+        except Exception:
+            continue
+        text = " ".join(map(str, head.values.ravel())).lower()
+        if "lat" not in text or "lon" not in text:
+            continue
+        for _, df in read_any_table(p):
+            cols = {str(c).strip().lstrip("﻿").lower(): c for c in df.columns}
+            lat = next((cols[c] for c in cols if c.startswith("lat")), None)
+            lon = next((cols[c] for c in cols if c.startswith(("lon", "long"))), None)
+            code = next((cols[c] for c in cols if c in ("sitecode", "sitecode_new", "site code",
+                                                        "borehole id")), None)
+            fcol = next((cols[c] for c in cols if c in ("filename", "file name", "filename_startdate")), None)
+            ncol = next((cols[c] for c in cols if c in ("sitename", "site name", "borehole name")), None)
+            ccol = next((cols[c] for c in cols if c in ("sitecountry", "country")), None)
+            if lat is None or lon is None or (code is None and fcol is None and ncol is None):
+                continue
+            df = df.reset_index(drop=True)
+            la = pd.to_numeric(df[lat], errors="coerce")
+            lo = pd.to_numeric(df[lon], errors="coerce")
+            ok = la.between(-90, 90) & lo.between(-180, 180)
+            keys = [c for c in (code, fcol, ncol) if c is not None]
+            d = df[ok].assign(lat_=la[ok], lon_=lo[ok]).drop_duplicates(keys + ["lat_", "lon_"])
+            for i in d.index:
+                rows.append(dict(
+                    code=str(d.at[i, code]).strip() if code is not None else "",
+                    file=_code_tokens(d.at[i, fcol]) if fcol is not None else (),
+                    name=str(d.at[i, ncol]).strip().rstrip(" *") if ncol is not None else "",
+                    lat=float(d.at[i, "lat_"]), lon=float(d.at[i, "lon_"]),
+                    country=_COUNTRY_CODES.get(str(d.at[i, ccol]).strip().upper(), "")
+                    if ccol is not None else "", table=p.name))
+    t = pd.DataFrame(rows, columns=["code", "file", "name", "lat", "lon", "country", "table"])
+    t.loc[t["code"].str.upper().isin(["NAN", "N/A", "NONE"]), "code"] = ""
+    t.loc[t["name"].str.lower().isin(["nan", "n/a"]), "name"] = ""
+    t["code_tokens"] = t["code"].map(_code_tokens)
+    t["name_tokens"] = t["name"].map(_code_tokens)
+    return t
+
+
+def _tsp_locator(base: Path):
+    """
+    position(path) for a TSP data file: by its file name in a station list, else by the
+    longest listed station code that its name starts with (US_A09_012_2016_..._daily.csv
+    -> US_A09_012; ru_03_0008_16.csv -> RU_03_0008; u22_05.csv -> U22), else by a
+    station name equal to its name (Kugurak_Cabin.csv -> 'Kugurak Cabin'). A station
+    listed in several years gets its median position, so its files form one series.
+    """
+    t = _tsp_site_tables(base)
+    by_code = {}
+    for k, g in t[t["code_tokens"].map(len) > 0].groupby("code_tokens"):
+        names = [n for n in g["name"] if n and n.lower() != "nan"]
+        label = f"{names[0]} ({g['code'].iloc[0].upper()})" if names else g["code"].iloc[0].upper()
+        by_code[k] = (label, g["lat"].median(), g["lon"].median(),
+                      next((c for c in g["country"] if c), ""))
+    by_file = {r.file: r for r in t[t["file"].map(len) > 0].itertuples()}
+    by_name = {}
+    for k, g in t[t["name_tokens"].map(len) > 0].groupby("name_tokens"):
+        by_name[k] = (g["name"].iloc[0], g["lat"].median(), g["lon"].median(),
+                      next((c for c in g["country"] if c), ""))
+
+    def country_of(cty, lon):
+        if cty:
+            return cty
+        return "Russia" if (lon > 0 or lon < -168.5) else "USA" if lon < -141 else ""
+
+    def position(p: Path, sheet: str = ""):
+        tok = _code_tokens(p.name)
+        r = by_file.get(tok)
+        if r is not None:
+            if r.code_tokens in by_code:
+                return by_code[r.code_tokens]
+            return (r.name or p.stem, r.lat, r.lon, country_of(r.country, r.lon))
+        best = max((k for k in by_code if tok[:len(k)] == k), key=len, default=None)
+        if best is not None:
+            n, la, lo, c = by_code[best]
+            return (n, la, lo, country_of(c, lo))
+        if tok in by_name:
+            n, la, lo, c = by_name[tok]
+            return (n, la, lo, country_of(c, lo))
+        return None
+
+    return position, t
+
+
 def read_tsp_alaska(raw) -> pd.DataFrame:
     """
-    Arctic Data Center permafrost-observatory packages (V. Romanovsky; files from
-    download_tsp_alaska). Station positions from each package's EML metadata, matched to
-    the file by the station code or name. ALT by the 0 C crossing rule, only where at
-    least two sensors are in the top CONFIG max_shallow_cm and the profile brackets the
-    0 C crossing (otherwise the year is a lower bound and not used).
+    Arctic Data Center permafrost-observatory packages (V. Romanovsky and the TSP network;
+    files from download_tsp_alaska): daily ground temperatures of the continuous TSP
+    stations (US_*, CA_* daily files), the Russian stations (ru_*), the UAF borehole and
+    station files (u##, SL#, ...) and the network_sampling_sites table. ALT by the 0 C
+    crossing rule, only where at least two sensors are in the top CONFIG max_shallow_cm.
+      Positions: the packages' EML gives only a region, so stations are placed from the
+      station lists in the packages (_tsp_locator). A file that cannot be placed is listed
+      in unread_tables.csv and not used.
+      Not data: station lists, single-day logged profiles (u##_##_NSIDC, the 'occasional'
+      TSP files: one day, often from 6 m down) and monthly compilations without dates.
+      UAF station workbooks (title lines, a 'Location:' line, then daily rows; e.g.
+      SL1_07.xls) are read as in read_uaf_stations.
     """
-    cov = {}
+    out = []
+    for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        base = Path(root) / API_FOLDERS["tsp_alaska"]
+        if not base.exists():
+            continue
+        position, lists = _tsp_locator(base)
+        list_files = set(lists.table)
+        log(f"    tsp_alaska: {len(lists)} station-list rows from {len(list_files)} tables")
 
-    def position(p: Path, sheet: str):
-        pkg = next((q for q in p.parents if (q / "metadata_eml.xml").exists()), None)
-        if pkg is None:
+        def special(p: Path):
+            low = p.name.lower()
+            if p.name in list_files and "network_sampling_sites" not in low:
+                return []                                   # a station list, not data
+            if p.suffix.lower() in (".xls", ".xlsx"):
+                x = pd.read_excel(p, header=None, sheet_name=0)
+                pos, long = uaf_station_sheet(x)
+                if long is not None:
+                    name = str(x.iat[1, 0]).strip() if x.shape[0] > 1 else p.stem
+                    if pos is None:
+                        q = position(p)
+                        return [("", long, q)]
+                    cty = "USA" if pos[1] < -141 else ""
+                    return [("", long, (f"{name} (UAF)", round(pos[0], 4), round(pos[1], 4), cty))]
+                return None
+            if "network_sampling_sites" in low:
+                # one long daily table: siteCode, siteName, latitude, longitude, temp3cm ...
+                d = pd.read_csv(p, encoding="utf-8-sig", na_values=["N/A", "NA"])
+                got = []
+                for code, g in d.groupby("siteCode"):
+                    keep = ["date"] + [c for c in g.columns if re.fullmatch(r"temp\d+cm", c)]
+                    long = temperature_long(g[keep].reset_index(drop=True), "cm")
+                    if long is not None:
+                        got.append((str(code), long, (f"{g.siteName.iloc[0]} ({code})",
+                                                     g.latitude.median(), g.longitude.median(), "USA")))
+                return got
             return None
-        if pkg not in cov:
-            cov[pkg] = _eml_positions((pkg / "metadata_eml.xml").read_text(encoding="utf-8", errors="replace"))
-        hit = _match_position(f"{p.stem} {sheet}", cov[pkg])
-        return None if hit is None else (hit[0][:120], hit[1], hit[2], "USA")
 
-    return _profiles_from_folder(raw, API_FOLDERS["tsp_alaska"], "tsp_alaska", position)
+        out.append(_profiles_from_folder(base.parent, base.name, "tsp_alaska", position,
+                                         special=special))
+    out = [o for o in out if len(o)]
+    return pd.concat(out, ignore_index=True) if out else empty_records()
 
 
 def read_uaf_sites(raw) -> pd.DataFrame:
@@ -2885,7 +3152,7 @@ def read_uaf_sites(raw) -> pd.DataFrame:
 def read_neon(raw) -> pd.DataFrame:
     """
     NEON soil temperature (DP1.00041.001) at Utqiagvik (BARR), Toolik (TOOL) and Healy
-    (HEAL): daily maximum per plot and depth (files from download_neon). Depth from the
+    (HEAL): daily mean per plot and depth (files from download_neon). Depth from the
     sensor positions (|zOffset|). Frost heave moves NEON sensors, so a plot-year (1
     January to 1 July of the next year, i.e. the thaw season and the refreeze winter
     the 0 C rule checks) is not used when
@@ -2902,7 +3169,7 @@ def read_neon(raw) -> pd.DataFrame:
         prod = json.loads((folder / "product.json").read_text())
         heave = [c for c in prod.get("changeLogs") or [] if "heav" in (c.get("issue") or "").lower()]
         for site in API["neon_sites"]:
-            f = folder / f"{site}_daily_max.csv"
+            f = folder / f"{site}_daily_mean.csv"
             if not f.exists():
                 continue
             daily = pd.read_csv(f, parse_dates=["date"])
@@ -2957,36 +3224,94 @@ def _neon_heave_hit(c, site, hor, y0, y1) -> bool:
     return (pd.isna(a) or a < y1) and (pd.isna(b) or b > y0)
 
 
-def read_syrdakh(raw) -> pd.DataFrame:
-    """Syrdakh observatory, central Yakutia (Zenodo; files from download_syrdakh). Position
-    from the record's location metadata. ALT by the 0 C crossing rule."""
-    def position(p: Path, sheet: str):
-        rec = next((q / "record.json" for q in p.parents if (q / "record.json").exists()), None)
-        if rec is None:
-            return None
-        md = json.loads(rec.read_text()).get("metadata", {})
-        locs = md.get("locations") or []
-        if isinstance(locs, dict):
-            locs = locs.get("features", [])
-        for l in locs:
-            lat = l.get("lat") or (l.get("geometry") or {}).get("coordinates", [None, None])[1]
-            lon = l.get("lon") or (l.get("geometry") or {}).get("coordinates", [None, None])[0]
-            if lat is not None and lon is not None:
-                return (f"Syrdakh ({l.get('place') or p.stem})", float(lat), float(lon), "Russia")
-        return None
+def _syrdakh_file(p: Path):
+    """A Syrdakh database csv: (header dict, data table). The header is 'key,value' lines
+    up to '# last row of header/meta_data'; the data follow with their own header."""
+    lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    end = next((i for i, ln in enumerate(lines) if ln.startswith("# last row of header")), None)
+    if end is None:
+        return None, None
+    head = {}
+    for ln in lines[:end]:
+        if not ln.startswith("#") and "," in ln:
+            k, v = ln.split(",", 1)
+            head[k.strip()] = v.strip().strip(",").strip()
+    data = pd.read_csv(io.StringIO("\n".join(lines[end + 1:])))
+    return head, data
 
-    return _profiles_from_folder(raw, API_FOLDERS["syrdakh"], "syrdakh", position)
+
+def read_syrdakh(raw) -> pd.DataFrame:
+    """
+    Syrdakh observatory, central Yakutia (Zenodo 14619854; files from download_syrdakh).
+    Every csv has a 'key,value' header (variable_id, unit, source_id, time_start, ...)
+    and then its data.
+      Ground temperature: one file per sensor ('tsl0100' = 100 cm; time, value, QF; QF 0
+        = good). The sensors of one logger (source_id, with the deployment years taken
+        out of the name) form one profile; daily means; ALT by the 0 C crossing rule.
+      Thaw depth ('td' files, one per survey, late September): one value per point
+        (hobo-F1, drill-2012-J1-AL1, ...) with its method (rod, drill, pit, tube);
+        max_exceed = 1 means deeper than the tool (censored).
+    The files and the Zenodo record give no coordinates, so every series gets the centre
+    of the study area (CONFIG syrdakh_position) and a note; the build then keeps
+    different loggers and points apart (one source), and colocated_with lists them.
+    """
+    lat, lon = CONFIG["syrdakh_position"]
+    note = "position: centre of the Syrdakh study area (the files give none)"
+    temps, sites, td = [], {}, []
+    for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        base = Path(root) / API_FOLDERS["syrdakh"]
+        for p in sorted(base.rglob("*.csv")) if base.exists() else []:
+            try:
+                head, d = _syrdakh_file(p)
+            except Exception as e:
+                _unread("syrdakh", p.name, f"cannot read: {type(e).__name__}: {e}"[:200])
+                continue
+            if head is None:
+                continue
+            var = head.get("variable_id", "")
+            m = re.fullmatch(r"tsl(\d{4})", var)
+            if m and int(m.group(1)) > 0 and {"time", "value"} <= set(d.columns):
+                d = d[d.get("QF", 0) == 0]
+                logger = re.sub(r"[-_]?(19|20)\d{2}(?=[-_]|$)", "", head.get("source_id", p.stem)).strip("-_")
+                key = f"SYRDAKH_{logger}"
+                temps.append(pd.DataFrame(dict(source_site_id=key, depth_cm=float(m.group(1)),
+                                               time=pd.to_datetime(d.time, errors="coerce"),
+                                               temp_c=pd.to_numeric(d.value, errors="coerce"))))
+                sites[key] = dict(source_site_id=key, site_name=f"Syrdakh logger {logger}", lat=lat,
+                                  lon=lon, country="Russia", source_file="ground/temp", site_note=note)
+            elif var == "td" and {"point", "value"} <= set(d.columns):
+                date = pd.to_datetime(head.get("time_start"), errors="coerce")
+                meth = d.get("method", pd.Series("", index=d.index)).astype(str).str.upper()
+                td.append(pd.DataFrame(dict(
+                    source_site_id="SYRDAKH_TD_" + d.point.astype(str), site_name="Syrdakh " + d.point.astype(str),
+                    lat=lat, lon=lon, country="Russia", year=date.year if pd.notna(date) else np.nan,
+                    obs_date=date, alt_cm=pd.to_numeric(d.value, errors="coerce"),
+                    censored=pd.to_numeric(d.get("max_exceed", 0), errors="coerce").fillna(0).astype(bool),
+                    method=np.where(meth.str.contains("TUBE"), "thaw_tube", "probe"),
+                    n_points=1, site_note=note + "; method " + meth.str.lower(), source_file=p.name)))
+    out = []
+    if temps:
+        t = pd.concat(temps, ignore_index=True).dropna()
+        t["time"] = t.time.dt.normalize()
+        t = t.groupby(["source_site_id", "time", "depth_cm"], as_index=False).temp_c.mean()
+        out.append(records_from_profiles(t, pd.DataFrame(sites.values()), "soil_temp"))
+    if td:
+        d = pd.concat(td, ignore_index=True)
+        d["flag"] = add_flag(pd.Series("", index=d.index), d.censored, "lower_bound")
+        out.append(d)
+    out = [o for o in out if len(o)]
+    return finish(pd.concat(out, ignore_index=True), "syrdakh") if out else empty_records()
 
 
 def read_metno(raw) -> pd.DataFrame:
-    """MET Norway permafrost stations (files from download_metno): daily maximum per
+    """MET Norway permafrost stations (files from download_metno): daily mean per
     depth; ALT by the 0 C crossing rule. Most stations start in 2019 (Janssonhaugen Vest
     SN99874), so they reach the year threshold only from about 2027."""
     temps, sites = [], []
     for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
-        for f in sorted((Path(root) / API_FOLDERS["metno"]).glob("*_daily_max.csv")):
+        for f in sorted((Path(root) / API_FOLDERS["metno"]).glob("*_daily_mean.csv")):
             d = pd.read_csv(f, parse_dates=["date"])
-            key = f"METNO_{f.stem.replace('_daily_max', '')}"
+            key = f"METNO_{f.stem.replace('_daily_mean', '')}"
             temps.append(pd.DataFrame(dict(source_site_id=key, time=d.date,
                                            depth_cm=d.depth_m.abs() * 100, temp_c=d.temp_c)))
             sites.append(dict(source_site_id=key, site_name=str(d.title.iloc[0]), lat=d.lat.iloc[0],
@@ -2999,35 +3324,66 @@ def read_metno(raw) -> pd.DataFrame:
 
 def read_g02189(raw) -> pd.DataFrame:
     """
-    NSIDC G02189, Russian station soil temperatures to 2000 (files from download_g02189):
-    monthly means, ALT by the 0 C crossing rule for monthly profiles. A check only: every
-    value is flagged 'check_only' and never used. check_pre2000_g02189.csv compares it
-    with the Russian ALT series (ru_hms_alt) at the same stations. Station positions from
-    a station table in the download (a table with station, latitude and longitude).
+    NSIDC G02189 ('How permanent is permafrost'): soil temperatures at five Yakutian
+    stations (Yakutsk, Verkhoyansk, Pokrovsk, Isit', Churapcha), one workbook per station
+    with only January and July monthly means at 0.2-3.2 m (files from download_g02189;
+    the 'subset' copies are not read). With no August or September the 0 C rule cannot
+    give ALT, so each year's value is the July thaw depth (0 C crossing of the July mean
+    profile): a lower limit of that year's ALT. Flagged 'check_only' and
+    'july_thaw_depth', never used as data. check_pre2000_g02189.csv compares it with the
+    Russian ALT series (ru_hms_alt) of the same station: ALT should be at least the July
+    thaw depth.
     """
-    stations = {}
+    recs = []
     for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
         base = Path(root) / API_FOLDERS["g02189"]
-        for p in sorted(base.rglob("*")) if base.exists() else []:
-            if not p.is_file() or p.suffix.lower() not in TABLE_EXT:
+        for p in sorted(base.rglob("*.xls*")) if base.exists() else []:
+            if "subset" in p.name.lower():
                 continue
-            for _, df in read_any_table(p):
-                cols = {str(c).lower(): c for c in df.columns}
-                la = next((cols[c] for c in cols if c.startswith("lat")), None)
-                lo = next((cols[c] for c in cols if c.startswith(("lon", "long"))), None)
-                st = next((cols[c] for c in cols if c.startswith(("station", "wmo", "index", "id"))), None)
-                if la and lo and st:
-                    for r in df[[st, la, lo]].itertuples(index=False):
-                        stations[str(r[0]).strip()] = (as_float(r[1]), as_float(r[2]))
-
-    def position(p: Path, sheet: str):
-        sid = next((s for s in stations if s and re.search(rf"(?<!\d){re.escape(s)}(?!\d)", p.stem)), None)
-        return None if sid is None else (f"Station {sid} (G02189)", *stations[sid], "Russia")
-
-    a = _profiles_from_folder(raw, API_FOLDERS["g02189"], "g02189", position,
-                              method="soil_temp_monthly")
-    a["flag"] = add_flag(a.flag, np.ones(len(a), bool), "check_only")
-    return a
+            try:
+                book = pd.read_excel(p, sheet_name=None, header=None)
+            except Exception as e:
+                _unread("g02189", p.name, f"cannot open: {e}"[:200])
+                continue
+            info = next((v for k, v in book.items() if "info" in k.lower()), None)
+            jul = next((v for k, v in book.items() if k.lower().startswith("jul")), None)
+            if info is None or jul is None:
+                _unread("g02189", p.name, "no Info or July sheet")
+                continue
+            stations = {}
+            for r in info.itertuples(index=False):
+                if pd.notna(pd.to_numeric(r[0], errors="coerce")):
+                    stations[str(int(float(r[0])))] = (str(r[1]), as_float(r[2]), as_float(r[3]))
+            txt = " ".join(map(str, jul.iloc[:15, 0]))
+            wmo = (re.search(r"WMO\s*=\s*(\d+)", txt) or [None, ""])[1]
+            if wmo not in stations:
+                _unread("g02189", p.name, "station not in the Info sheet")
+                continue
+            hr = next(i for i in range(len(jul)) if str(jul.iat[i, 0]).strip().upper() == "YEAR")
+            depth = {j: _depth_from_name(c) for j, c in enumerate(jul.iloc[hr]) if j > 0}
+            depth = {j: v for j, v in depth.items() if v is not None}       # '0.20 m' -> 20 cm
+            name, la, lo = stations[wmo]
+            for r in jul.iloc[hr + 1:].itertuples(index=False):
+                yr = pd.to_numeric(r[0], errors="coerce")
+                if pd.isna(yr):
+                    continue
+                prof = sorted((d, as_float(r[j])) for j, d in depth.items())
+                prof = [(d, v) for d, v in prof if pd.notna(v) and v > -900]
+                if len(prof) < 2 or prof[0][1] <= 0:
+                    continue
+                z, cens = np.nan, False
+                for (d0, v0), (d1, v1) in zip(prof, prof[1:]):
+                    if v0 > 0 >= v1:
+                        z = d0 + (d1 - d0) * v0 / (v0 - v1)
+                        break
+                else:
+                    z, cens = prof[-1][0], True             # thawed below the deepest sensor
+                recs.append(dict(source_site_id=f"G02189_{wmo}", site_name=f"{name} (WMO {wmo}, G02189)",
+                                 lat=la, lon=lo, country="Russia", method="soil_temp_monthly",
+                                 year=int(yr), alt_cm=z, censored=cens, n_points=len(prof),
+                                 flag="check_only;july_thaw_depth" + (";lower_bound" if cens else ""),
+                                 source_file=p.name))
+    return finish(pd.DataFrame(recs), "g02189") if recs else empty_records()
 
 
 ADAPTERS = {
@@ -3264,7 +3620,8 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
     Two different site keys are never joined, and neither are two series of the same
     source (the source itself lists them as different plots, e.g. the Eight Mile Lake
     thaw-gradient sites or the Kolyma water-balance plots, even when they share a
-    coordinate).
+    coordinate). The exception is the collections in CONFIG join_within_source, where
+    only rules (c) and (d) apply.
     Series that are that close but disagree, or do not overlap, stay separate sites (the
     sites table lists them in 'colocated_with'). The most preferred source (CONFIG
     priority), then the longest series, comes first and names the site.
@@ -3291,7 +3648,10 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
             near = np.where(dist <= max(CONFIG["dup_distance_km"], CONFIG["copy_km"]))[0]
             for i in near[np.argsort(dist[near])]:
                 s = reps[i]
-                if (r.site_key and s["site_key"]) or r.source in s["sources"]:
+                if r.site_key and s["site_key"]:
+                    continue
+                same_src = r.source in s["sources"]
+                if same_src and r.source not in CONFIG["join_within_source"]:
                     continue
                 a, b = by_key[key], by_key[s["key"]]
                 common = a.index.intersection(b.index)
@@ -3299,7 +3659,7 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
                 if len(common) >= 2:
                     diff = (a[common] - b[common]).abs().median()
                     tol = max(CONFIG["dup_agree_cm"], CONFIG["dup_agree_frac"] * b.mean())
-                    if same_fam and dist[i] <= CONFIG["dup_distance_km"] and diff <= tol:
+                    if same_fam and dist[i] <= CONFIG["dup_distance_km"] and diff <= tol and not same_src:
                         match = s                                            # rule (b)
                     elif (same_fam and r.fam == "temperature" and len(common) >= 5
                           and dist[i] <= CONFIG["same_borehole_km"]
@@ -3553,11 +3913,13 @@ def check_source_agreement(rec: pd.DataFrame) -> pd.DataFrame:
     return m.sort_values(["site_id", "source", "year"])
 
 
-def check_g02189(rec: pd.DataFrame, max_km: float = 5.0) -> pd.DataFrame:
+def check_g02189(rec: pd.DataFrame, max_km: float = 20.0) -> pd.DataFrame:
     """
-    NSIDC G02189 (soil temperatures, monthly) against the Russian ALT series (ru_hms_alt,
-    1930-1990) at the same station (within max_km): one row per station and year. A
-    check of both products before 2000; G02189 is never used as data.
+    NSIDC G02189 July thaw depth (0 C crossing of the July mean profile, a lower limit of
+    ALT) against the Russian ALT series (ru_hms_alt, 1930-1990) of the same station
+    (within max_km; both give positions to 0.1 degree): one row per station and year.
+    'alt_at_least_july' should be True in nearly every year. A check of both products
+    before 2000; G02189 is never used as data.
     """
     g = rec[rec.source == "g02189"]
     h = rec[rec.source == "ru_hms_alt"]
@@ -3580,6 +3942,8 @@ def check_g02189(rec: pd.DataFrame, max_km: float = 5.0) -> pd.DataFrame:
     m = pd.DataFrame(rows)
     if len(m):
         m["diff_cm"] = m.g02189_alt_cm - m.ru_hms_alt_cm
+        m["alt_at_least_july"] = ((m.ru_hms_alt_cm >= m.g02189_alt_cm).astype(float)
+                                .where(m.ru_hms_alt_cm.notna()))
     return m
 
 
@@ -3620,6 +3984,10 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> lis
                               site_years_read=len(df), reader_failed=name in failed))
         if len(df):
             parts.append(df)
+    if not parts:
+        log("\nNo reader returned any record: nothing to build.")
+        (out / "build_log.txt").write_text("\n".join(LOG_LINES), encoding="utf-8")
+        return failed or ["no_records"]
     rec = pd.concat(parts, ignore_index=True)
     out_of_scope = ~in_scope(rec)
     log(f"\n{int(out_of_scope.sum())} site-years outside the scope (south of {CONFIG['min_lat']} N or "
@@ -3639,8 +4007,10 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> lis
     pre = check_g02189(rec)
     if len(pre):
         pre.to_csv(out / "check_pre2000_g02189.csv", index=False)
-        log(f"  G02189 check: {pre.g02189_series.nunique()} stations, median |difference| to "
-            f"ru_hms_alt {pre.diff_cm.abs().median():.1f} cm on {pre.diff_cm.notna().sum()} shared years")
+        n = pre.diff_cm.notna().sum()
+        log(f"  G02189 check: {pre.g02189_series.nunique()} stations, {n} years shared with "
+            f"ru_hms_alt; ALT at least the July thaw depth in "
+            f"{pre.alt_at_least_july.mean() * 100 if n else float('nan'):.0f}% of them")
     an = merge_site_years(rec)
     ux = outlier_flags(an).reindex(an.index)
     has = ux != ""
