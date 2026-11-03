@@ -1,4 +1,4 @@
-# ALDI v5.1 settings. Every value that changes a class is set here, with the reason.
+# ALDI v5.2 settings. Every value that changes a class is set here, with the reason.
 # Run:  python Scripts/aldi/run_aldi.py Scripts/aldi/aldi_config.yaml
 
 input:
@@ -37,6 +37,11 @@ trend:
   # AR(1) correction of var(S): lag-1 autocorrelation of the detrended series,
   # bias-corrected, clipped to [0, ar1_max]. Negative values give no correction.
   ar1_max: 0.85
+  # pooled (v5.2): one AR(1) coefficient for the network, REML over all series, used
+  # for every site. site: each site's own lag-1 estimate (v5.1). The site estimate is
+  # biased low and noisy for 10-35 values, which made the 90 % interval too narrow
+  # (simulated coverage 0.80-0.87 at rho 0.5); pooled gives 0.90-0.93.
+  ar1_method: pooled
 
 classes:
   # Rates in % of the site's ALT per decade (v5 decision of 2026-10-06; sensitivity

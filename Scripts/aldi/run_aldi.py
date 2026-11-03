@@ -1,9 +1,9 @@
-"""Run ALDI v5.1 on the multi-source ALT file.
+"""Run ALDI v5.2 on the multi-source ALT file.
 
     python run_aldi.py aldi_config.yaml [annual_file] [output_dir]
 
 The two optional arguments override the paths in the config (Colab vs local runs).
-Writes aldi_v51_results.csv, aldi_v51_removed_site_years.csv, aldi_v51_summary.txt and
+Writes aldi_v52_results.csv, aldi_v52_removed_site_years.csv, aldi_v52_summary.txt and
 a copy of the config used.
 """
 import sys
@@ -20,7 +20,7 @@ import aldi_core as A  # noqa: E402
 
 def summary_text(res, net, cfg, removed):
     out = []
-    out.append(f"ALDI v5.1  numpy {np.__version__}  scipy {scipy.__version__}  pandas {pd.__version__}")
+    out.append(f"ALDI v5.2  numpy {np.__version__}  scipy {scipy.__version__}  pandas {pd.__version__}")
     out.append(f"sites classified: {len(res)}; site-years: {int(res.n_obs.sum())} uncensored, "
                f"{int(res.n_censored.sum())} censored (lower bounds)")
     out.append(f"site-years removed: {len(removed)}")
@@ -36,6 +36,8 @@ def summary_text(res, net, cfg, removed):
     out.append(f"\nnetwork rate (REML, regions as clusters): {net['mu']:.2f} %/dec "
                f"(95 % CI {net['mu'] - z * net['se_mu']:.2f} to {net['mu'] + z * net['se_mu']:.2f}); "
                f"{net['n_sites']} sites in {net['n_regions']} regions of <= {cfg['pooling']['region_km']} km")
+    out.append(f"AR(1) for the trend intervals: {net['ar1_method']}; pooled REML rho = "
+               f"{net['ar1_rho_pooled']:.2f}; per-site estimates median {res.ar1_rho_site.median():.2f}")
     out.append(f"between-region SD {net['tau_region']:.2f}, between-site SD {net['tau_site']:.2f} %/dec")
     out.append(f"nonlinear (broken stick p < {cfg['nonlinearity']['alpha']}): {int(res.flag_nonlinear.sum())}, "
                f"of which reversals: {int(res.flag_reversal.sum())}  (expected false positives "
@@ -62,11 +64,11 @@ def main():
     data, removed = A.load_series(annual, cfg)
     res, net = A.run(data, cfg)
 
-    res.to_csv(out_dir / "aldi_v51_results.csv", index=False)
-    removed.to_csv(out_dir / "aldi_v51_removed_site_years.csv", index=False)
+    res.to_csv(out_dir / "aldi_v52_results.csv", index=False)
+    removed.to_csv(out_dir / "aldi_v52_removed_site_years.csv", index=False)
     txt = summary_text(res, net, cfg, removed)
-    (out_dir / "aldi_v51_summary.txt").write_text(txt)
-    (out_dir / "aldi_v51_config_used.yaml").write_text(cfg_path.read_text())
+    (out_dir / "aldi_v52_summary.txt").write_text(txt)
+    (out_dir / "aldi_v52_config_used.yaml").write_text(cfg_path.read_text())
     print(txt)
 
 
