@@ -28,7 +28,8 @@ Then, unchanged from the POWER run:
 Temperature is corrected to the site elevation with the summer lapse rate of
 gee_causal_features.CONFIG (-6.5 K/km May-Sep, none Oct-Apr because of winter
 inversions), as the causal features are. --grid keeps the plain ERA5-Land cell values
-(sensitivity run). Sea cells filled from their land neighbours are not corrected.
+(sensitivity run); --summer-lapse -4.5 uses a gentler summer lapse rate (sensitivity:
+the lapse rate is a larger uncertainty than the DEM). Sea cells filled from their land neighbours are not corrected.
 """
 from __future__ import annotations
 
@@ -69,14 +70,16 @@ def export_files(drive_dir, group):
     return dict(sorted(files.items()))
 
 
-def daily_series(drive_dir, dz, grid_only=False):
+def daily_series(drive_dir, dz, grid_only=False, summer_lapse=None):
     """{site_id: Series of daily mean temperature (C)} from all t2m_daily exports. The ALT
     years (Oct-Sep) do not overlap, so the years join into one series per site. Files are
     read one at a time (each has 730 day columns)."""
     files = export_files(drive_dir, "t2m_daily")
     if not files:
         sys.exit(f"no t2m_daily_*.csv in {drive_dir}")
-    lapse = gee.CONFIG["lapse_rate_k_per_km"]
+    lapse = dict(gee.CONFIG["lapse_rate_k_per_km"])
+    if summer_lapse is not None:          # sensitivity: another May-Sep lapse rate
+        lapse = {m: (summer_lapse if v != 0 else 0.0) for m, v in lapse.items()}
     filled, parts = {}, {}
     for year, f in files.items():
         g = pd.read_csv(f).drop_duplicates("site_id")
@@ -101,13 +104,15 @@ def main():
     ap.add_argument("drive_dir")
     ap.add_argument("tdd_dir")
     ap.add_argument("--grid", action="store_true", help="no elevation correction")
+    ap.add_argument("--summer-lapse", type=float, default=None,
+                    help="May-Sep lapse rate in K/km for a sensitivity run (default -6.5 from CONFIG)")
     a = ap.parse_args()
     out = Path(a.tdd_dir)
     cache = out / "daily_t2m"
     cache.mkdir(parents=True, exist_ok=True)
 
     dz = elevation_offsets(a.drive_dir)
-    series, filled, got = daily_series(a.drive_dir, dz, a.grid)
+    series, filled, got = daily_series(a.drive_dir, dz, a.grid, a.summer_lapse)
     for sid, s in series.items():
         pd.DataFrame({"date": s.index.strftime("%Y-%m-%d"), "t2m_c": s.values}).to_csv(
             cache / cache_name(sid), index=False)
