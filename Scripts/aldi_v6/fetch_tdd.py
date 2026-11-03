@@ -3,7 +3,7 @@
     python fetch_tdd.py  path/to/alt_multisource_annual.csv  out_dir  [--source power]
 
 Writes
-  out_dir/daily_t2m/<site_id>.csv   daily mean 2 m air temperature per site (cache;
+  out_dir/daily_t2m/<site_id>.csv   (":" in an id becomes "__") daily mean 2 m air temperature per site (cache;
                                     a site already cached is not downloaded again)
   out_dir/tdd_site_years.csv        one row per site-year of the annual file
 
@@ -57,6 +57,11 @@ def fetch_power(lat, lon, start, end, tries=4):
             time.sleep(2 ** (k + 1))
 
 
+def cache_name(site_id):
+    """File name for a site id; ':' is not allowed in Windows file names."""
+    return str(site_id).replace(":", "__").replace("/", "_") + ".csv"
+
+
 def site_table(annual: pd.DataFrame) -> pd.DataFrame:
     a = annual[annual["use"] == True]  # noqa: E712
     return a.groupby("site_id")[["lat", "lon"]].first()
@@ -82,7 +87,7 @@ def main():
     ap.add_argument("annual_file")
     ap.add_argument("out_dir")
     ap.add_argument("--source", default="power", choices=["power", "cache"])
-    ap.add_argument("--start", type=int, default=1985)
+    ap.add_argument("--start", type=int, default=1981)  # POWER starts in 1981
     ap.add_argument("--end", type=int, default=2025)
     ap.add_argument("--sleep", type=float, default=1.0, help="seconds between requests")
     args = ap.parse_args()
@@ -95,7 +100,7 @@ def main():
 
     elev = {}
     for k, (sid, row) in enumerate(sites.iterrows()):
-        f = cache / f"{sid}.csv"
+        f = cache / cache_name(sid)
         if f.exists():
             continue
         if args.source == "cache":
@@ -106,8 +111,12 @@ def main():
         pd.DataFrame({"date": s.index.strftime("%Y-%m-%d"), "t2m_c": s.values}).to_csv(f, index=False)
         elev[sid] = e
         time.sleep(args.sleep)
-    if elev:
-        pd.Series(elev, name="grid_elev_m").rename_axis("site_id").to_csv(out / "power_grid_elevation_new.csv")
+    if elev:   # grid-cell elevation of the sites downloaded in this run (appended)
+        ef = out / "power_grid_elevation.csv"
+        new = pd.Series(elev, name="grid_elev_m").rename_axis("site_id").reset_index()
+        if ef.exists():
+            new = pd.concat([pd.read_csv(ef), new]).drop_duplicates("site_id", keep="last")
+        new.to_csv(ef, index=False)
 
     # survey-day rule for probe sites
     a = annual[annual["use"] == True].copy()  # noqa: E712
@@ -118,7 +127,7 @@ def main():
 
     rows = []
     for sid, g in annual.groupby("site_id"):
-        f = cache / f"{sid}.csv"
+        f = cache / cache_name(sid)
         if not f.exists():
             continue
         t = pd.read_csv(f, parse_dates=["date"]).set_index("date")["t2m_c"]

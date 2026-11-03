@@ -1,0 +1,38 @@
+# ALDI v6 settings. The sample, the class margins and the regions come from the v5.2
+# config, so v5.2 and v6 classify exactly the same site-years.
+base_config: ../aldi/aldi_config.yaml
+
+model:
+  # Shared region-year anomalies (sites within 250 km see the same warm or cold summer).
+  # true: modelled as a random effect (main run); false: left in each site's noise.
+  region_year: true
+  # Site deviations from their region: normal (main) or student (t with 4 df,
+  # sensitivity for the few heavy-tailed BNZ / Mackenzie rates).
+  slope_dist: normal
+  chains: 4
+  warmup: 1500
+  draws: 1500
+  target_accept: 0.95
+  seed: 2026
+  priors:
+    mu_sd: 0.2         # network trend, log units per decade (0.2 = 22 %/dec)
+    tau_sd: 0.1        # half-normal scale of region and site SDs (log/decade)
+    a_sd: 0.5          # site level around its mean log ALT
+    cens_sd: 0.5       # how far above a lower bound the true ALT may be (log units)
+
+climate:
+  # Stefan sensitivity: hierarchical (k per site, around a family mean, prior centre 0.5)
+  # or fixed (k = k_fixed everywhere). Both are run; hierarchical is the main result.
+  k_mode: hierarchical
+  k_fixed: 0.5
+  # B runs without region-year effects: most of the shared year-to-year swing is the
+  # TDD signal that k is estimated from.
+  region_year: false
+
+outputs:
+  prefix: aldi_v6
+  # long-record check: sites with at least this span get a second trend over only
+  # their last `recent_years` years, to see whether short (recent) records are faster
+  # because they are short or because they are recent
+  period_check_min_span: 25
+  recent_years: 15
