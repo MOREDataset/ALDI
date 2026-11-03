@@ -5,9 +5,11 @@
 Synthetic series: ALT = 60 cm * (1 + rate/1000 * (year - mid)) + AR(1) noise with
 SD 7.5 % of ALT (the median residual SD of the 221 real series), 10 % of years missing.
 For each record length, AR(1) coefficient and true rate it reports:
-  - coverage of the nominal 90 % interval for the slope: v5.1 (Kendall inversion with
-    AR(1) correction) and v4 (moving-block bootstrap, blocks of max(2, min(5, n//4)))
-  - share of each v5.1 class
+  - coverage of the nominal 90 % interval for the slope: v5.2 (Kendall inversion with
+    the AR(1) correction from one pooled REML rho, fitted on the 300 series of the cell
+    as the network would be), v5.1 (same with each series' own lag-1 rho) and v4
+    (moving-block bootstrap, blocks of max(2, min(5, n//4)))
+  - share of each class (v5.2, the config's ar1_method)
   - false-positive rate of the broken-stick test when the truth is a straight line
 """
 import sys
@@ -66,15 +68,20 @@ def main():
     for n_years in [12, 18, 25, 35]:
         for rho in [0.0, 0.3, 0.5]:
             for rate in [0.0, 5.0, 10.0, 20.0]:
-                cov51 = cov4 = 0
+                cov52 = cov51 = cov4 = 0
                 classes = []
                 nl_pos = nl_tested = 0
-                for _ in range(n_rep):
-                    x, y = simulate(n_years, rate, rho, rng)
+                sims = [simulate(n_years, rate, rho, rng) for _ in range(n_rep)]
+                rho_pool, _ = A.pooled_ar1(sims, tc["ar1_max"])
+                use_pool = tc.get("ar1_method", "site") == "pooled"
+                for x, y in sims:
                     c = np.zeros(len(x), bool)
                     true_slope = ALT0_CM * rate / 1000
-                    tr = A.ats_trend(x, y, c, tc["ci_level"], tc["ar1_max"])
-                    cov51 += tr.lo <= true_slope <= tr.hi
+                    tr51 = A.ats_trend(x, y, c, tc["ci_level"], tc["ar1_max"])
+                    tr52 = A.ats_trend(x, y, c, tc["ci_level"], tc["ar1_max"], rho_pool)
+                    cov51 += tr51.lo <= true_slope <= tr51.hi
+                    cov52 += tr52.lo <= true_slope <= tr52.hi
+                    tr = tr52 if use_pool else tr51
                     lo4, hi4 = v4_block_bootstrap_ci(x, y, tc["ci_level"], 200, rng)
                     cov4 += lo4 <= true_slope <= hi4
                     k = 1000 / tr.intercept_ref
@@ -87,13 +94,14 @@ def main():
                             nl_pos += bp["nl_p"] < nl["alpha"]
                 vc = pd.Series(classes).value_counts(normalize=True)
                 rows.append({"n_years": n_years, "rho": rho, "true_rate_pct_dec": rate,
+                             "rho_pooled": rho_pool, "coverage_v52": cov52 / n_rep,
                              "coverage_v51": cov51 / n_rep, "coverage_v4_bootstrap": cov4 / n_rep,
                              **{f"share_{k}": round(float(vc.get(k, 0.0)), 3) for k in A.CLASSES},
                              "nl_false_positive": nl_pos / nl_tested if nl_tested else np.nan})
                 print(rows[-1])
     df = pd.DataFrame(rows)
-    df.to_csv(out / "aldi_v51_simulation.csv", index=False)
-    print(df.groupby("rho")[["coverage_v51", "coverage_v4_bootstrap", "nl_false_positive"]].mean())
+    df.to_csv(out / "aldi_v52_simulation.csv", index=False)
+    print(df.groupby("rho")[["rho_pooled", "coverage_v52", "coverage_v51", "coverage_v4_bootstrap", "nl_false_positive"]].mean())
 
 
 if __name__ == "__main__":

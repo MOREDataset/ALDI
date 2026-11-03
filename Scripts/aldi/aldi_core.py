@@ -1,4 +1,4 @@
-"""ALDI v5.1: trend classes for active-layer thickness series.
+"""ALDI v5.2: trend classes for active-layer thickness series.
 
 What changes from the v4 notebook (ALDI_Calculation_final.ipynb), and why:
 
@@ -19,7 +19,13 @@ What changes from the v4 notebook (ALDI_Calculation_final.ipynb), and why:
    it is exactly Gilbert's (1987) rank interval for the Sen slope, and it extends to
    censored years, which the v4 block bootstrap cannot. In simulations
    (validate_aldi.py) both intervals hold their 90 % level when rho = 0 and both fall
-   to 84-87 % when rho = 0.5; the real series have a median rho of 0.13.
+   to 80-87 % when rho = 0.5 if rho is estimated per site.
+   Since v5.2 the AR(1) coefficient is one value for the whole network, fitted by
+   REML on all series together (pooled_ar1). The per-site lag-1 estimate is biased
+   low (a fitted trend and gaps both pull it down; at n = 12 and true rho = 0.5 it
+   averages about 0.3) and very noisy (SD about 0.3 at n = 12), which is why the
+   interval was too narrow. With the pooled value the simulated coverage is 0.90-0.93
+   for rho 0 to 0.5. The per-site value is still reported (ar1_rho_site).
 6. Reversal is tested with a broken-stick fit and an AR(1) bootstrap of the sup-F
    statistic, so the breakpoint year is estimated, not fixed at the first and last
    seven years, and the test has a known false-positive rate. It is a flag.
@@ -103,6 +109,16 @@ def load_series(annual: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataF
         same = d["family"].values == d["site_id"].map(main).values
         log.append(d.loc[~same].assign(reason="minority method family in the series"))
         d = d[same]
+
+    # Record length, after the window and the method-family rule. Logged here so the
+    # removed-site-years file accounts for every used row of the input.
+    n_unc = d[~d["censored"]].groupby("site_id").size()
+    span = d.groupby("site_id")["year"].agg(lambda v: v.max() - v.min() + 1)
+    ok_sites = n_unc.index[(n_unc >= s["min_obs"]) & (span.reindex(n_unc.index) >= s["min_span_years"])]
+    short = ~d["site_id"].isin(ok_sites)
+    log.append(d.loc[short].assign(
+        reason=f"site too short in the window (< {s['min_obs']} uncensored years or < {s['min_span_years']} yr span)"))
+    d = d[~short]
 
     cols = ["site_id", "lat", "lon", "year", "alt_cm", "censored", "method", "family", "flag",
             "obs_date", "source"]
@@ -198,10 +214,53 @@ def lag1_autocorrelation(x, resid, ar1_max):
     if len(nxt) < 5:
         return 0.0, np.nan, len(nxt)
     e = resid - resid.mean()
-    raw = np.sum(e[nxt] * e[nxt + 1]) / np.sum(e ** 2)
     n = len(x)
+    # mean lag-1 product over the consecutive pairs / mean square over all years
+    # (dividing a sum over the pairs by a sum over all years shrinks rho when years
+    # are missing)
+    raw = (np.sum(e[nxt] * e[nxt + 1]) / len(nxt)) / (np.sum(e ** 2) / n)
     corr = (n * raw + 1) / (n - 4)
     return float(np.clip(corr, 0.0, ar1_max)), float(raw), len(nxt)
+
+
+AR1_GRID = np.round(np.arange(-0.5, 0.951, 0.01), 2)
+
+
+def ar1_reml_loglik(x, y, grid=AR1_GRID):
+    """REML log-likelihood of y = a + b x + e, e AR(1) in calendar years, over a rho grid.
+
+    Missing years are handled exactly: corr(e_i, e_j) = rho^|x_i - x_j|. The intercept,
+    slope and noise variance are profiled out (restricted likelihood), which removes
+    most of the downward bias that a fitted trend gives the lag-1 estimate.
+    """
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    n = len(x)
+    X = np.column_stack([np.ones(n), x - x.mean()])
+    lag = np.abs(x[:, None] - x[None, :])
+    out = np.empty(len(grid))
+    for k, r in enumerate(grid):
+        R = np.sign(r) ** lag * np.abs(r) ** lag
+        L = np.linalg.cholesky(R)
+        Xs = np.linalg.solve(L, X)
+        ys = np.linalg.solve(L, y)
+        b = np.linalg.lstsq(Xs, ys, rcond=None)[0]
+        e = ys - Xs @ b
+        s2 = e @ e / (n - 2)
+        out[k] = -0.5 * ((n - 2) * np.log(s2) + 2 * np.log(np.diag(L)).sum()
+                         + np.linalg.slogdet(Xs.T @ Xs)[1])
+    return out
+
+
+def pooled_ar1(series, ar1_max, grid=AR1_GRID):
+    """One AR(1) coefficient for many series: maximise the summed REML log-likelihood.
+
+    series: iterable of (years, alt) arrays (uncensored years). Each series keeps its own
+    level, slope and noise variance. Returns (rho clipped to [0, ar1_max], rho unclipped).
+    """
+    ll = sum(ar1_reml_loglik(x, y, grid) for x, y in series)
+    r = float(grid[int(np.argmax(ll))])
+    return float(np.clip(r, 0.0, ar1_max)), r
 
 
 @dataclass
@@ -211,15 +270,18 @@ class TrendResult:
     hi: float             # cm/yr
     intercept_ref: float  # fitted ALT (cm) at the median year
     p_value: float        # Kendall test of zero slope, AR(1)-corrected, two-sided
-    rho: float
-    rho_raw: float
+    rho: float            # AR(1) coefficient used for the variance correction
+    rho_raw: float        # this site's own lag-1 estimate before bias correction
+    rho_site: float       # this site's own bias-corrected, clipped estimate
     vif: float
     n: int
     n_censored: int
     resid_sd: float       # robust SD of residuals (cm), uncensored values
 
 
-def ats_trend(x, y, c, ci_level, ar1_max) -> TrendResult:
+def ats_trend(x, y, c, ci_level, ar1_max, rho_fixed=None) -> TrendResult:
+    """Akritas-Theil-Sen slope and interval. rho_fixed: AR(1) coefficient to use
+    (the pooled network value); None uses this site's own lag-1 estimate."""
     x = np.asarray(x, float)
     y = np.asarray(y, float)
     c = np.asarray(c, bool)
@@ -235,7 +297,8 @@ def ats_trend(x, y, c, ci_level, ar1_max) -> TrendResult:
     intercept_ref = float(np.median(y[unc] - slope * (x[unc] - xm)))
     resid = y - (intercept_ref + slope * (x - xm))
     # autocorrelation from uncensored years only (censored residuals are bounds)
-    rho, rho_raw, _ = lag1_autocorrelation(x[unc], resid[unc], ar1_max)
+    rho_site, rho_raw, _ = lag1_autocorrelation(x[unc], resid[unc], ar1_max)
+    rho = rho_site if rho_fixed is None else float(rho_fixed)
     vif = ar1_variance_factor(n, rho)
     var_s = var_s_null(y, c, n) * vif
 
@@ -248,7 +311,7 @@ def ats_trend(x, y, c, ci_level, ar1_max) -> TrendResult:
     zs = (s0 - np.sign(s0)) / np.sqrt(var_s)
     p = 2 * stats.norm.sf(abs(zs))
     mad = np.median(np.abs(resid[unc] - np.median(resid[unc])))
-    return TrendResult(slope, lo, hi, intercept_ref, float(p), rho, rho_raw, vif, n,
+    return TrendResult(slope, lo, hi, intercept_ref, float(p), rho, rho_raw, rho_site, vif, n,
                        int(c.sum()), 1.4826 * mad)
 
 
@@ -429,13 +492,13 @@ def site_seed(seed, site_id):
     return seed + zlib.crc32(str(site_id).encode())
 
 
-def analyse_site(g: pd.DataFrame, cfg: dict) -> dict:
+def analyse_site(g: pd.DataFrame, cfg: dict, rho_fixed=None) -> dict:
     g = g.sort_values("year")
     x = g["year"].to_numpy(float)
     y = g["alt_cm"].to_numpy(float)
     c = g["censored"].to_numpy(bool)
     tc, cc = cfg["trend"], cfg["classes"]
-    tr = ats_trend(x, y, c, tc["ci_level"], tc["ar1_max"])
+    tr = ats_trend(x, y, c, tc["ci_level"], tc["ar1_max"], rho_fixed)
     assert tr.intercept_ref > 0, "fitted ALT must be positive"
     to_rate = 1000.0 / tr.intercept_ref   # cm/yr -> % of ALT per decade
     rate, rlo, rhi = tr.slope * to_rate, tr.lo * to_rate, tr.hi * to_rate
@@ -474,7 +537,7 @@ def analyse_site(g: pd.DataFrame, cfg: dict) -> dict:
         "alt_ref_cm": tr.intercept_ref, "slope_cm_yr": tr.slope,
         "slope_lo_cm_yr": tr.lo, "slope_hi_cm_yr": tr.hi,
         "rate_pct_dec": rate, "rate_lo": rlo, "rate_hi": rhi, "rate_se": se_rate,
-        "p_trend": tr.p_value, "ar1_rho": tr.rho, "ar1_rho_raw": tr.rho_raw, "var_factor": tr.vif,
+        "p_trend": tr.p_value, "ar1_rho": tr.rho, "ar1_rho_site": tr.rho_site, "ar1_rho_raw": tr.rho_raw, "var_factor": tr.vif,
         "resid_sd_cm": tr.resid_sd, "mdt_pct_dec": mdt,
         "class_site": classify(rate, rlo, rhi, cc["stable_margin_pct_dec"], cc["rapid_pct_dec"]),
         **bp, "flag_nonlinear": nonlinear, "flag_reversal": bool(reversal),
@@ -497,14 +560,20 @@ def bh_qvalues(p):
 
 
 def run(data: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict]:
-    s = cfg["sample"]
-    rows = []
+    s, tc = cfg["sample"], cfg["trend"]
+    sites = []
     for sid, g in data.groupby("site_id"):
         n_obs = int((~g["censored"]).sum())
         span = int(g["year"].max() - g["year"].min() + 1)
-        if n_obs < s["min_obs"] or span < s["min_span_years"]:
-            continue
-        rows.append(analyse_site(g, cfg))
+        if n_obs >= s["min_obs"] and span >= s["min_span_years"]:
+            sites.append(g.sort_values("year"))
+    method = tc.get("ar1_method", "site")
+    assert method in ("pooled", "site"), method
+    rho_pool, rho_pool_raw = pooled_ar1(
+        [(g.loc[~g["censored"], "year"].to_numpy(float), g.loc[~g["censored"], "alt_cm"].to_numpy(float))
+         for g in sites], tc["ar1_max"])
+    rho_fixed = rho_pool if method == "pooled" else None
+    rows = [analyse_site(g, cfg, rho_fixed) for g in sites]
     res = pd.DataFrame(rows)
     assert len(res) > 0
     res["q_trend"] = bh_qvalues(res["p_trend"])
@@ -524,4 +593,7 @@ def run(data: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, dict]:
     res = pd.concat([res, probs], axis=1)
     network = {k: pool[k] for k in ["mu", "se_mu", "tau_region", "tau_site", "n_regions"]}
     network["n_sites"] = len(res)
+    network["ar1_method"] = method
+    network["ar1_rho_pooled"] = rho_pool
+    network["ar1_rho_pooled_unclipped"] = rho_pool_raw
     return res, network
