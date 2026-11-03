@@ -1,10 +1,12 @@
 """Run ALDI v6 (hierarchical trends, A) and the climate-adjusted index (B).
 
-    python run_aldi_v6.py aldi_v6_config.yaml  annual.csv  out_dir  [tdd_site_years.csv [tdd_all_years.csv]]
+    python run_aldi_v6.py aldi_v6_config.yaml  annual.csv  out_dir  [tdd_site_years.csv [tdd_all_years.csv [weather_site_years.csv]]]
 
 annual.csv is alt_multisource_annual.csv (same input as v5.2); tdd_site_years.csv comes
 from fetch_tdd.py. Without the TDD file only A runs. tdd_all_years.csv (every calendar
 year per site) adds the B variants with the previous year's TDD and the winter FDD.
+weather_site_years.csv (era5land_for_b.py: ERA5-Land snow and rain per ALT year) adds
+the weather variant.
 
 Outputs (out_dir)
   aldi_v6_results.csv     one row per site: v5.2 classes, v6 rates and classes (A),
@@ -146,6 +148,7 @@ def main():
     annual_file, out = sys.argv[2], Path(sys.argv[3])
     tdd_file = sys.argv[4] if len(sys.argv) > 4 else None
     tdd_all_file = sys.argv[5] if len(sys.argv) > 5 else None
+    weather_file = sys.argv[6] if len(sys.argv) > 6 else None
     out.mkdir(parents=True, exist_ok=True)
     mc_cfg, pri = cfg["model"], cfg["model"]["priors"]
     pre = cfg["outputs"]["prefix"]
@@ -199,14 +202,19 @@ def main():
         sAB, _, _ = M.summarise_A(mcAB, arrAB, cfg)
         bruns = {}
         tdd_all = pd.read_csv(tdd_all_file) if tdd_all_file else None
+        weather = pd.read_csv(weather_file) if weather_file else None
         for v in cfg["climate"]["variants"]:
-            if v.get("extra") and tdd_all is None:
+            ex_names = v.get("extra") or []
+            if any(c in ("tdd_prev", "fdd") for c in ex_names) and tdd_all is None:
                 log.append(f"B {v['name']}: skipped (needs tdd_all_years.csv)")
+                continue
+            if any(c in M.WEATHER_TERMS for c in ex_names) and weather is None:
+                log.append(f"B {v['name']}: skipped (needs weather_site_years.csv)")
                 continue
             t0 = time.time()
             p2 = dict(pri, k_fixed=cfg["climate"]["k_fixed"])
             if v.get("extra"):
-                ex = M.extra_climate(tdd_all, v["extra"])
+                ex = M.extra_climate(tdd_all, v["extra"], weather)
                 arrV = M.build_arrays(d, cfg, tdd, ex, v["extra"])
             else:
                 arrV = arrB

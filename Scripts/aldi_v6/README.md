@@ -56,21 +56,47 @@ Per site:
 Variants (config `climate.variants`): `main` (above); `kfixed` (k = 0.5, pure Stefan);
 `lag` (adds last year's TDD: a warm summer melts ice and wets the soil, which deepens
 the next thaw); `air` (adds last year's TDD and the preceding winter's freezing index:
-all that air temperature can explain).
+all that air temperature can explain); `weather` (`air` plus Nov-Apr snow depth and JJA
+rain: all that weather can explain). Degree-day terms enter as logs; snow and rain as
+site anomalies in units of one network SD (they can be near 0 in a dry year).
 
-TDD: NASA POWER daily mean air temperature (MERRA-2, 0.5 x 0.625 deg), see
-`fetch_tdd.py` for the window rules (probe: 1 Jan to the survey date or the site / network
-median survey day; thaw tube and temperature ALT: whole year). ERA5-Land from the GEE
-script can replace it (one CSV per site in the cache folder).
+Not in any variant, on purpose: soil moisture, NDVI, NDWI and other surface states. They
+respond to the thaw (mediators), so adjusting for them would remove part of the change B
+measures. A positive `weather` residual therefore means change that weather does not
+explain: ground ice loss and subsidence, taliks, vegetation, disturbance. That is where
+the causal driver analysis starts.
+
+Temperature source. Main: ERA5-Land (0.1 deg) from the Earth Engine exports of
+`../covariates/gee_causal_features.py`, corrected to the site elevation in summer
+(-6.5 K/km May-Sep, none in winter because of inversions). Robustness: NASA POWER
+(MERRA-2, 0.5 x 0.625 deg), which needs no account. B uses each site's year-to-year TDD
+swings, which are coherent over hundreds of km, so the grid matters less than for
+absolute values; but a coarse cell mixes in sea or mountain air at coastal and mountain
+sites, and TDD error lowers k and moves a little trend into the residual (simulation).
+`fetch_tdd.py` holds the window rules (probe: 1 Jan to the survey date or the site /
+network median survey day; thaw tube and temperature ALT: whole year).
 
 ## Run
 
 ```
 pip install numpy scipy pandas pyyaml numpyro jax matplotlib
-python fetch_tdd.py   annual.csv  tdd_dir                       # ~10 min, downloads; writes both TDD tables
-python run_aldi_v6.py aldi_v6_config.yaml annual.csv out_dir  tdd_dir/tdd_site_years.csv  tdd_dir/tdd_all_years.csv
-python validate_aldi_v6.py ../aldi/aldi_config.yaml annual.csv sim_dir tdd_dir/tdd_site_years.csv --reps 8
+
+# ERA5-Land (main). First, in Colab, cell 2b of GEE_causal_features_colab.ipynb exports
+# the static, era5 and t2m_daily groups (1989-2025) to Drive/ALDI_GEE_exports. Then:
+python era5land_for_b.py  path/to/ALDI_GEE_exports  tdd_era5                  # daily series + weather table
+python fetch_tdd.py       annual.csv  tdd_era5  --source cache                 # TDD tables from those series
+python run_aldi_v6.py     aldi_v6_config.yaml annual.csv out_era5 \
+       tdd_era5/tdd_site_years.csv tdd_era5/tdd_all_years.csv tdd_era5/weather_site_years.csv
+
+# NASA POWER (robustness; no account, ~10 min of downloads; no weather variant)
+python fetch_tdd.py   annual.csv  tdd_power
+python run_aldi_v6.py aldi_v6_config.yaml annual.csv out_power  tdd_power/tdd_site_years.csv  tdd_power/tdd_all_years.csv
+
+python validate_aldi_v6.py ../aldi/aldi_config.yaml annual.csv sim_dir tdd_era5/tdd_site_years.csv --reps 8
 ```
+
+Use separate folders for the two sources: `fetch_tdd.py` never re-downloads a site that
+already has a file in `daily_t2m/`.
 
 `tdd_all_years.csv` (site_id, year, tdd_full_year, fdd for every calendar year) is only
 needed for the `lag` and `air` variants. The main run takes about 10 minutes on 4 cores
@@ -101,7 +127,7 @@ variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures,
   (truth independent of length) v6 gives 43 % vs 47 %, so this is the sites, not the
   method: short records are mostly recent temperature cables and probes, long ones CALM
   probes and slower thaw tubes; within shared regions short records are 1.2 %/dec faster.
-- **B:** k = 0.22 (0.19-0.24); median TDD trend +2.4 %/dec. Mean site trends
+- **B (NASA POWER TDD; the ERA5-Land run replaces these):** k = 0.22 (0.19-0.24); median TDD trend +2.4 %/dec. Mean site trends
   (expected / residual / total, %/dec): main 0.7 / 5.6 / 6.3; k = 0.5 1.2 / 5.0 / 6.2;
   + last-year TDD 0.9 / 5.3 / 6.3; + winter FDD 1.1 / 5.1 / 6.2. Residual classes (main):
   87 deeper than TDD, 15 consistent, 1 shallower, 126 not resolved; 67 sites are deeper
@@ -127,9 +153,9 @@ climatic, also with TDD error of 20 % of its variance (which lowers k by 0.10 an
   attenuates it (simulation: about -0.1 with 20 % error variance), and multi-year
   ground-ice and moisture memory is not in a one-year swing. The `kfixed` (k = 0.5) and
   `air` variants bound this; the residual trend stays large in all of them.
-- **TDD is not the only climate.** Snow, summer rain and soil moisture are not in
-  "expected"; a positive residual means "not explained by air temperature", not
-  "not climatic". The driver panel is where those enter.
+- **TDD is not the only climate.** In `main`, snow and summer rain are not in
+  "expected", so a positive residual means "not explained by air temperature". The
+  `weather` variant adds them; soil moisture stays out (mediator).
 - **Shrinkage borrows from neighbours.** A short record in a fast region is pulled up.
   `rate_pct_dec` (v5.2 site) stays in the table for statements about one record.
 - **Same sample as v5.2**, including U19 1990-2014 and the 60 N cut (open decisions).

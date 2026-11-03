@@ -71,21 +71,50 @@ def eligible_sites(data: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return data[data["site_id"].isin(keep)].sort_values(["site_id", "year"]).reset_index(drop=True)
 
 
-def extra_climate(tdd_all: pd.DataFrame, names) -> pd.DataFrame:
-    """Extra air-temperature terms per site-year from tdd_all_years.csv.
+# How each extra term enters model B. "log": log of the value, centred per site (a
+# degree-day sum acts multiplicatively, like TDD). "lin": the value minus the site mean,
+# divided by one network-wide SD of these anomalies (snow depth or rain can be near 0 in
+# a dry year, so a log would blow up); its coefficient is the change in log ALT per SD.
+EXTRA_TRANSFORM = {"tdd_prev": "log", "fdd": "log"}
 
-    tdd_prev: previous calendar year's thawing index (thaw memory: a warm summer melts
-              ground ice and wets the soil, which deepens the next thaw too)
-    fdd:      freezing index of the preceding winter (1 Oct - 30 Apr)
+# Weather terms read from weather_site_years.csv (era5land_for_b.py). Soil moisture,
+# NDVI and NDWI are left out on purpose: they respond to the thaw itself (mediators), so
+# adjusting for them would remove part of the change that B is meant to measure.
+WEATHER_TERMS = ("snow_depth_winter", "snow_thermal_resistance_winter", "rain_summer",
+                 "P_summer", "snowfall_winter", "SWE_max")
+
+
+def extra_climate(tdd_all: pd.DataFrame | None, names, weather: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Extra climate terms per site-year.
+
+    From tdd_all_years.csv:
+      tdd_prev: previous calendar year's thawing index (thaw memory: a warm summer melts
+                ground ice and wets the soil, which deepens the next thaw too)
+      fdd:      freezing index of the preceding winter (1 Oct - 30 Apr)
+    From weather_site_years.csv (ERA5-Land, ALT year = Oct of the previous year to Sep):
+      snow_depth_winter (Nov-Apr mean), snow_thermal_resistance_winter, rain_summer (JJA),
+      and the other WEATHER_TERMS
     """
-    t = tdd_all.copy()
-    out = t[["site_id", "year"]].copy()
-    if "tdd_prev" in names:
-        prev = t[["site_id", "year", "tdd_full_year"]].copy()
-        prev["year"] += 1
-        out = out.merge(prev.rename(columns={"tdd_full_year": "tdd_prev"}), on=["site_id", "year"], how="left")
-    if "fdd" in names:
-        out = out.merge(t[["site_id", "year", "fdd"]], on=["site_id", "year"], how="left")
+    parts = []
+    if tdd_all is not None:
+        t = tdd_all.copy()
+        out = t[["site_id", "year"]].copy()
+        if "tdd_prev" in names:
+            prev = t[["site_id", "year", "tdd_full_year"]].copy()
+            prev["year"] += 1
+            out = out.merge(prev.rename(columns={"tdd_full_year": "tdd_prev"}), on=["site_id", "year"], how="left")
+        if "fdd" in names:
+            out = out.merge(t[["site_id", "year", "fdd"]], on=["site_id", "year"], how="left")
+        parts.append(out)
+    w_names = [c for c in names if c in WEATHER_TERMS]
+    if w_names:
+        assert weather is not None, f"{w_names} need weather_site_years.csv"
+        parts.append(weather[["site_id", "year"] + w_names].drop_duplicates(["site_id", "year"]))
+    missing = [c for c in names if not any(c in p.columns for p in parts)]
+    assert not missing, f"unknown extra terms {missing}"
+    out = parts[0]
+    for p in parts[1:]:
+        out = out.merge(p, on=["site_id", "year"], how="outer")
     return out
 
 
@@ -95,15 +124,18 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
 
     tdd: table site_id, year, method, tdd (deg C day). Site-years without TDD are
     dropped for model B only (reported in the summary).
-    extra: output of extra_climate; extra_names: its columns to use (log, centred
-    per site like TDD).
+    extra: output of extra_climate; extra_names: its columns to use (centred per
+    site, transformed as in EXTRA_TRANSFORM).
     """
     d = d.copy()
     extra_names = list(extra_names)
     if extra is not None and extra_names:
         d = d.merge(extra[["site_id", "year"] + extra_names], on=["site_id", "year"], how="left")
         for c in extra_names:
-            d = d[np.isfinite(d[c]) & (d[c] > 0)]
+            ok = np.isfinite(d[c])
+            if EXTRA_TRANSFORM.get(c, "lin") == "log":
+                ok &= d[c] > 0
+            d = d[ok]
     if tdd is not None:
         t = tdd[["site_id", "year", "method", "tdd"]].drop_duplicates(["site_id", "year", "method"])
         d = d.merge(t, on=["site_id", "year", "method"], how="left")
@@ -166,8 +198,14 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
         out["x_sd"] = df.groupby("s")["x"].std().reindex(range(len(sites))).to_numpy()
         xe, sxe = [], []
         for c in extra_names:
-            lc = np.log(d[c].to_numpy(float))
+            v = d[c].to_numpy(float)
+            log_c = EXTRA_TRANSFORM.get(c, "lin") == "log"
+            lc = np.log(v) if log_c else v
             xc = lc - pd.Series(lc).groupby(s_idx).transform("mean").to_numpy()
+            if not log_c:
+                sd_c = float(np.std(xc))
+                xc = xc / sd_c if sd_c > 0 else xc
+                out[f"sd_{c}"] = sd_c
             dfc = pd.DataFrame({"s": s_idx, "x": xc, "t": t})
             sxc = dfc.groupby("s").apply(lambda g: np.polyfit(g.t, g.x, 1)[0] if g.t.std() > 0 else 0.0,
                                          include_groups=False)
@@ -401,7 +439,10 @@ def summarise_B(mcmc, arr, cfg, k_mode):
            "rho_family": np.asarray(smp["rho_family"]) * 0.95,
            "sigma_family": 100 * np.exp(np.asarray(smp["log_sigma_family"]))}
     for j, c in enumerate(arr.get("extra_names", [])):
-        s[f"trend_{c}_pct_dec"] = pct(arr["SX_extra"][:, j])
+        if EXTRA_TRANSFORM.get(c, "lin") == "log":
+            s[f"trend_{c}_pct_dec"] = pct(arr["SX_extra"][:, j])
+        else:                       # network SDs of the yearly anomaly per decade
+            s[f"trend_{c}_sd_dec"] = arr["SX_extra"][:, j]
         net[f"k_{c}_family"] = np.asarray(smp["k_extra_family"])[:, :, j]
     if k_mode != "fixed":
         net["k0"] = np.asarray(smp["k0"])
