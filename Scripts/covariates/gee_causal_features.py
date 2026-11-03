@@ -582,13 +582,19 @@ def snowmelt_image(year, cfg=CONFIG):
 
     obs_col = col.map(lambda i: ee.Image(obs(i)))
     d0 = ee.Date(start.strftime("%Y-%m-%d"))
+    proj = ee.Image(col.first()).select("NDSI_Snow_Cover").projection()
 
     def per_day(k):   # Terra and Aqua of one day added: 0, 1 or 2 observations
+        # Every day must give a value at every pixel in the MODIS grid: a day without
+        # files (sensor outage) or a pixel outside that day's tiles counts as no
+        # observation (0, 0). Otherwise toArray() drops that day at those pixels (array
+        # lengths n-1 vs n), and a constant image without a projection cannot be
+        # transformed when the days are stacked.
         d = d0.advance(k, "day")
         day = obs_col.filterDate(d, d.advance(1, "day"))
-        return ee.Image(ee.Algorithms.If(day.size().gt(0), day.sum(),
-                                         ee.Image.constant([0, 0]).rename(["free", "snow"])))\
-            .toFloat()
+        img = ee.Image(ee.Algorithms.If(day.size().gt(0), day.sum(),
+                                        ee.Image.constant([0, 0]).rename(["free", "snow"])))
+        return img.unmask(0).toFloat().setDefaultProjection(proj)
 
     days = ee.ImageCollection(ee.List.sequence(0, n - 1).map(per_day))
     arr = days.toArray()                                    # n x 2 per pixel
