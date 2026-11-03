@@ -24,7 +24,7 @@ A. Hierarchical trend model (one step, all uncertainty propagated)
 B. Climate-adjusted model (Stefan: ALT = E sqrt(TDD), so log ALT = log E + k log TDD)
    log ALT_it = a_i + k_i * x_it + d_i * t_it + e_it
    x_it = log TDD_it minus the site mean of log TDD
-   k_i  = k_family + tau_k * z_i,  k_family ~ N(k0, .), k0 ~ N(0.5, 0.25)
+   k_i  = k_family + tau_k * z_i,  k_family ~ N(0.5, 0.25) for probe, tube, temperature
    d_i  hierarchical by region as b_i in A.
    Because d_i takes the linear trend, k_i is identified by the year-to-year swings of
    TDD around their trend (the within-site sensitivity), not by two series that both
@@ -71,13 +71,39 @@ def eligible_sites(data: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return data[data["site_id"].isin(keep)].sort_values(["site_id", "year"]).reset_index(drop=True)
 
 
-def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None) -> dict:
+def extra_climate(tdd_all: pd.DataFrame, names) -> pd.DataFrame:
+    """Extra air-temperature terms per site-year from tdd_all_years.csv.
+
+    tdd_prev: previous calendar year's thawing index (thaw memory: a warm summer melts
+              ground ice and wets the soil, which deepens the next thaw too)
+    fdd:      freezing index of the preceding winter (1 Oct - 30 Apr)
+    """
+    t = tdd_all.copy()
+    out = t[["site_id", "year"]].copy()
+    if "tdd_prev" in names:
+        prev = t[["site_id", "year", "tdd_full_year"]].copy()
+        prev["year"] += 1
+        out = out.merge(prev.rename(columns={"tdd_full_year": "tdd_prev"}), on=["site_id", "year"], how="left")
+    if "fdd" in names:
+        out = out.merge(t[["site_id", "year", "fdd"]], on=["site_id", "year"], how="left")
+    return out
+
+
+def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
+                 extra: pd.DataFrame | None = None, extra_names=()) -> dict:
     """Model inputs. d: output of eligible_sites (one row per site-year).
 
     tdd: table site_id, year, method, tdd (deg C day). Site-years without TDD are
     dropped for model B only (reported in the summary).
+    extra: output of extra_climate; extra_names: its columns to use (log, centred
+    per site like TDD).
     """
     d = d.copy()
+    extra_names = list(extra_names)
+    if extra is not None and extra_names:
+        d = d.merge(extra[["site_id", "year"] + extra_names], on=["site_id", "year"], how="left")
+        for c in extra_names:
+            d = d[np.isfinite(d[c]) & (d[c] > 0)]
     if tdd is not None:
         t = tdd[["site_id", "year", "method", "tdd"]].drop_duplicates(["site_id", "year", "method"])
         d = d.merge(t, on=["site_id", "year", "method"], how="left")
@@ -138,6 +164,18 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None) ->
         out["sx"] = sx.reindex(range(len(sites))).to_numpy()
         out["tdd_trend_pct_dec"] = 100 * (np.exp(out["sx"]) - 1)
         out["x_sd"] = df.groupby("s")["x"].std().reindex(range(len(sites))).to_numpy()
+        xe, sxe = [], []
+        for c in extra_names:
+            lc = np.log(d[c].to_numpy(float))
+            xc = lc - pd.Series(lc).groupby(s_idx).transform("mean").to_numpy()
+            dfc = pd.DataFrame({"s": s_idx, "x": xc, "t": t})
+            sxc = dfc.groupby("s").apply(lambda g: np.polyfit(g.t, g.x, 1)[0] if g.t.std() > 0 else 0.0,
+                                         include_groups=False)
+            xe.append(xc)
+            sxe.append(sxc.reindex(range(len(sites))).to_numpy())
+        out["extra_names"] = extra_names
+        out["X_extra"] = np.column_stack(xe) if xe else np.zeros((len(d), 0))
+        out["SX_extra"] = np.column_stack(sxe) if sxe else np.zeros((len(sites), 0))
     return out
 
 
@@ -169,7 +207,9 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
     tau_s = numpyro.sample("tau_site", dist.HalfNormal(p.get("tau_sd", 0.1)))
     z_r = numpyro.sample("z_region", dist.Normal(0, 1).expand([nr]))
     if slope_dist == "student":
-        z_s = numpyro.sample("z_site", dist.StudentT(4.0, 0, 1).expand([ns]))
+        # t(4) as a normal scale mixture (samples better than a direct Student-t)
+        lam = numpyro.sample("lambda_site", dist.Gamma(2.0, 2.0).expand([ns]))
+        z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns])) / jnp.sqrt(lam)
     else:
         z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns]))
     beta_r = numpyro.deterministic("beta_region", mu + tau_r * z_r)
@@ -191,15 +231,21 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
         if k_mode == "fixed":
             k = jnp.full(ns, p.get("k_fixed", 0.5))
         else:
-            k0 = numpyro.sample("k0", dist.Normal(0.5, 0.25))
-            sd_kf = numpyro.sample("sd_k_family", dist.HalfNormal(0.15))
-            zkf = numpyro.sample("z_k_family", dist.Normal(0, 1).expand([nf]))
-            k_f = numpyro.deterministic("k_family", k0 + sd_kf * zkf)
+            # one mean per method family (3 values: too few for a variance), prior
+            # centred on Stefan's 0.5 and wide enough to reach 0 or 1
+            k_f = numpyro.sample("k_family", dist.Normal(0.5, 0.25).expand([nf]))
+            k0 = numpyro.deterministic("k0", k_f.mean())
             tau_k = numpyro.sample("tau_k", dist.HalfNormal(0.2))
             zk = numpyro.sample("z_k", dist.Normal(0, 1).expand([ns]))
             k = k_f[f_site] + tau_k * zk
         k = numpyro.deterministic("k_site", k)
         mean = mean + k[s_idx] * x
+        ne = arr["X_extra"].shape[1] if "X_extra" in arr else 0
+        if ne:
+            # extra terms: one coefficient per method family, prior N(0, 0.25)
+            ke = numpyro.sample("k_extra_family", dist.Normal(0.0, 0.25).expand([nf, ne]))
+            ke_site = numpyro.deterministic("k_extra_site", ke[f_site])          # (ns, ne)
+            mean = mean + jnp.sum(ke_site[s_idx] * jnp.asarray(arr["X_extra"]), axis=1)
 
     if region_year and arr["n_ry"] > 0:
         sd_ry = numpyro.sample("sd_region_year", dist.HalfNormal(0.1))
@@ -248,8 +294,10 @@ def diagnostics(mcmc, names=("mu", "tau_region", "tau_site", "rho_family", "log_
     rhat, ess = [], []
     for k in names:
         if k in s:
-            rhat.append(np.nanmax(np.atleast_1d(s[k]["r_hat"])))
-            ess.append(np.nanmin(np.atleast_1d(s[k]["n_eff"])))
+            r = np.atleast_1d(s[k]["r_hat"])
+            if np.isfinite(r).any():          # constant quantities (k fixed) have no r_hat
+                rhat.append(np.nanmax(r))
+                ess.append(np.nanmin(np.atleast_1d(s[k]["n_eff"])))
     div = int(np.asarray(mcmc.get_extra_fields()["diverging"]).sum())
     return {"max_rhat": float(np.nanmax(rhat)), "min_ess": float(np.nanmin(ess)), "divergences": div}
 
@@ -301,7 +349,7 @@ def summarise_A(mcmc, arr, cfg):
     s["rate_v6_lo"], s["rate_v6_hi"] = lo, hi
     s["rate_v6_sd"] = rate.std(0)
     s["class_v6"] = cls
-    for k, v in band_probs(rate, m, rp).items():
+    for k, v in band_probs(rate, m, rp, prefix="p6_").items():
         s[k] = v
     s["sigma_pct"] = 100 * np.asarray(smp["sigma_site"]).mean(0)
     reg = pct(np.asarray(smp["beta_region"]))
@@ -323,6 +371,9 @@ def summarise_B(mcmc, arr, cfg, k_mode):
     d = np.asarray(smp["slope_site"])                 # residual trend (log/decade)
     k = np.asarray(smp["k_site"])
     exp_b = k * arr["sx"][None, :]
+    if arr.get("extra_names"):
+        ke = np.asarray(smp["k_extra_site"])                                   # (draws, ns, ne)
+        exp_b = exp_b + np.sum(ke * arr["SX_extra"][None, :, :], axis=2)
     resid = pct(d)
     expected = pct(exp_b)
     total = pct(d + exp_b)
@@ -349,6 +400,9 @@ def summarise_B(mcmc, arr, cfg, k_mode):
            "resid_mean": resid.mean(1),
            "rho_family": np.asarray(smp["rho_family"]) * 0.95,
            "sigma_family": 100 * np.exp(np.asarray(smp["log_sigma_family"]))}
+    for j, c in enumerate(arr.get("extra_names", [])):
+        s[f"trend_{c}_pct_dec"] = pct(arr["SX_extra"][:, j])
+        net[f"k_{c}_family"] = np.asarray(smp["k_extra_family"])[:, :, j]
     if k_mode != "fixed":
         net["k0"] = np.asarray(smp["k0"])
         net["k_family"] = np.asarray(smp["k_family"])

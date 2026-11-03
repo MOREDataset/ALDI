@@ -21,9 +21,16 @@ model:
     cens_sd: 0.5       # how far above a lower bound the true ALT may be (log units)
 
 climate:
-  # Stefan sensitivity: hierarchical (k per site, around a family mean, prior centre 0.5)
-  # or fixed (k = k_fixed everywhere). Both are run; hierarchical is the main result.
-  k_mode: hierarchical
+  # Variants of the climate-expected part. main: Stefan with this year's TDD and k per
+  # site around a family mean (prior centre 0.5). kfixed: k = 0.5 everywhere (pure
+  # Stefan). lag: adds last year's TDD (thaw memory). air: adds last year's TDD and the
+  # winter freezing index, i.e. everything air temperature can explain. lag and air
+  # need tdd_all_years.csv.
+  variants:
+    - {name: main,   k_mode: hierarchical}
+    - {name: kfixed, k_mode: fixed}
+    - {name: lag,    k_mode: hierarchical, extra: [tdd_prev]}
+    - {name: air,    k_mode: hierarchical, extra: [tdd_prev, fdd]}
   k_fixed: 0.5
   # B runs without region-year effects: most of the shared year-to-year swing is the
   # TDD signal that k is estimated from.

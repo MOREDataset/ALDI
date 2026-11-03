@@ -1,9 +1,10 @@
 """Run ALDI v6 (hierarchical trends, A) and the climate-adjusted index (B).
 
-    python run_aldi_v6.py aldi_v6_config.yaml  annual.csv  out_dir  [tdd_site_years.csv]
+    python run_aldi_v6.py aldi_v6_config.yaml  annual.csv  out_dir  [tdd_site_years.csv [tdd_all_years.csv]]
 
 annual.csv is alt_multisource_annual.csv (same input as v5.2); tdd_site_years.csv comes
-from fetch_tdd.py. Without the TDD file only A runs.
+from fetch_tdd.py. Without the TDD file only A runs. tdd_all_years.csv (every calendar
+year per site) adds the B variants with the previous year's TDD and the winter FDD.
 
 Outputs (out_dir)
   aldi_v6_results.csv     one row per site: v5.2 classes, v6 rates and classes (A),
@@ -144,6 +145,7 @@ def main():
     cfg = load_cfg(cfg_path)
     annual_file, out = sys.argv[2], Path(sys.argv[3])
     tdd_file = sys.argv[4] if len(sys.argv) > 4 else None
+    tdd_all_file = sys.argv[5] if len(sys.argv) > 5 else None
     out.mkdir(parents=True, exist_ok=True)
     mc_cfg, pri = cfg["model"], cfg["model"]["priors"]
     pre = cfg["outputs"]["prefix"]
@@ -196,23 +198,38 @@ def main():
         mcAB = M.fit(arrAB, "A", region_year=cfg["climate"]["region_year"], priors=pri, **fit_kw)
         sAB, _, _ = M.summarise_A(mcAB, arrAB, cfg)
         bruns = {}
-        for km in ["hierarchical", "fixed"]:
+        tdd_all = pd.read_csv(tdd_all_file) if tdd_all_file else None
+        for v in cfg["climate"]["variants"]:
+            if v.get("extra") and tdd_all is None:
+                log.append(f"B {v['name']}: skipped (needs tdd_all_years.csv)")
+                continue
             t0 = time.time()
             p2 = dict(pri, k_fixed=cfg["climate"]["k_fixed"])
-            mcB = M.fit(arrB, "B", k_mode=km, region_year=cfg["climate"]["region_year"], priors=p2, **fit_kw)
-            sB, netB = M.summarise_B(mcB, arrB, cfg, km)
-            bruns[km] = dict(s=sB, net=netB, diag=M.diagnostics(mcB), sec=time.time() - t0)
-            log.append(f"B k={km}: {bruns[km]['diag']}  ({bruns[km]['sec']:.0f} s)")
-        sB = bruns[cfg["climate"]["k_mode"]]["s"].copy()
+            if v.get("extra"):
+                ex = M.extra_climate(tdd_all, v["extra"])
+                arrV = M.build_arrays(d, cfg, tdd, ex, v["extra"])
+            else:
+                arrV = arrB
+            mcB = M.fit(arrV, "B", k_mode=v["k_mode"], region_year=cfg["climate"]["region_year"], priors=p2, **fit_kw)
+            sB, netB = M.summarise_B(mcB, arrV, cfg, v["k_mode"])
+            bruns[v["name"]] = dict(s=sB, net=netB, diag=M.diagnostics(mcB), sec=time.time() - t0,
+                                    n_sites=arrV["n_sites"], n_obs=len(arrV["y"]))
+            log.append(f"B {v['name']}: {bruns[v['name']]['diag']}  ({bruns[v['name']]['sec']:.0f} s; "
+                       f"{arrV['n_sites']} sites, {len(arrV['y'])} site-years)")
+        sB = bruns["main"]["s"].copy()
         sB["tdd_var_explained"] = 1 - (sB.sigma_pct_B / sAB.set_index("site_id").reindex(sB.site_id).sigma_pct.to_numpy()) ** 2
         sB["rate_A_same_years"] = sAB.set_index("site_id").reindex(sB.site_id).rate_v6.to_numpy()
         keepB = ["site_id", "tdd_trend_pct_dec", "x_sd", "k_site", "k_lo", "k_hi", "expected_rate", "expected_lo",
                  "expected_hi", "resid_rate", "resid_lo", "resid_hi", "resid_sd", "total_rate", "total_lo", "total_hi",
                  "class_resid", "p_resid_pos", "p_resid_within_margin", "tdd_var_explained", "rate_A_same_years"]
         res = res.merge(sB[keepB], on="site_id", how="left")
-        fx = bruns["fixed"]["s"].set_index("site_id")
-        res["resid_rate_kfixed"] = res.site_id.map(fx["resid_rate"])
-        res["class_resid_kfixed"] = res.site_id.map(fx["class_resid"])
+        for vn, r in bruns.items():
+            if vn == "main":
+                continue
+            fx = r["s"].set_index("site_id")
+            res[f"expected_rate_{vn}"] = res.site_id.map(fx["expected_rate"])
+            res[f"resid_rate_{vn}"] = res.site_id.map(fx["resid_rate"])
+            res[f"class_resid_{vn}"] = res.site_id.map(fx["class_resid"])
         res["two_axis"] = np.where(res.class_resid.isna(), np.nan,
                                    res.class_v6.astype(str) + " | " + res.class_resid.astype(str))
 
@@ -242,6 +259,10 @@ def main():
             netrows[f"B_{km}_network_residual_pct_dec"] = q(n["mu_resid"])
             for i, f in enumerate(M.FAMILIES):
                 netrows[f"B_{km}_rho_{f}"] = q(n["rho_family"][:, i])
+            for key in n:
+                if key.startswith("k_") and key.endswith("_family") and key != "k_family":
+                    for i, f in enumerate(M.FAMILIES):
+                        netrows[f"B_{km}_{key[:-7]}_{f}"] = q(n[key][:, i])
             if "k0" in n:
                 netrows[f"B_{km}_k0"] = q(n["k0"])
                 netrows[f"B_{km}_tau_k"] = q(n["tau_k"])
@@ -271,6 +292,18 @@ def main():
     L.append(nett.round(3).to_string())
     L.append(f"\nmedian 90 % interval width, % per decade: v5.2 site {np.median(res.rate_hi - res.rate_lo):.1f}, "
              f"v5.2 pooled {np.median(2 * 1.6449 * res.rate_pooled_sd):.1f}, v6 {np.median(res.rate_v6_hi - res.rate_v6_lo):.1f}")
+    L.append("\nwho is in each record-span group (composition):")
+    comp = res.assign(span_bin=bins).groupby("span_bin", observed=True).agg(
+        n=("site_id", "size"), probe=("family", lambda f: int((f == "probe").sum())),
+        thaw_tube=("family", lambda f: int((f == "thaw_tube").sum())),
+        temperature=("family", lambda f: int((f == "temperature").sum())),
+        median_first_year=("year_min", "median"), median_last_year=("year_max", "median"),
+        median_rate_v6=("rate_v6", "median"))
+    L.append(comp.round(1).to_string())
+    lg = res.assign(long=res.span_years >= 26).groupby(["region_id", "long"]).rate_v6.median().unstack().dropna()
+    if len(lg):
+        L.append(f"regions with both short (< 26 yr) and long records: {len(lg)}; median within-region "
+                 f"difference short minus long {np.median(lg[False] - lg[True]):.1f} %/dec")
     pc = period_check(d, cfg, net52["ar1_rho_pooled"])
     if len(pc):
         L.append(f"\nperiod check ({len(pc)} sites with span >= {cfg['outputs']['period_check_min_span']} yr): "
@@ -280,9 +313,17 @@ def main():
     if have_b:
         b = res.dropna(subset=["class_resid"])
         L.append(f"\nB (climate-adjusted): {len(b)} sites; site-years without TDD dropped: {arrB['tdd_dropped']}")
-        L.append("residual class (k hierarchical | k fixed 0.5):")
-        L.append(pd.DataFrame({"k_hier": counts(b.class_resid, RESID_ORDER),
-                               "k_0.5": counts(b.class_resid_kfixed, RESID_ORDER)}).to_string())
+        L.append("residual class by B variant (main = TDD with hierarchical k):")
+        vt = {"main": counts(b.class_resid, RESID_ORDER)}
+        for vn in bruns:
+            if vn != "main":
+                vt[vn] = counts(res[f"class_resid_{vn}"].dropna(), RESID_ORDER)
+        L.append(pd.DataFrame(vt).to_string())
+        L.append("\nmean site trends by B variant, % per decade (expected | residual):")
+        for vn, r in bruns.items():
+            L.append(f"  {vn:12s} expected {np.median(r['net']['expected_mean']):5.2f}  residual "
+                     f"{np.median(r['net']['resid_mean']):5.2f}  total {np.median(r['net']['total_mean']):5.2f}  "
+                     f"({r['n_sites']} sites)")
         L.append("\nv6 class (rows) x residual class (columns):")
         L.append(pd.crosstab(b.class_v6, b.class_resid).reindex(index=ORDER, columns=RESID_ORDER, fill_value=0).to_string())
         L.append(f"\nmedian TDD trend {b.tdd_trend_pct_dec.median():.1f} %/dec; median k {b.k_site.median():.2f}; "

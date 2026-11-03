@@ -6,6 +6,8 @@ Writes
   out_dir/daily_t2m/<site_id>.csv   (":" in an id becomes "__") daily mean 2 m air temperature per site (cache;
                                     a site already cached is not downloaded again)
   out_dir/tdd_site_years.csv        one row per site-year of the annual file
+  out_dir/tdd_all_years.csv         every calendar year per site (whole-year TDD and
+                                    the preceding winter's freezing index), for model B
 
 Source: NASA POWER daily point API (MERRA-2 based T2M, 0.5 x 0.625 deg, 1981 onward,
 no key). It is used because it runs anywhere without an account. ERA5-Land from the
@@ -82,6 +84,37 @@ def tdd_for_site(t: pd.Series, years, end_doy):
     return np.array(out)
 
 
+def window_sum(v: pd.Series, n_exp: int):
+    """Sum over a window; NaN if more than 5 % of the n_exp days are missing."""
+    v = v.dropna()
+    if len(v) < 0.95 * n_exp:
+        return np.nan
+    return float(v.mean() * n_exp)
+
+
+def all_years(site_ids, cache, start, end):
+    """Every calendar year per site: thawing index of the whole year and to DOY 262,
+    and the freezing index of the preceding winter (1 Oct of the previous year to
+    30 Apr). Used for the last-year TDD and winter FDD terms of model B."""
+    rows = []
+    for sid in site_ids:
+        f = cache / cache_name(sid)
+        if not f.exists():
+            continue
+        t = pd.read_csv(f, parse_dates=["date"]).set_index("date")["t2m_c"]
+        for y in range(start, end + 1):
+            yr = t[t.index.year == y]
+            n_year = 366 if pd.Timestamp(y, 12, 31).dayofyear == 366 else 365
+            win = t[(t.index >= pd.Timestamp(y - 1, 10, 1)) & (t.index <= pd.Timestamp(y, 4, 30))]
+            n_win = (pd.Timestamp(y, 4, 30) - pd.Timestamp(y - 1, 10, 1)).days + 1
+            rows.append({"site_id": sid, "year": y,
+                         "tdd_full_year": window_sum(yr.clip(lower=0), n_year),
+                         "tdd_to_doy262": window_sum(yr[yr.index.dayofyear <= 262].clip(lower=0), 262),
+                         "fdd": window_sum((-win).clip(lower=0), n_win),
+                         "n_days": int(yr.notna().sum())})
+    return pd.DataFrame(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("annual_file")
@@ -150,6 +183,7 @@ def main():
                                   "t_source": args.source}))
     res = pd.concat(rows, ignore_index=True)
     res.to_csv(out / "tdd_site_years.csv", index=False)
+    all_years(sites.index, cache, args.start, args.end).to_csv(out / "tdd_all_years.csv", index=False)
     print(f"wrote {len(res)} site-years for {res.site_id.nunique()} sites; "
           f"missing TDD: {int(res.tdd.isna().sum())}; network median probe survey DOY {net_doy:.0f}")
 
