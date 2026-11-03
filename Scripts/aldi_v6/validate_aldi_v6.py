@@ -36,6 +36,15 @@ import aldi_core as A  # noqa: E402
 import aldi_v6_models as M  # noqa: E402
 
 
+def free_jit():
+    """Each fit compiles a new program; drop the compiled code so memory stays flat
+    over many fits (without this a long run ran out of memory)."""
+    import gc
+    import jax
+    jax.clear_caches()
+    gc.collect()
+
+
 def span_bins(arr):
     d = arr["d"]
     sp = (d.groupby("site_id")["year"].max() - d.groupby("site_id")["year"].min() + 1)
@@ -160,6 +169,8 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
                         np.median(mu_draw), *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
             row.update(rep=rep, **M.diagnostics(mc))
             rows.append(row)
+            del mc
+            free_jit()
         res, net = v52(sim, cfg)
         z = 1.959964
         rows.append({**score(scen, "v5.2_site", res.rate_pct_dec.to_numpy(), res.rate_lo.to_numpy(),
@@ -211,6 +222,8 @@ def run_B(arr, cfg, fitted, scen, rng, reps, fit_kw, real_x):
         row["false_deeper"] = float(np.mean(s.class_resid == "deeper_than_TDD")) if scen in ("B_climate", "B_tdderr") else np.nan
         row.update(rep=rep, **M.diagnostics(mc))
         rows.append(row)
+        del mc
+        free_jit()
         print(f"{scen} rep {rep}: resid cov {row['coverage90']:.2f} wrong {row['wrong_direction']:.3f} "
               f"k bias {row['k_bias']:+.3f} resid bias {row['resid_bias']:+.2f} exp cov {row['expected_coverage90']:.2f}",
               flush=True)
@@ -244,6 +257,7 @@ def main():
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--warmup", type=int, default=500)
     ap.add_argument("--draws", type=int, default=500)
+    ap.add_argument("--tag", default="", help="suffix for the output files (run scenarios in parts)")
     args = ap.parse_args()
     import numpyro
     numpyro.set_host_device_count(args.chains)
@@ -275,15 +289,15 @@ def main():
             rows += run_A(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
         else:
             rows += run_B(arr, cfg, fitted, sc, rng, args.reps, fit_kw, real_x)
-        pd.DataFrame(rows).to_csv(out / "aldi_v6_simulation_reps.csv", index=False)
+        pd.DataFrame(rows).to_csv(out / f"aldi_v6_simulation_reps{args.tag}.csv", index=False)
     df = pd.DataFrame(rows)
     summ = df.drop(columns=["rep"]).groupby(["scenario", "method"], sort=False).mean(numeric_only=True)
-    summ.to_csv(out / "aldi_v6_simulation.csv")
+    summ.to_csv(out / f"aldi_v6_simulation{args.tag}.csv")
     txt = (f"ALDI v6 simulation check, {args.reps} networks per scenario, real design "
            f"({arr['n_sites']} sites, {len(arr['y'])} site-years); TDD: "
            f"{'real' if real_x is not None else 'synthetic'}\n\n"
            + summ.round(3).T.to_string())
-    (out / "aldi_v6_simulation.txt").write_text(txt)
+    (out / f"aldi_v6_simulation{args.tag}.txt").write_text(txt)
     print(txt)
 
 

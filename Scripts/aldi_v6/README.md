@@ -83,7 +83,43 @@ variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures,
 
 ## Results on run 7 (229 sites, 4,550 site-years, 41 regions)
 
-RESULTS_PLACEHOLDER
+| class | v5.2 site | v5.2 pooled | v6 | v6 no region-year | v6 Student-t |
+|---|---|---|---|---|---|
+| rapid thickening | 39 | 35 | 55 | 53 | 55 |
+| gradual thickening | 19 | 66 | 60 | 50 | 61 |
+| stable | 11 | 23 | 14 | 16 | 13 |
+| gradual thinning | 2 | 1 | 1 | 1 | 1 |
+| rapid thinning | 4 | 0 | 0 | 0 | 0 |
+| indeterminate | 154 | 104 | 99 | 109 | 99 |
+
+- **Network:** +9.0 %/dec (95 % 6.5-11.7) as the mean over regions, +7.1 (6.1-8.1)
+  as the mean over sites (v5.2: +7.9, 5.6-10.3). 144 sites thicken with probability
+  >= 0.9; one site has probability < 0.1.
+- **Persistence and noise** (probe / thaw tube / temperature): rho 0.41 / 0.54 / 0.80,
+  noise 8 / 6 / 13 % of ALT; shared region-year anomaly 5.7 %.
+- **Record length:** rapid 30 % of 12-20-yr records vs 13 % of 26+ yr. In simulation
+  (truth independent of length) v6 gives 43 % vs 47 %, so this is the sites, not the
+  method: short records are mostly recent temperature cables and probes, long ones CALM
+  probes and slower thaw tubes; within shared regions short records are 1.2 %/dec faster.
+- **B:** k = 0.22 (0.19-0.24); median TDD trend +2.4 %/dec. Mean site trends
+  (expected / residual / total, %/dec): main 0.7 / 5.6 / 6.3; k = 0.5 1.2 / 5.0 / 6.2;
+  + last-year TDD 0.9 / 5.3 / 6.3; + winter FDD 1.1 / 5.1 / 6.2. Residual classes (main):
+  87 deeper than TDD, 15 consistent, 1 shallower, 126 not resolved; 67 sites are deeper
+  than TDD in the main, k = 0.5 and all-air-temperature variants alike.
+
+Simulation (8 networks per scenario, run-7 design, real TDD):
+
+| | v6 | v5.2 site | v5.2 pooled |
+|---|---|---|---|
+| 90 % interval coverage (fitted truth) | 0.89 | 0.84 | 0.81 |
+| rate RMSE, %/dec | 4.7 | 10.8 | 5.3 |
+| wrong-direction calls | 0.7 % | 2.0 % | 1.0 % |
+| false trend calls when no trend anywhere | 0 % | 12 % | 1.5 % |
+| network-rate bias, %/dec | 0.0 | | -0.9 |
+
+B: residual coverage 0.90; no false "deeper than TDD" calls when every trend is
+climatic, also with TDD error of 20 % of its variance (which lowers k by 0.10 and moves
+~0.2-0.3 %/dec into the residual).
 
 ## Caveats
 
