@@ -53,6 +53,22 @@ def counts(series, order):
     return {k: int(vc.get(k, 0)) for k in order}
 
 
+def region_bootstrap(values, regions, n_boot=4000, seed=0):
+    """95 % interval of the mean over sites when whole regions are resampled. The model
+    intervals of a mean over sites treat these sites as the population; resampling regions
+    adds the uncertainty of which places happen to be monitored, and keeps the
+    correlation of sites within a region."""
+    v = pd.Series(np.asarray(values, float), index=np.asarray(regions))
+    v = v[np.isfinite(v.to_numpy())]
+    groups = [g.to_numpy() for _, g in v.groupby(level=0)]
+    rng = np.random.default_rng(seed)
+    means = np.empty(n_boot)
+    for b in range(n_boot):
+        pick = rng.integers(0, len(groups), len(groups))
+        means[b] = np.concatenate([groups[i] for i in pick]).mean()
+    return float(np.quantile(means, 0.025)), float(np.quantile(means, 0.975))
+
+
 def period_check(d, cfg, rho):
     """Long records: trend over the full record vs over the last `recent_years` years."""
     oc = cfg["outputs"]
@@ -205,7 +221,7 @@ def main():
         weather = pd.read_csv(weather_file) if weather_file else None
         for v in cfg["climate"]["variants"]:
             ex_names = v.get("extra") or []
-            if any(c in ("tdd_prev", "fdd") for c in ex_names) and tdd_all is None:
+            if any(M.lag_years(c) or c == "fdd" for c in ex_names) and tdd_all is None:
                 log.append(f"B {v['name']}: skipped (needs tdd_all_years.csv)")
                 continue
             if any(c in M.WEATHER_TERMS for c in ex_names) and weather is None:
@@ -222,10 +238,20 @@ def main():
             sB, netB = M.summarise_B(mcB, arrV, cfg, v["k_mode"])
             bruns[v["name"]] = dict(s=sB, net=netB, diag=M.diagnostics(mcB), sec=time.time() - t0,
                                     n_sites=arrV["n_sites"], n_obs=len(arrV["y"]))
+            if v["name"] == "main":
+                resvar_B = M.resid_var_site(mcB, arrV, "B")
+            lost = len(arrB["y"]) - len(arrV["y"])     # e.g. first years without a TDD lag
             log.append(f"B {v['name']}: {bruns[v['name']]['diag']}  ({bruns[v['name']]['sec']:.0f} s; "
-                       f"{arrV['n_sites']} sites, {len(arrV['y'])} site-years)")
+                       f"{arrV['n_sites']} sites, {len(arrV['y'])} site-years"
+                       + (f", {lost} fewer than main: no value for an extra term" if lost else "") + ")")
         sB = bruns["main"]["s"].copy()
-        sB["tdd_var_explained"] = 1 - (sB.sigma_pct_B / sAB.set_index("site_id").reindex(sB.site_id).sigma_pct.to_numpy()) ** 2
+        # share of the year-to-year variance explained by TDD: residual variance of the mean
+        # structure without (A, same site-years) and with TDD (B). The ratio of the fitted
+        # sigma_site (used up to 2026-11-04) mixed in the change of the AR(1) coefficient:
+        # sigma is the stationary SD, which grows when rho grows, so it gave negative
+        # shares for the temperature family.
+        resvar_A = pd.Series(M.resid_var_site(mcAB, arrAB, "A"), index=arrAB["sites"]["site_id"])
+        sB["tdd_var_explained"] = 1 - resvar_B / resvar_A.reindex(sB.site_id).to_numpy()
         sB["rate_A_same_years"] = sAB.set_index("site_id").reindex(sB.site_id).rate_v6.to_numpy()
         keepB = ["site_id", "tdd_trend_pct_dec", "x_sd", "k_site", "k_lo", "k_hi", "expected_rate", "expected_lo",
                  "expected_hi", "resid_rate", "resid_lo", "resid_hi", "resid_sd", "total_rate", "total_lo", "total_hi",
@@ -238,6 +264,8 @@ def main():
             res[f"expected_rate_{vn}"] = res.site_id.map(fx["expected_rate"])
             res[f"resid_rate_{vn}"] = res.site_id.map(fx["resid_rate"])
             res[f"class_resid_{vn}"] = res.site_id.map(fx["class_resid"])
+            if "k_long_site" in fx:
+                res[f"k_long_{vn}"] = res.site_id.map(fx["k_long_site"])
         res["two_axis"] = np.where(res.class_resid.isna(), np.nan,
                                    res.class_v6.astype(str) + " | " + res.class_resid.astype(str))
 
@@ -329,13 +357,38 @@ def main():
         L.append(pd.DataFrame(vt).to_string())
         L.append("\nmean site trends by B variant, % per decade (expected | residual):")
         for vn, r in bruns.items():
-            L.append(f"  {vn:12s} expected {np.median(r['net']['expected_mean']):5.2f}  residual "
+            L.append(f"  {vn:14s} expected {np.median(r['net']['expected_mean']):5.2f}  residual "
                      f"{np.median(r['net']['resid_mean']):5.2f}  total {np.median(r['net']['total_mean']):5.2f}  "
-                     f"({r['n_sites']} sites)")
+                     f"({r['n_sites']} sites, {r['n_obs']} site-years)")
+        L.append("  (variants with TDD lags or FDD lose the first year(s) of a record when the temperature"
+                 " series starts too late for the lag; compare such a variant with main on the same years)")
+        kl = {vn: r["net"]["k_long_family"] for vn, r in bruns.items() if "k_long_family" in r["net"]}
+        if kl:
+            L.append("\nlong-run TDD sensitivity (this year's k + lag coefficients), median by family "
+                     + " / ".join(M.FAMILIES) + ":")
+            for vn, v in kl.items():
+                L.append(f"  {vn:14s} " + " / ".join(f"{np.median(v[:, i]):.2f}" for i in range(len(M.FAMILIES)))
+                         + f"   (this year's k alone: "
+                         + " / ".join(f"{np.median(bruns[vn]['net']['k_family'][:, i]):.2f}" for i in range(len(M.FAMILIES))) + ")")
+        L.append("\nmean over sites with a region bootstrap 95 % interval (resamples whole regions, so it adds"
+                 " which places are monitored; the model intervals above treat these sites as the population):")
+        rb = res.set_index("site_id")
+        a_lo, a_hi = region_bootstrap(rb["rate_v6"], rb["region_id"])
+        L.append(f"  A rate_v6 ({len(rb)} sites): mean {rb['rate_v6'].mean():.2f} ({a_lo:.2f} to {a_hi:.2f})")
+        for vn, r in bruns.items():
+            sv = r["s"].set_index("site_id")
+            reg = rb["region_id"].reindex(sv.index)
+            parts = []
+            for c in ["expected_rate", "resid_rate", "total_rate"]:
+                lo_, hi_ = region_bootstrap(sv[c], reg)
+                parts.append(f"{c.split('_')[0]} {sv[c].mean():.2f} ({lo_:.2f} to {hi_:.2f})")
+            L.append(f"  B {vn:12s} " + "; ".join(parts))
         L.append("\nv6 class (rows) x residual class (columns):")
         L.append(pd.crosstab(b.class_v6, b.class_resid).reindex(index=ORDER, columns=RESID_ORDER, fill_value=0).to_string())
         L.append(f"\nmedian TDD trend {b.tdd_trend_pct_dec.median():.1f} %/dec; median k {b.k_site.median():.2f}; "
-                 f"median share of ALT variance explained by TDD {100 * b.tdd_var_explained.median():.0f} %")
+                 f"median share of the year-to-year ALT variance explained by TDD {100 * b.tdd_var_explained.median():.0f} % "
+                 f"(below 0 at {int((b.tdd_var_explained < 0).sum())} sites: their k is pulled toward the family mean although "
+                 f"their ALT barely follows TDD)")
         L.append(f"median 90 % interval width: total (A, same years) vs residual: "
                  f"{np.median(res.rate_v6_hi - res.rate_v6_lo):.1f} vs {np.median(b.resid_hi - b.resid_lo):.1f} %/dec")
         L.append("\nby method family (median):")

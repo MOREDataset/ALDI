@@ -43,6 +43,7 @@ simulated TDD error.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -77,6 +78,25 @@ def eligible_sites(data: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 # a dry year, so a log would blow up); its coefficient is the change in log ALT per SD.
 EXTRA_TRANSFORM = {"tdd_prev": "log", "fdd": "log"}
 
+# TDD of earlier years (thaw memory): tdd_lag1 = last calendar year's thawing index (the
+# same as tdd_prev), tdd_lag2 = two years before, and so on. Their coefficients add to
+# this year's k: k + sum of the lag coefficients is the long-run sensitivity, the change
+# in log ALT after TDD has stayed higher for several years.
+LAG_TERM = re.compile(r"^tdd_lag(\d+)$")
+
+
+def lag_years(name):
+    """Years back for a TDD lag term (tdd_prev counts as tdd_lag1); None for other terms."""
+    if name == "tdd_prev":
+        return 1
+    m = LAG_TERM.match(name)
+    return int(m.group(1)) if m else None
+
+
+def extra_transform(name):
+    """'log' for degree-day sums (TDD lags, FDD), 'lin' for the weather terms."""
+    return "log" if (lag_years(name) or EXTRA_TRANSFORM.get(name) == "log") else "lin"
+
 # Weather terms read from weather_site_years.csv (era5land_for_b.py). Soil moisture,
 # NDVI and NDWI are left out on purpose: they respond to the thaw itself (mediators), so
 # adjusting for them would remove part of the change that B is meant to measure.
@@ -90,6 +110,9 @@ def extra_climate(tdd_all: pd.DataFrame | None, names, weather: pd.DataFrame | N
     From tdd_all_years.csv:
       tdd_prev: previous calendar year's thawing index (thaw memory: a warm summer melts
                 ground ice and wets the soil, which deepens the next thaw too)
+      tdd_lag1, tdd_lag2, ...: thawing index of 1, 2, ... calendar years before
+                (tdd_lag1 = tdd_prev); a lag of L years needs temperature from L years
+                before the first ALT year
       fdd:      freezing index of the preceding winter (1 Oct - 30 Apr)
     From weather_site_years.csv (ERA5-Land, ALT year = Oct of the previous year to Sep):
       snow_depth_winter (Nov-Apr mean), snow_thermal_resistance_winter, rain_summer (JJA),
@@ -99,10 +122,12 @@ def extra_climate(tdd_all: pd.DataFrame | None, names, weather: pd.DataFrame | N
     if tdd_all is not None:
         t = tdd_all.copy()
         out = t[["site_id", "year"]].copy()
-        if "tdd_prev" in names:
-            prev = t[["site_id", "year", "tdd_full_year"]].copy()
-            prev["year"] += 1
-            out = out.merge(prev.rename(columns={"tdd_full_year": "tdd_prev"}), on=["site_id", "year"], how="left")
+        for c in names:
+            lag = lag_years(c)
+            if lag:
+                prev = t[["site_id", "year", "tdd_full_year"]].copy()
+                prev["year"] += lag
+                out = out.merge(prev.rename(columns={"tdd_full_year": c}), on=["site_id", "year"], how="left")
         if "fdd" in names:
             out = out.merge(t[["site_id", "year", "fdd"]], on=["site_id", "year"], how="left")
         parts.append(out)
@@ -125,17 +150,20 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
     tdd: table site_id, year, method, tdd (deg C day). Site-years without TDD are
     dropped for model B only (reported in the summary).
     extra: output of extra_climate; extra_names: its columns to use (centred per
-    site, transformed as in EXTRA_TRANSFORM).
+    site, transformed as in extra_transform).
     """
     d = d.copy()
     extra_names = list(extra_names)
+    n_extra_dropped = 0
     if extra is not None and extra_names:
         d = d.merge(extra[["site_id", "year"] + extra_names], on=["site_id", "year"], how="left")
+        n0 = len(d)
         for c in extra_names:
             ok = np.isfinite(d[c])
-            if EXTRA_TRANSFORM.get(c, "lin") == "log":
+            if extra_transform(c) == "log":
                 ok &= d[c] > 0
             d = d[ok]
+        n_extra_dropped = n0 - len(d)
     if tdd is not None:
         t = tdd[["site_id", "year", "method", "tdd"]].drop_duplicates(["site_id", "year", "method"])
         d = d.merge(t, on=["site_id", "year", "method"], how="left")
@@ -184,7 +212,8 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
     out = dict(d=d, sites=sites, n_sites=len(sites), n_regions=len(reg_codes),
                ry_idx=ry_idx, n_ry=len(ry_codes),
                s_idx=s_idx, r_idx_site=reg_idx, f_idx_site=fam_idx_site,
-               t=t, y=y, cens=cens, prev=prev, gap=gap, ybar=ybar, tdd_dropped=dropped)
+               t=t, y=y, cens=cens, prev=prev, gap=gap, ybar=ybar, tdd_dropped=dropped,
+               extra_dropped=n_extra_dropped)
     if tdd is not None:
         lt = np.log(d["tdd"].to_numpy(float))
         x = lt - pd.Series(lt).groupby(s_idx).transform("mean").to_numpy()
@@ -199,7 +228,7 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
         xe, sxe = [], []
         for c in extra_names:
             v = d[c].to_numpy(float)
-            log_c = EXTRA_TRANSFORM.get(c, "lin") == "log"
+            log_c = extra_transform(c) == "log"
             lc = np.log(v) if log_c else v
             xc = lc - pd.Series(lc).groupby(s_idx).transform("mean").to_numpy()
             if not log_c:
@@ -438,17 +467,54 @@ def summarise_B(mcmc, arr, cfg, k_mode):
            "resid_mean": resid.mean(1),
            "rho_family": np.asarray(smp["rho_family"]) * 0.95,
            "sigma_family": 100 * np.exp(np.asarray(smp["log_sigma_family"]))}
+    lag_cols = []
     for j, c in enumerate(arr.get("extra_names", [])):
-        if EXTRA_TRANSFORM.get(c, "lin") == "log":
+        if extra_transform(c) == "log":
             s[f"trend_{c}_pct_dec"] = pct(arr["SX_extra"][:, j])
         else:                       # network SDs of the yearly anomaly per decade
             s[f"trend_{c}_sd_dec"] = arr["SX_extra"][:, j]
         net[f"k_{c}_family"] = np.asarray(smp["k_extra_family"])[:, :, j]
+        if lag_years(c):
+            lag_cols.append(j)
     if k_mode != "fixed":
         net["k0"] = np.asarray(smp["k0"])
         net["k_family"] = np.asarray(smp["k_family"])
         net["tau_k"] = np.asarray(smp["tau_k"])
+        if lag_cols:
+            # long-run TDD sensitivity: this year's k plus the coefficients of the lags
+            ke = np.asarray(smp["k_extra_family"])[:, :, lag_cols].sum(axis=2)
+            net["k_long_family"] = net["k_family"] + ke
+            s["k_long_site"] = np.median(k + np.asarray(smp["k_extra_site"])[:, :, lag_cols].sum(axis=2), 0)
     return s, net
+
+
+def resid_var_site(mcmc, arr, mode="A", max_draws=1000):
+    """Posterior mean, per site, of the variance of y minus the model mean (site level,
+    trend, climate terms and region-year effects; not the AR(1) part) over the uncensored
+    years. A and B on the same site-years give the share of the year-to-year variance
+    that the climate terms explain: 1 - var_B / var_A."""
+    smp = mcmc.get_samples()
+    nd = len(np.asarray(smp["mu"]))
+    idx = np.unique(np.linspace(0, nd - 1, min(nd, max_draws)).astype(int))
+    s = arr["s_idx"]
+    mean = np.asarray(smp["a_site"])[idx][:, s] + np.asarray(smp["slope_site"])[idx][:, s] * arr["t"][None, :]
+    if mode == "B":
+        mean = mean + np.asarray(smp["k_site"])[idx][:, s] * arr["x"][None, :]
+        if arr.get("extra_names"):
+            ke = np.asarray(smp["k_extra_site"])[idx]                           # (draws, ns, ne)
+            mean = mean + np.einsum("dne,ne->dn", ke[:, s, :], arr["X_extra"])
+    if "z_region_year" in smp:
+        g = np.asarray(smp["sd_region_year"])[idx][:, None] * np.asarray(smp["z_region_year"])[idx]
+        g = np.concatenate([g, np.zeros((len(idx), 1))], axis=1)
+        mean = mean + g[:, arr["ry_idx"]]
+    unc = ~arr["cens"]
+    e = (arr["y"][None, :] - mean)[:, unc]
+    su = s[unc]
+    out = np.empty(arr["n_sites"])
+    for i in range(arr["n_sites"]):
+        ei = e[:, su == i]
+        out[i] = np.mean(np.var(ei, axis=1))
+    return out
 
 
 def ci_str(v, level=0.95, fmt="{:.2f}"):

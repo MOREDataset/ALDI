@@ -69,19 +69,37 @@ def site_table(annual: pd.DataFrame) -> pd.DataFrame:
     return a.groupby("site_id")[["lat", "lon"]].first()
 
 
-def tdd_for_site(t: pd.Series, years, end_doy):
-    """TDD from 1 Jan to day end_doy (inclusive) of each year; NaN if > 5 % days missing."""
-    out = []
+def tdd_for_site(t: pd.Series, years, end_doy, tail_from_doy=274):
+    """TDD from 1 Jan to day end_doy (inclusive) of each year; NaN if > 5 % days missing.
+
+    One exception, at the end of the series: when the daily series stops inside the window
+    on or after 30 Sep (day tail_from_doy - 1), the days after its last day are filled with
+    the site's mean max(T, 0) of the same calendar days in the other years. The ERA5-Land
+    exports end on 30 Sep of the last ALT year, and the days after mid-September add a
+    median 1-2 % of the whole-year TDD, so the last year of a thaw-tube, temperature-ALT
+    or late-survey record is kept instead of dropped (an end year weighs most in a trend).
+    Returns (tdd, tail_filled).
+    """
+    clim = t.clip(lower=0).groupby(t.index.dayofyear).mean()   # mean positive T per calendar day
+    last = t.dropna().index.max()
+    out, filled = [], []
     for y, e in zip(years, end_doy):
+        e = int(e)
         s = t[(t.index.year == y) & (t.index.dayofyear <= e)]
-        n_exp = int(e)
+        n_exp, tail = e, 0.0
+        is_tail = bool(last.year == y and tail_from_doy - 1 <= last.dayofyear < e)
+        if is_tail:
+            n_exp = last.dayofyear
+            tail = float(clim.reindex(range(n_exp + 1, e + 1)).fillna(0.0).sum())
         if len(s) < 0.95 * n_exp or s.isna().mean() > 0.05:
             out.append(np.nan)
+            filled.append(False)
             continue
         # missing days (<= 5 %) filled with the mean positive part of the window
         pos = s.clip(lower=0)
-        out.append(float(pos.mean() * n_exp))
-    return np.array(out)
+        out.append(float(pos.mean() * n_exp + tail))
+        filled.append(is_tail)
+    return np.array(out), np.array(filled)
 
 
 def window_sum(v: pd.Series, n_exp: int):
@@ -175,17 +193,36 @@ def main():
                                  np.where(np.isfinite(sdoy), "site_median_survey_doy",
                                           "network_median_survey_doy")))
         years = g["year"].to_numpy(int)
-        tdd = tdd_for_site(t, years, end.astype(int))
-        tdd_full = tdd_for_site(t, years, np.full(len(years), 365))
+        tdd, tail = tdd_for_site(t, years, end.astype(int))
+        tdd_full, _ = tdd_for_site(t, years, np.full(len(years), 365))
+        rule = np.where(tail, np.char.add(rule.astype(str), "+tail_filled"), rule)
         rows.append(pd.DataFrame({"site_id": sid, "year": years, "method": g["method"].values,
                                   "tdd_end_doy": end.astype(int), "tdd_rule": rule,
                                   "tdd": tdd, "tdd_full_year": tdd_full,
                                   "t_source": args.source}))
     res = pd.concat(rows, ignore_index=True)
     res.to_csv(out / "tdd_site_years.csv", index=False)
-    all_years(sites.index, cache, args.start, args.end).to_csv(out / "tdd_all_years.csv", index=False)
+    ay = all_years(sites.index, cache, args.start, args.end)
+    ay.to_csv(out / "tdd_all_years.csv", index=False)
     print(f"wrote {len(res)} site-years for {res.site_id.nunique()} sites; "
           f"missing TDD: {int(res.tdd.isna().sum())}; network median probe survey DOY {net_doy:.0f}")
+    # Where the daily series is too short. The ERA5-Land exports cover ALT years (Oct-Sep),
+    # so the last exported year ends on 30 Sep: whole-year TDD (thaw tubes, temperature ALT)
+    # and surveys after 30 Sep of that year are tail-filled (see tdd_for_site) until the
+    # next ALT year is exported. Lag terms of model B need the years before the first ALT
+    # year in the same way (export them, or those first years drop out of the lag variants).
+    n_tail = int(res.tdd_rule.str.endswith("+tail_filled").sum())
+    if n_tail:
+        print(f"{n_tail} site-years of the last year: days after the end of the daily series filled "
+              f"with the site's mean of those days (tdd_rule '...+tail_filled')")
+    miss = res[res.tdd.isna()]
+    if len(miss):
+        print("site-years without TDD, by year and window rule (the daily series does not cover the window):")
+        print(miss.groupby(["year", "tdd_rule"]).size().rename("n").to_string())
+    full = ay.dropna(subset=["tdd_full_year"])
+    if len(full):
+        print(f"whole-year TDD (lag terms) available for calendar years {int(full.year.min())}-{int(full.year.max())}; "
+              f"a lag of L years is missing for ALT years before {int(full.year.min())} + L")
 
 
 if __name__ == "__main__":
