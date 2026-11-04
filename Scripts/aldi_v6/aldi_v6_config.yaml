@@ -24,18 +24,30 @@ climate:
   # Variants of the climate-expected part. main: Stefan with this year's TDD and k per
   # site around a family mean (prior centre 0.5). kfixed: k = 0.5 everywhere (pure
   # Stefan). lag: adds last year's TDD (thaw memory). air: adds last year's TDD and the
-  # winter freezing index, i.e. everything air temperature can explain. lag, air and
-  # weather need tdd_all_years.csv.
+  # winter freezing index. lag, memory, air and the weather variants need
+  # tdd_all_years.csv.
   variants:
     - {name: main,   k_mode: hierarchical}
     - {name: kfixed, k_mode: fixed}
     - {name: lag,    k_mode: hierarchical, extra: [tdd_prev]}
+    # memory: TDD of the two previous years as well. ALT follows TDD with a lag (the
+    # 2026-11-04 review: this year's k is 0.2-0.3, but with the lags the long-run k is
+    # about 0.35-0.45). Lags of three and four years (0.03-0.06) were close to the
+    # coefficient of NEXT year's TDD (0.03; a placebo, since next summer cannot cause this
+    # year's thaw) and did not fall off steadily, so they cannot be told from slow
+    # variation that ALT and TDD share, and are left out. A lag of two years needs
+    # temperature from two years before the first ALT year (1988 for 1990); without it the
+    # first years of a record drop out of this variant.
+    - {name: memory, k_mode: hierarchical, extra: [tdd_lag1, tdd_lag2]}
     - {name: air,    k_mode: hierarchical, extra: [tdd_prev, fdd]}
     # weather: air plus winter snow depth (insulation: deep snow keeps the ground warm in
     # winter) and summer rain (heat carried into the soil, wetter soil conducts better).
     # What is left is change that weather does not explain (ground ice, subsidence,
     # vegetation, disturbance). Needs weather_site_years.csv from era5land_for_b.py.
     - {name: weather, k_mode: hierarchical, extra: [tdd_prev, fdd, snow_depth_winter, rain_summer]}
+    # weather_memory: weather with the two-year TDD memory, the most that the weather
+    # record can explain.
+    - {name: weather_memory, k_mode: hierarchical, extra: [tdd_lag1, tdd_lag2, fdd, snow_depth_winter, rain_summer]}
   k_fixed: 0.5
   # B runs without region-year effects: most of the shared year-to-year swing is the
   # TDD signal that k is estimated from.

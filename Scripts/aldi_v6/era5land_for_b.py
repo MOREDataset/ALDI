@@ -2,14 +2,19 @@
 
     python era5land_for_b.py  drive_export_dir  tdd_dir  [--grid]
 
-drive_export_dir is the Google Drive folder the exports went to (ALDI_GEE_exports). It
-must hold the groups t2m_daily (daily air temperature), era5 (snow and rain per ALT year)
-and static (site and cell elevation). In Colab, after the usual setup cells:
+drive_export_dir is the Google Drive folder the exports went to (ALDI_GEE_exports_v2 for
+the 2026-11-04 export). It must hold the groups t2m_daily (daily air temperature), era5
+(snow and rain per ALT year) and static (site and cell elevation). In Colab, after the
+usual setup cells (cell 2b of the notebook):
 
-    gee.export_all(sites, years=range(1989, 2026), groups=("static", "era5", "t2m_daily"),
-                   drive_dir=DRIVE_DIR)
+    B_FOLDER = "ALDI_GEE_exports_v2"
+    gcf.export_all(sites, years=range(1988, 2026), groups=("static", "era5", "t2m_daily"),
+                   drive_dir="/content/drive/MyDrive/" + B_FOLDER,
+                   cfg={**gcf.CONFIG, "export_folder": B_FOLDER})
 
-(1989 so that the previous-year TDD of 1990 exists.)
+1988 so that the TDD of the two years before 1990 exists, for the memory variants. Earth
+Engine writes to cfg["export_folder"]; drive_dir is only where finished years are looked
+up and skipped. So after the site list has changed, export to a new folder by changing both.
 
 Writes
   tdd_dir/daily_t2m/<site_id>.csv   date, t2m_c: one continuous daily series per site, the

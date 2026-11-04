@@ -11,7 +11,8 @@ Scenarios
   A_fit     site slopes from the fitted hierarchy, shared region-year shocks, AR(1)
   A_heavy   as A_fit but site deviations from t(3) (heavy tails, misspecified)
   A_null    no trend anywhere (mu = tau = 0): every thickening/thinning call is false
-  B_fit     k_i ~ N(0.4, 0.1), residual trends from the fitted hierarchy
+  B_fit     k_i from the fitted family means and spread, residual trends from the fitted
+            hierarchy
   B_climate residual trend 0 everywhere: every "deeper/shallower than TDD" call is false
   B_tdderr  as B_climate, but the model sees TDD with error (20 % of its interannual
             variance): measures the attenuation that moves climate trend into residual
@@ -200,7 +201,10 @@ def run_B(arr, cfg, fitted, scen, rng, reps, fit_kw, real_x):
         else:
             beta = fitted["mu_d"] + fitted["tau_region_d"] * rng.normal(size=nr)
             d_site = beta[arr["r_idx_site"]] + fitted["tau_site_d"] * rng.normal(size=ns)
-        k = np.zeros(ns) if scen == "B_nok" else rng.normal(0.4, 0.1, ns)
+        # k from the fitted model (family means and site spread; about 0.2 on run 7). Up
+        # to 2026-11-04 this was N(0.4, 0.1), twice the fitted value.
+        k = (np.zeros(ns) if scen == "B_nok" else
+             fitted["k_family"][arr["f_idx_site"]] + fitted["tau_k"] * rng.normal(size=ns))
         tr = {"a": arr["ybar"], "rho_f": fitted["rho_f_B"], "sigma": fitted["sigma_B"],
               "sd_ry": 0.0, "slope": d_site, "k": k, "x_true": x_true}
         sim = simulate(base, tr, rng)
@@ -242,7 +246,8 @@ def fitted_values(arr, arrB, cfg, fit_kw):
     sb = mcB.get_samples()
     f.update(mu_d=float(np.mean(sb["mu"])), tau_region_d=float(np.mean(sb["tau_region"])),
              tau_site_d=float(np.mean(sb["tau_site"])), rho_f_B=np.asarray(sb["rho_family"]).mean(0) * 0.95,
-             sigma_B=np.asarray(sb["sigma_site"]).mean(0))
+             sigma_B=np.asarray(sb["sigma_site"]).mean(0),
+             k_family=np.asarray(sb["k_family"]).mean(0), tau_k=float(np.mean(sb["tau_k"])))
     return f
 
 
