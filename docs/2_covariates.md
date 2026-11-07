@@ -1,56 +1,17 @@
-# Covariates for the ALT causal analysis (Google Earth Engine)
+# Step 2: covariates from Google Earth Engine (`2_covariates.py`)
 
-`gee_causal_features.py` builds the treatments, confounders and mediators of the manuscript
+`2_covariates.py` builds the treatments, confounders and mediators of the manuscript
 DAG tables for every site of the multi-source ALT dataset, one row per site and year, with
-the column names that `Scripts/ALDI_causality.ipynb` uses. It then joins them with the ALT
+the column names that `extras/ALDI_causality.ipynb` uses. It then joins them with the ALT
 values and the ALDI classes and writes `ALDI_withYearlyData_augmented*.csv`, the files the
-causal notebook reads. `GEE_causal_features_colab.ipynb` runs it in Colab.
+causal notebook reads.
 
-## What you need
 
-| Input | Where it comes from |
-|---|---|
-| `site_footprints.csv` (optional) | probing grid size of the CALM sites, from `build_site_footprints()`; in the project's `alt_multisource/` folder. Put it next to `alt_multisource_for_ALDI.csv`. Without it, the footprint comes from the measurement method only |
-| `alt_multisource_for_ALDI.csv` | the ALT target (`Scripts/alt_target/build_alt_target.py`); in Drive at `UND/Index/alt_multisource/`, where the ALDI notebook reads it |
-| `aldi_multisource_results.csv` | `ALDI_Calculation_final.ipynb` (run with `min_year=1990`); in Drive at `UND/Index/` |
-| `permaice.shp` (+ .shx, .dbf, .prj) | IPA Circum-Arctic Map of Permafrost and Ground-Ice Conditions (Brown et al. 2002, NSIDC GGD318), the same file the MATLAB script used; put it in `UND/Index/ggd318_map_circumarctic/` |
-| An Earth Engine Cloud project | <https://code.earthengine.google.com/register> |
+## Run
 
-Put `gee_causal_features.py` in `/content/drive/MyDrive/UND/Index/scripts/`. The notebook
-sets all paths in its second cell.
+See the top of `2_covariates.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-## Run on your own computer (no Colab, no Drive)
-
-```
-pip install earthengine-api geopandas scikit-learn
-earthengine authenticate                      # once; opens the browser
-```
-```python
-import ee, gee_causal_features as gcf
-ee.Initialize(project="your-earth-engine-project")
-sites = gcf.load_sites("alt_multisource_for_ALDI.csv")
-gcf.quick_test(sites)                                            # 3 sites, 1 year
-gcf.download_all(sites, "gee_exports", years=range(1988, 2026),
-                 groups=("static", "era5", "t2m_daily"))         # what ALDI v6 B needs
-gcf.download_all(sites, "gee_exports")                           # every group, 1990-2025
-```
-
-`download_all` computes the same tables as the Drive exports below, with the same file names
-and columns, and writes them straight to the folder. Six files are computed at a time; files
-already there are skipped, so a stopped run continues where it left off. The B groups for
-1988-2025 (339 sites) took about two hours; one t2m_daily year takes about 10 minutes.
-On 2015 the files matched the Drive exports to 1e-16. Steps 4 and 5 below then read this
-folder in place of the Drive folder.
-
-## Run (Colab)
-
-1. `quick_test(sites)`: three sites, one year, all variables, computed directly (a few minutes; the MODIS snow-off step is the slowest). Check that the values look sensible.
-2. `export_all(sites, drive_dir=EXPORTS)`: starts about 210 Earth Engine export tasks (one per data group and year). They write CSV files to the Drive folder `ALDI_GEE_exports`. They run on Google's side; Colab can be closed. Running it again only starts the missing ones.
-3. `task_status()`: how many tasks are done or failed.
-4. `assemble_features(...)`: reads the exports and adds the elevation-corrected temperatures, distance to coast, continentality, the AVHRR-to-MODIS adjustment, the sunlight ratio and the permafrost map classes. It prints a check that the temperature indices computed from the daily values match those from Earth Engine. Writes `Index/multisource/ALDI_causal_features_complete.csv`.
-5. `build_augmented(...)`: writes `ALDI_withYearlyData_augmented.csv` and the class and permafrost-zone subsets to `Index/multisource/`. `ALDI_causality.ipynb` now reads from that folder, so the v4 files are not overwritten.
-
-Steps 4 and 5 need no Earth Engine and can be re-run at any time.
+One-time setup: `py -3.12 -m pip install earthengine-api geopandas scikit-learn`, then `earthengine authenticate`. The default run gets what ALDI B needs (static, era5, t2m_daily, ALT years 1988-2025: about 2 hours, six files at a time; a stopped run continues where it left off). `--all` adds every other group and writes `data/2_covariates/ALDI_causal_features_complete.csv` for `extras/ALDI_causality.ipynb`. On 2015 the files matched the earlier Google Drive exports to 1e-16.
 
 ## Spatial resolution: matching the covariates to point ALT
 
@@ -150,7 +111,7 @@ the end-of-season thaw depth, and would split the winter before it between two y
 | `FIRMS_fire_days` | Days with a FIRMS detection (confidence at least 30 %) within 1 km, from 2001 | FIRMS |
 | `ROS_days` | Nov to Apr days with snow depth above 5 mm, precipitation above 1 mm and daily mean air temperature above 0 °C | ERA5-Land daily |
 
-`feature_dictionary.csv` (from `write_dictionary()`) lists every column, including the
+`docs/2_covariates_columns.csv` (from `write_dictionary()`) lists every column, including the
 confounders, mediators and the extra variables, with its definition, source and units.
 
 ## Processing choices
@@ -163,7 +124,7 @@ confounders, mediators and the extra variables, with its definition, source and 
 - **Fire.** `fire_persistent_source = 1` marks sites with detections in 5 or more different years, which in tundra is more likely a gas flare or industrial heat source than wildfire. These are worth checking before using FIRMS_fire_days.
 - **Wind.** Daily wind speed is computed from the daily mean wind components, so it is lower than the mean of hourly speeds. `wind_direction_winter` is the direction the mean winter wind comes from; `u10_winter` and `v10_winter` express the same in a form usable in regressions (a direction in degrees jumps from 359 to 0).
 - **Terrain.** Copernicus GLO-30 DEM (SRTM stops at 60° N). Slope and aspect are computed per DEM tile, in the tile's own grid, and averaged over the site buffer. `northness` and `eastness` are weighted by sin(slope), so flat ground has no aspect. `tpi` is the mean elevation in the site buffer minus the mean within 3 km; `tri` is the standard deviation of elevation within 1 km (both describe the landscape around the site, so their radii stay fixed). `insolation_ratio_thaw` is the clear-sky direct sunlight on the site's slope over May to Sep relative to flat ground (sun geometry only, no shading by the hills around). `twi` (topographic wetness index) and `hand_m` (height above the nearest drainage) come from MERIT Hydro at 90 m and say whether water collects at the site.
-- **Distance to coast.** Great-circle distance to the Natural Earth 1:10m coastline (downloaded in Colab). `continentality_dist = log(1 + dist_to_coast_km)`.
+- **Distance to coast.** Great-circle distance to the Natural Earth 1:10m coastline (downloaded during the run). `continentality_dist = log(1 + dist_to_coast_km)`.
 - **Permafrost classes.** A site inside an IPA map polygon takes its extent, ground ice and landform classes. A site in a lake or on the coast takes the nearest permafrost polygon within 20 km, otherwise "Unknown".
 - **ALT column.** The augmented files name the ALT column `Max` so the notebook runs unchanged. It holds `ALT_cm` of the multi-source dataset (site-mean end-of-season thaw depth), not the v4 grid maximum.
 
@@ -182,13 +143,13 @@ November 2026 (feature review):
   - `TDD_prev`, `TDD_to_survey_prev` and `P_summer_prev`: carry-over from the previous year.
   - Static: `treecover2000_pct` and `forest_loss_year` (Hansen GFC v1.11), `water_occurrence_buffer` and `water_frac_1km` (JRC Global Surface Water v1.4).
 - **Not recommended as model inputs** (the columns are still written so older runs reproduce):
-  - `wind_direction_winter`: an angle cannot enter a linear model. `ALDI_causality.ipynb` now uses `u10_winter` and `v10_winter` in its place.
+  - `wind_direction_winter`: an angle cannot enter a linear model. `extras/ALDI_causality.ipynb` now uses `u10_winter` and `v10_winter` in its place.
   - `albedo_annual`: ERA5-Land albedo follows the model's own snow cover, so it repeats the snow variables. Use `albedo_summer_modis` for the surface.
   - `heat_wave_days` with the fixed 20 °C threshold: zero in most high-Arctic years. Use `heat_wave_days_p90`.
   - `T_summer_mean`: a copy of `T_JJA_mean`. Use one of them.
   - Static terrain, soil and coast variables (`continentality_dist`, `lat`, `elevation_m`...): absorbed by site fixed effects. Keep them for between-site summaries only.
   - `soil_T` and the other ERA5-Land soil temperatures: a model's ground thermal state, close to the outcome itself. Leave them out of the controls. The notebook already treats `soil_T` as a mediator.
-- **`build_augmented` reads ALDI v5.1 results** (`Scripts/aldi/`). Use `aldi_class_column='class_site'` or `'class_pooled'`.
+- **`build_augmented` reads ALDI v5.1 results** (the v5.2 columns of `data/3_aldi/aldi_v6_results.csv` have the same names). Use `aldi_class_column='class_site'` or `'class_pooled'`.
 - These Earth Engine additions are untested here (no Earth Engine account): ERA5-Land `snow_density` and soil water layers 2-3, Hansen v1.11 and JRC GSW 1.4. `quick_test(sites)` shows within a minute whether they return values. The pandas-side additions were checked on synthetic daily exports.
 
 October 2026 (finer resolution): per-site buffers from the measurement footprint and

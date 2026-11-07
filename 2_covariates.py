@@ -1,13 +1,35 @@
 """
-Covariates for the ALT causal analysis (Scripts/ALDI_causality.ipynb), from Google Earth Engine.
+STEP 2: covariates from Google Earth Engine, downloaded straight to this PC.
 
-What it does
-------------
-For every site of the multi-source ALT dataset and every year (1990 onward by default) it
-extracts the treatments, confounders and mediators of the manuscript DAG tables, with the
-column names that ALDI_causality.ipynb uses. Then it joins them with the ALT values and the
-ALDI classes and writes ALDI_withYearlyData_augmented.csv and the subset files that the
-causal notebook reads.
+One-time setup, in a terminal:
+    py -3.12 -m pip install earthengine-api geopandas scikit-learn
+    earthengine authenticate          opens the browser: sign in with the Google account
+                                      of your Earth Engine Cloud project
+
+Then:
+    py -3.12 2_covariates.py --project YOUR-EE-PROJECT --test   3 sites, 1 year, printed
+    py -3.12 2_covariates.py                                     what ALDI B needs (default)
+    py -3.12 2_covariates.py --all                               every variable, for the
+                                                                 causal analysis
+The project id is remembered in data/ee_project.txt (a name, not a password).
+
+Default: the groups static, era5 and t2m_daily for ALT years 1988-2025 (1988 so that the
+two-year TDD lags of 1990 exist). --all adds modis, snowmelt, avhrr, landsat and fire for
+1990-2025 and merges everything into data/2_covariates/ALDI_causal_features_complete.csv,
+with the elevation-corrected temperatures, distance to coast, the AVHRR-to-MODIS
+adjustment, the sunlight ratio and the permafrost map classes.
+
+Reads   data/1_alt_target/alt_multisource_for_ALDI.csv   (the site list, step 1)
+        data/raw/permafrost_map/permaice.shp             (IPA map, for --all)
+Writes  data/2_covariates/  static.csv, era5_YYYY.csv, t2m_daily_YYYY.csv, ... (one file
+        per group and ALT year). Files already there are skipped, so you can stop the
+        script and run it again to continue. Six files are computed at a time; one
+        t2m_daily year takes about 10 minutes, the default set about 2 hours.
+
+What it extracts
+----------------
+For every site and every year, the treatments, confounders and mediators of the
+manuscript DAG tables, with the column names that extras/ALDI_causality.ipynb uses.
 
 Spatial scale
 -------------
@@ -16,17 +38,15 @@ over the site's own footprint (buffer_m: the probing grid, or 15 m for a borehol
 widened when the coordinates are rounded). Air temperature from ERA5-Land (0.1 degree, about
 9 km) is corrected to the site's elevation with a lapse rate (temperature_from_daily).
 NDVI comes from Landsat (30 m), and snow-off date and surface temperature are also given
-from MODIS (500 m, 1 km; from 2000). See README.md, "Spatial resolution".
+from MODIS (500 m, 1 km; from 2000). See docs/2_covariates.md, "Spatial resolution".
 
-Run it in Colab (see README.md in this folder, or GEE_causal_features_colab.ipynb):
-    1. quick_test(sites)        a few sites, one year, interactive (about a minute)
-    2. export_all(sites)        starts Earth Engine export tasks to Google Drive
-    3. task_status()            shows how many tasks are done
-    4. assemble_features(...)   reads the exports, adds the offline features
-    5. build_augmented(...)     writes the files for ALDI_causality.ipynb
-
-Steps 4 and 5 use only pandas (plus geopandas and scikit-learn for distance to coast and
-the permafrost map), so they can be re-run without Earth Engine.
+The functions, in the order they are used
+-----------------------------------------
+    quick_test(sites)          a few sites, one year, printed (--test)
+    download_all(sites, dir)   computes every group and year and writes the CSV files
+    assemble_features(...)     reads them, adds the offline features (--all)
+    build_augmented(...)       joins ALT values and ALDI classes for the causal notebook
+    export_all(sites)          the older route: Earth Engine export tasks to Google Drive
 
 The "ALT year"
 --------------
@@ -989,7 +1009,7 @@ def download_all(sites, out_dir, years=None, groups=ALL_GROUPS, chunk=60, worker
     """Same tables as export_all(), but computed in this session and written straight to
     out_dir on this computer (static.csv, era5_1990.csv, t2m_daily_1990.csv...), with the
     same columns as the Drive exports, so assemble_features() and
-    Scripts/aldi_v6/era5land_for_b.py read the folder unchanged. No Google Drive needed.
+    3_aldi.py read the folder unchanged. No Google Drive needed.
 
     Files already in out_dir are skipped, so an interrupted run continues where it stopped.
     Each file is written under a temporary name and renamed when complete. Large groups
@@ -1569,7 +1589,7 @@ def build_augmented(features, alt_csv, aldi_results_csv, out_dir, cfg=CONFIG,
     same names stay as they are; ALDI_causality.ipynb reads from that folder.
 
     aldi_results_csv can be the v4 notebook output (class_classification) or the ALDI v5.1
-    output (Scripts/aldi/run_aldi.py: class_site or class_pooled). With v5.1, the class
+    output (class_site or class_pooled; the same columns are in data/3_aldi/aldi_v6_results.csv). With v5.1, the class
     named by aldi_class_column is copied to class_classification so the notebook runs."""
     alt = pd.read_csv(alt_csv).rename(columns={"Year": "year"})
     alt = alt[alt["year"] >= cfg["first_year"]]
@@ -1749,3 +1769,92 @@ FEATURES = [
 def write_dictionary(path):
     pd.DataFrame(FEATURES, columns=["column", "definition", "source", "units"]).to_csv(path, index=False)
     print(f"Wrote {path}")
+
+
+# =============================================================================
+# RUNNING THE STEP
+# =============================================================================
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(ROOT, "data")
+ALT_CSV = os.path.join(DATA, "1_alt_target", "alt_multisource_for_ALDI.csv")
+OUT_DIR = os.path.join(DATA, "2_covariates")
+IPA_SHP = os.path.join(DATA, "raw", "permafrost_map", "permaice.shp")
+PROJECT_FILE = os.path.join(DATA, "ee_project.txt")
+B_GROUPS = ("static", "era5", "t2m_daily")
+
+
+def _project(arg):
+    """Earth Engine Cloud project: --project (then remembered), EE_PROJECT, or the file."""
+    if arg:
+        os.makedirs(DATA, exist_ok=True)
+        with open(PROJECT_FILE, "w") as f:
+            f.write(arg.strip())
+        return arg.strip()
+    if os.environ.get("EE_PROJECT"):
+        return os.environ["EE_PROJECT"]
+    if os.path.exists(PROJECT_FILE):
+        with open(PROJECT_FILE) as f:
+            return f.read().strip()
+    raise SystemExit("Give your Earth Engine Cloud project once: --project YOUR-PROJECT-ID")
+
+
+def main():
+    import argparse
+    import importlib.util
+    import sys
+    ap = argparse.ArgumentParser(description=__doc__.split("What it extracts")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--project", help="Earth Engine Cloud project id (remembered afterwards)")
+    ap.add_argument("--test", action="store_true", help="3 sites, ALT year 2015, printed only")
+    ap.add_argument("--all", action="store_true", help="every group (causal analysis), then merge")
+    ap.add_argument("--first", type=int, default=None, help="first ALT year (default 1988; 1990 for the --all groups)")
+    ap.add_argument("--last", type=int, default=2025, help="last ALT year (default 2025)")
+    ap.add_argument("--chunk", type=int, default=60, help="sites per Earth Engine request")
+    ap.add_argument("--workers", type=int, default=6, help="files computed at the same time")
+    ap.add_argument("--sites", default=ALT_CSV, help="site list (default: step 1 output)")
+    ap.add_argument("--out", default=OUT_DIR, help="output folder (default data/2_covariates)")
+    a = ap.parse_args()
+
+    need = ["ee", "numpy", "pandas"] + (["geopandas", "sklearn"] if a.all else [])
+    missing = [m for m in need if importlib.util.find_spec(m) is None]
+    if missing:
+        pip = " ".join({"ee": "earthengine-api", "sklearn": "scikit-learn"}.get(m, m) for m in missing)
+        sys.exit(f"This Python ({sys.version.split()[0]}) is missing: {pip}. Nothing was changed.\n"
+                 f"Run it with  py -3.12 2_covariates.py  or install them:\n"
+                 f"    \"{sys.executable}\" -m pip install {pip}")
+    try:
+        ee.Initialize(project=_project(a.project))
+    except SystemExit:
+        raise
+    except Exception as err:
+        sys.exit(f"Earth Engine did not start: {err}\n"
+                 "If it is a sign-in problem, run  earthengine authenticate  in a terminal first.")
+
+    if not os.path.exists(a.sites):
+        sys.exit(f"{a.sites} not found: run 1_alt_target.py first")
+    sites = load_sites(a.sites)               # sites with ALT values from 1990, with buffers
+    if a.test:
+        quick_test(sites, year=2015, n_sites=3)
+        return
+
+    first_b = 1988 if a.first is None else a.first
+    failed = download_all(sites, a.out, years=range(first_b, a.last + 1), groups=B_GROUPS,
+                          chunk=a.chunk, workers=a.workers)
+    if a.all:
+        first = 1990 if a.first is None else a.first
+        failed += download_all(sites, a.out, years=range(first, a.last + 1),
+                               groups=tuple(g for g in ALL_GROUPS if g not in B_GROUPS),
+                               chunk=a.chunk, workers=a.workers)
+        if failed:
+            sys.exit("Some files failed; run the same command again before the merge.")
+        assemble_features(sites, a.out, ipa_shapefile=IPA_SHP,
+                          out_csv=os.path.join(a.out, "ALDI_causal_features_complete.csv"),
+                          alt_csv=a.sites)
+        write_dictionary(os.path.join(a.out, "feature_dictionary.csv"))
+    if failed:
+        sys.exit("Some files failed; run the same command again to retry them.")
+    print("Done. Next: py -3.12 3_aldi.py")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,6 +1,6 @@
-# ALDI v6: hierarchical trends (A) and climate-adjusted index (B)
+# Step 3: ALDI v6, hierarchical trends (A) and climate-adjusted index (B) (`3_aldi.py`)
 
-v5.2 (`Scripts/aldi`) stays as it is. v6 uses the same sample rules, class margins and
+v5.2 (described at the end of this note) is part of `3_aldi.py`. v6 uses the same sample rules, class margins and
 regions, so both classify exactly the same site-years, and the v6 run reruns v5.2 for the
 comparison table.
 
@@ -53,7 +53,7 @@ Per site:
 - residual classes: `deeper_than_TDD` (interval > 0), `consistent_with_TDD` (interval
   inside ±5 %/dec), `shallower_than_TDD` (< 0), `not_resolved`
 
-Variants (config `climate.variants`): `main` (above); `kfixed` (k = 0.5, pure Stefan);
+Variants (`SETTINGS`, `climate: variants`): `main` (above); `kfixed` (k = 0.5, pure Stefan);
 `lag` (adds last year's TDD: a warm summer melts ice and wets the soil, which deepens
 the next thaw); `memory` (adds the TDD of each of the two previous years); `air` (adds
 last year's TDD and the preceding winter's freezing index); `weather` (`air` plus Nov-Apr
@@ -81,13 +81,13 @@ explain: ground ice loss and subsidence, taliks, vegetation, disturbance. That i
 the causal driver analysis starts.
 
 Temperature source. Main: ERA5-Land (0.1 deg) from the Earth Engine exports of
-`../covariates/gee_causal_features.py`, corrected to the site elevation in summer
+`2_covariates.py`, corrected to the site elevation in summer
 (-6.5 K/km May-Sep, none in winter because of inversions). Robustness: NASA POWER
 (MERRA-2, 0.5 x 0.625 deg), which needs no account. B uses each site's year-to-year TDD
 swings, which are coherent over hundreds of km, so the grid matters less than for
 absolute values; but a coarse cell mixes in sea or mountain air at coastal and mountain
 sites, and TDD error lowers k and moves a little trend into the residual (simulation).
-`fetch_tdd.py` holds the window rules (probe: 1 Jan to the survey date or the site /
+`3_aldi.py` (`tdd_tables`) holds the window rules (probe: 1 Jan to the survey date or the site /
 network median survey day; thaw tube and temperature ALT: whole year). The ERA5-Land
 exports run by ALT year (October to September), so the last exported year stops on
 30 September. The days after it are filled with the site's mean of the same calendar days
@@ -106,37 +106,9 @@ too narrow for a statement about the permafrost region.
 
 ## Run
 
-```
-pip install numpy scipy pandas pyyaml numpyro jax matplotlib
+See the top of `3_aldi.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-# ERA5-Land (main). First get the static, era5 and t2m_daily groups for ALT years
-# 1988-2025 (the two-year TDD lags of 1990 need 1988) into one folder: on your own computer
-# with gee_causal_features.download_all() (see ../covariates/README.md), or as Drive
-# exports with Colab cell 2b of GEE_causal_features_colab.ipynb. Then:
-python era5land_for_b.py  path/to/gee_exports  tdd_era5                                      # daily series + weather table
-python fetch_tdd.py       annual.csv  tdd_era5  --source cache                 # TDD tables from those series
-python run_aldi_v6.py     aldi_v6_config.yaml annual.csv out_era5 \
-       tdd_era5/tdd_site_years.csv tdd_era5/tdd_all_years.csv tdd_era5/weather_site_years.csv
-
-# NASA POWER (robustness; no account, ~10 min of downloads; no weather variant)
-python fetch_tdd.py   annual.csv  tdd_power
-python run_aldi_v6.py aldi_v6_config.yaml annual.csv out_power  tdd_power/tdd_site_years.csv  tdd_power/tdd_all_years.csv
-
-python validate_aldi_v6.py ../aldi/aldi_config.yaml annual.csv sim_dir tdd_era5/tdd_site_years.csv --reps 8
-```
-
-Use separate folders for the two sources: `fetch_tdd.py` never re-downloads a site that
-already has a file in `daily_t2m/`.
-
-`tdd_all_years.csv` (site_id, year, tdd_full_year, fdd for every calendar year) is only
-needed for the variants with lags or FDD. `fetch_tdd.py` prints which site-years have no
-TDD and from which calendar year the lags exist. The main run takes about 25 minutes on
-4 cores (11 model fits); the simulation check 1-2 hours.
-
-Outputs: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval,
-class and band probabilities, B expected / residual / total trends and classes per
-variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures,
-`aldi_v6_period_check.csv`.
+`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
 
 ## Results on run 7 (229 sites, 4,550 site-years, 41 regions)
 
@@ -219,3 +191,81 @@ coverage stays 0.90 and the expected trend is unbiased.
 - **Shrinkage borrows from neighbours.** A short record in a fast region is pulled up.
   `rate_pct_dec` (v5.2 site) stays in the table for statements about one record.
 - **Same sample as v5.2**, including U19 1990-2014 and the 60 N cut (open decisions).
+
+## Appendix: ALDI v5.2, the site-by-site method (rerun inside `3_aldi.py`)
+
+`extras/ALDI_Calculation_final.ipynb` (v4) is left as it was, so its results can still be reproduced. v5.2 is the revised index; v6 reruns it on the same site-years for the comparison columns of `aldi_v6_results.csv`.
+
+
+### What changed from v4, and why
+
+| | v4 notebook | v5.2 |
+|---|---|---|
+| Gaps | PCHIP fills gaps of up to 2 years, and the filled values are tested as data | No filling. Theil-Sen and Kendall's S work with irregular years |
+| Probe or sensor limit reached | The year is dropped | The year stays in as a right-censored value (Akritas-Theil-Sen). Dropping it removes the deepest years of deepening sites |
+| Rate | cm/yr | % of the site's ALT per decade, so sites with 40 cm and 120 cm ALT are compared on one scale |
+| Class thresholds | 50th and 80th percentiles of the sample's slopes, clipped. In the 1990+ data the 50th percentile (0.47 cm/yr) was clipped to 0.30, and the 80th gave 1.27 | Fixed: stable ±5 %/dec, rapid 10 %/dec (v5 decision). A site's class no longer depends on which other sites are in the sample |
+| No trend | One class for "flat" and for "cannot tell" | `stable` means the 90 % interval lies inside ±5 %/dec (an equivalence test). `indeterminate` means the record cannot decide |
+| Interval | Moving-block bootstrap (2-5-year blocks) | Kendall-S inversion with an AR(1) variance factor. Without autocorrelation this is exactly Gilbert's Sen-slope interval, and it also works with censored years. The AR(1) coefficient is one network value fitted by REML over all series (v5.2); v5.1 used each site's own lag-1 estimate, which is biased low for 10-35 values and made the interval too narrow |
+| Reversal | Fixed first and last 7 years, slopes of opposite sign, both intervals excluding 0 | Broken-stick fit with an estimated breakpoint. The p-value comes from an AR(1) bootstrap of the sup-F statistic. A reversal needs both segments beyond ±5 %/dec with opposite signs. It is reported as a flag, not a class (v5 decision) |
+| Method changes in a series | Mixed | Only the series' main method family is kept (probe, thaw tube or temperature). This removed 24 site-years at 20 sites |
+| Pooling | None | Two-level random-effects model (regions of ≤250 km, then sites), fitted by REML. It gives each site's shrunk rate (`rate_pooled`) and class (`class_pooled`), the regional rate, and the network rate with regions as clusters |
+| Extra outputs | | Minimum detectable trend, Benjamini-Hochberg q-values, survey-date drift flag, burned-site flag |
+
+### v5.2 change (2026-11-03): pooled autocorrelation
+
+v5.1 estimated the AR(1) coefficient of each series from its own lag-1 residual
+correlation. With 10-35 values that estimate is biased low (a fitted trend and missing
+years both pull it down: at 12 years and a true rho of 0.5 it averaged about 0.3) and
+noisy (SD about 0.3), so the variance correction was too small and the 90 % interval
+too narrow. The lag-1 estimate also divided a sum over consecutive pairs by a sum over
+all years, which shrank it further when years were missing (fixed, used by
+`ar1_method: site`).
+
+v5.2 fits one AR(1) coefficient for the whole network by REML: each series keeps its own
+level, slope and noise variance, missing years are handled exactly (correlation
+rho^gap), and the restricted likelihood removes most of the trend bias. On the run-7
+data the pooled rho is 0.46 (probe 0.40, temperature 0.54, thaw tube 0.57; 0.36
+without the sites with a breakpoint), so year-to-year persistence in ALT is larger
+than v5.1 assumed. `ar1_method: site` in the config gives the v5.1 behaviour.
+
+### Results on the run-7 data (2026-11-02 build; 1990-2025, >=60 N, >=10 years over >=12 years: 229 sites)
+
+| class | site v5.1 | site v5.2 | pooled v5.1 | pooled v5.2 |
+|---|---|---|---|---|
+| rapid thickening | 43 | 39 | 44 | 35 |
+| gradual thickening | 26 | 19 | 59 | 66 |
+| stable | 18 | 11 | 24 | 23 |
+| gradual thinning | 3 | 2 | 1 | 1 |
+| rapid thinning | 5 | 4 | 1 | 0 |
+| indeterminate | 134 | 154 | 100 | 104 |
+
+- **Network rate:** +7.9 %/dec (95 % CI 5.6 to 10.3), 41 regions (v5.1: +8.4). Between-region SD 6.0, between-site SD 3.7 %/dec.
+- **Detectable trend:** median minimum detectable trend 14.0 %/dec (v5.1: 12.4).
+- **Trend q < 0.10 (Benjamini-Hochberg):** 22 sites (v5.1: 39).
+- **Breakpoints:** 33 of 197 tested (about 10 expected by chance), 20 reversals.
+- **Left out:** 1,307 site-years before 1990 or south of 60 N; 749 site-years at 123 sites that are too short inside the window (46 of them have long records before 1990, mostly Roshydromet 1930-1990 and KWBS); 24 minority-method years.
+
+### Simulation check (v5.2, 2026-11-03)
+
+Synthetic series with 7.5 % noise (the median of the real series) and 10 % missing years, over 12-35 years, AR(1) rho 0, 0.3 and 0.5, 300 series per cell. The pooled rho is fitted on the 300 series of a cell, as it is on the network.
+
+- **Interval coverage (nominal 90 %), mean over lengths and rates:**
+
+  | rho | v5.2 pooled | v5.1 site | v4 bootstrap |
+  |---|---|---|---|
+  | 0 | 0.905 | 0.922 | 0.934 |
+  | 0.3 | 0.905 | 0.879 | 0.906 |
+  | 0.5 | 0.911 | 0.853 | 0.870 |
+
+  v5.2 stays within 0.89-0.92 in every cell (12 to 35 years).
+- **No true trend:** 5-11 % of records are called thickening or thinning (a 90 % interval allows 10 %); v5.1 reached 20 % for 12-year records at rho 0.5.
+- **Stable needs long records:** with a true rate of 0 the share called stable is 0 at 12 and 18 years, 2-37 % at 25 years and 43-93 % at 35 years. The equivalence test needs the 90 % interval inside +/-5 %/dec, and with 7.5 % noise a 12-year record has a slope SE of about 6 %/dec. This is a property of the margin and the data, not a fault: use `p_stable` or `class_pooled` for short records.
+- **Breakpoint test:** false-positive rate 4 % against a nominal 5 %.
+
+### Caveats
+
+- **Sharp cut-offs, uncertain inputs.** Classes have sharp edges, but the inputs are uncertain. Use `p_*` (posterior band probabilities from the pooled model) when one site's class matters.
+- **Censored years.** The variance of S ignores censoring. With 35 censored values in 4,515 site-years the effect is small.
+- **What the pooled model assumes.** It assumes normal site and region effects, and a few BNZ and Mackenzie sites have heavy-tailed rates. Pooling also borrows from neighbours, so `class_pooled` is a regional-context class. Report `class_site` for statements about a single record.
+- **U19 Pearl Creek.** Its 1990-2014 years remain, because the build flags talik only from 2015. The v5 decision was to exclude the site.
