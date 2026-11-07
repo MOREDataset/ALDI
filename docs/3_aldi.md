@@ -28,7 +28,12 @@ sd(e) per site, log-normal around a family mean
 ```
 
 - Lower-bound years (thaw reached the probe or the deepest sensor) are latent values
-  above the bound, so they count as "at least this deep", with no made-up value.
+  above the bound, so they count as "at least this deep", with no made-up value. Since
+  7 November 2026 the latent value has no prior beyond "above the bound" (the standard
+  censored likelihood). Before, a HalfNormal(0.5) prior on log(latent / bound) held it
+  near the bound; where the sensors reach only 10 cm (SALTSIL 2017-2022, Parks Canada
+  C28 2015, ALT 90-190 cm) that pulled the latent ALT down to 10-20 cm and turned
+  SALTSIL's rate from about +10 into +3 %/dec. The HalfNormal priors are sensitivity runs.
 - Rates in % per decade = 100 (exp(b) - 1). Classes use the v5.2 rules on the 90 %
   credible interval (stable: inside ±5 %/dec; thickening/thinning: excludes 0; rapid:
   median beyond 10 %/dec). Every band probability is reported (`p6_*`).

@@ -149,7 +149,13 @@ model:
     mu_sd: 0.2         # network trend, log units per decade (0.2 = 22 %/dec)
     tau_sd: 0.1        # half-normal scale of region and site SDs (log/decade)
     a_sd: 0.5          # site level around its mean log ALT
-    cens_sd: 0.5       # how far above a lower bound the true ALT may be (log units)
+    # How far above a lower bound the true ALT may lie (log units). null: no prior beyond
+    # "above the bound" (flat), so a bound only says ALT >= bound: the standard censored
+    # likelihood. A number s: HalfNormal(s). 0.5 was used up to 2026-11-07; it pulled the
+    # true ALT toward bounds far below a site's ALT (cables whose sensors reach only 10 cm
+    # at SALTSIL 2017-2022 and Parks Canada C28 2015, where ALT is 90-190 cm), which
+    # turned SALTSIL's +26 %/dec into +3. Sensitivity runs keep 0.5 and 1.0.
+    cens_sd: null
 
 climate:
   # Variants of the climate-expected part. main: Stefan with this year's TDD and k per
@@ -1123,7 +1129,10 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
     y = y_obs
     ci = np.nonzero(cens)[0]
     if len(ci):
-        off = numpyro.sample("cens_offset", dist.HalfNormal(p.get("cens_sd", 0.5)).expand([len(ci)]))
+        if p.get("cens_sd") is None:     # flat above the bound (censored likelihood)
+            off = numpyro.sample("cens_offset", dist.ImproperUniform(dist.constraints.positive, (len(ci),), ()))
+        else:
+            off = numpyro.sample("cens_offset", dist.HalfNormal(p["cens_sd"]).expand([len(ci)]))
         y = y.at[ci].set(y_obs[ci] + off)
 
     e = y - mean
@@ -2186,10 +2195,11 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
 #   aldi_v6_sensitivity.txt        the table with the change from main and the reasons
 SENSITIVITY = [
     dict(name="main", why="main settings (reference row; same fits as every other row)"),
-    dict(name="cens_sd_0.25", set={"model.priors.cens_sd": 0.25},
-         why="lower-bound years: true ALT allowed less far above the bound (prior scale 0.5 -> 0.25)"),
+    dict(name="cens_sd_0.5", set={"model.priors.cens_sd": 0.5},
+         why="lower-bound years: true ALT a HalfNormal(0.5) above the bound (log units; the choice up "
+             "to 2026-11-07) instead of anywhere above it"),
     dict(name="cens_sd_1.0", set={"model.priors.cens_sd": 1.0},
-         why="lower-bound years: true ALT allowed further above the bound (0.5 -> 1.0)"),
+         why="lower-bound years: true ALT a HalfNormal(1.0) above the bound"),
     dict(name="no_censored", set={"sample.use_censored": False},
          why="lower-bound years left out instead of used as censored values"),
     dict(name="undated_doy_243", undated_doy=243, skip_A=True,
