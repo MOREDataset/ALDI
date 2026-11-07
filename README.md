@@ -1,8 +1,29 @@
 # Active Layer Dynamics Index (ALDI)
 
-![Conceptual diagram of the proposed framework for ALDI construction and causal inference.](docs/Index_ProcessV3.jpg)
+Active layer thickness (ALT), the depth of summer thaw above permafrost, is a key indicator
+of how permafrost responds to a warming climate. This repository builds a circumarctic
+multi-source ALT dataset and the Active Layer Dynamics Index (ALDI) computed from it:
 
-Active layer thickness (ALT) is a key indicator of permafrost response to environmental change. However, its long-term variation across regions can be driven by multiple geospatial factors whose relative contributions remain difficult to disentangle. In this work, we propose a framework combining two processes: long-term trajectory classification and causal inference. Accordingly, we introduce the Active Layer Dynamics Index (ALDI), categorizing ALT time series into six classes of direction and rate of change: Rapid and Gradual Thickening, Rapid and Gradual Thinning, Transitional and No Trend. ALDI relies on nonparametric trend detection, reversal identification, and bootstrap uncertainty quantification. We then conduct causal inference using site fixed-effects and first-difference estimators to examine how environmental drivers vary across ALDI classes. Applied to 129 CALM network sites (1990–2024), ALDI identifies a 3.5:1 thickening-to-thinning ratio across the pan-Arctic and substantial regional heterogeneity. In terms of causality, thermal forcing dominates at thickening sites but is absent in thinning and transitional regimes, where hydrological and disturbance processes prevail. These class-dependent relationships were not detectable in pooled analyses, underscoring the need for trajectory-aware analysis in permafrost research.
+- **ALT target (step 1).** End-of-season ALT from probing grids, thaw tubes and
+  ground-temperature profiles of about 35 sources, merged into one series per site, with
+  quality flags. Run 7 (2 November 2026): 359 sites and 6,567 valid site-years.
+- **ALDI A (step 3).** One hierarchical Bayesian model of all series (log ALT, AR(1) noise
+  per method family, shared region-year anomalies, partial pooling of site trends within
+  250 km regions, lower-bound years as censored values). Each site gets a rate of change in
+  % per decade, its 90 % interval and a class: rapid or gradual thickening, stable, gradual
+  or rapid thinning, or indeterminate (the record cannot decide). Applied to 229 sites
+  north of 60 N with at least 10 years over 12 or more years since 1990.
+- **ALDI B (step 3).** Each site's trend split into the part expected from the air
+  temperature record (thawing degree-days, Stefan's law, ERA5-Land corrected to the site
+  elevation) and a residual that the modelled weather does not explain, in seven variants
+  from this summer's thawing degree-days alone to degree-day memory, winter, snow and rain.
+  The residual is a statistical decomposition, not an attribution of cause.
+
+The figure below shows the framework of the earlier version (v4, six classes and
+class-stratified causal models on 129 CALM sites, EGUsphere-2026-2639). It is kept for
+reference; the current method is described in `docs/3_aldi.md`.
+
+![Framework of the earlier ALDI version (v4).](docs/Index_ProcessV3.jpg)
 
 ## How to run it
 
@@ -24,7 +45,8 @@ step, with its settings at the top.
   sites first. The default gets what ALDI B needs; `--all` gets every variable and merges
   them for the causal analysis. A stopped run continues where it left off.
 - **Step 3** options: `--power` (NASA POWER temperature, robustness run), `--validate`
-  (simulation check, 1-2 h).
+  (simulation check, 1-2 h), `--spatial` (only the spatial checks on the existing results,
+  about a minute; needs geopandas for the permafrost-map part).
 - A new output replaces the current one only when its run finished without error. The
   output before it is kept in `data/previous/` (one copy).
 - Every script prints its options with `-h`. Python 3.12 is needed (on this laptop `py -3.12`;
@@ -40,4 +62,4 @@ step, with its settings at the top.
 | `3_aldi.py` | ALDI v6: A (hierarchical trends and classes) and B (trend expected from air temperature and residual), the v5.2 comparison, the simulation check |
 | `data/` | everything that is data. Only on the computer, not on GitHub: `raw/` (downloads: ALT sources, permafrost map, NASA POWER), `1_alt_target/`, `2_covariates/`, `3_aldi/`, `previous/` |
 | `docs/` | the method of each step in detail (`1_alt_target.md`, `2_covariates.md`, `3_aldi.md`) and the list of covariate columns |
-| `extras/` | `ALDI_causality.ipynb` (causal analysis, after steps 2 and 3), `IndexVX_FiguresScriptV2.m` (figures, MATLAB), and the v4 paper version: `ALDI_Calculation_final.ipynb` and its data in `v4_data/` |
+| `extras/` | earlier and exploratory work, not part of the current analysis: `ALDI_causality.ipynb` (the class-stratified causal analysis of v4, kept for reference), `IndexVX_FiguresScriptV2.m` (v4 figures, MATLAB), and the v4 paper version: `ALDI_Calculation_final.ipynb` and its data in `v4_data/` |
