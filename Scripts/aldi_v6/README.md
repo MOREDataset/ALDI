@@ -109,10 +109,11 @@ too narrow for a statement about the permafrost region.
 ```
 pip install numpy scipy pandas pyyaml numpyro jax matplotlib
 
-# ERA5-Land (main). First, in Colab, cell 2b of GEE_causal_features_colab.ipynb exports
-# the static, era5 and t2m_daily groups to its own Drive folder (B_FOLDER, now
-# ALDI_GEE_exports_v2), ALT years 1988-2025: the two-year TDD lags of 1990 need 1988. Then:
-python era5land_for_b.py  path/to/ALDI_GEE_exports_v2  tdd_era5               # daily series + weather table
+# ERA5-Land (main). First get the static, era5 and t2m_daily groups for ALT years
+# 1988-2025 (the two-year TDD lags of 1990 need 1988) into one folder: on your own computer
+# with gee_causal_features.download_all() (see ../covariates/README.md), or as Drive
+# exports with Colab cell 2b of GEE_causal_features_colab.ipynb. Then:
+python era5land_for_b.py  path/to/gee_exports  tdd_era5                                      # daily series + weather table
 python fetch_tdd.py       annual.csv  tdd_era5  --source cache                 # TDD tables from those series
 python run_aldi_v6.py     aldi_v6_config.yaml annual.csv out_era5 \
        tdd_era5/tdd_site_years.csv tdd_era5/tdd_all_years.csv tdd_era5/weather_site_years.csv
