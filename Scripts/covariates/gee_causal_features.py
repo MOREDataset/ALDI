@@ -946,6 +946,107 @@ def export_all(sites, years=None, groups=ALL_GROUPS,
     print("Follow them with task_status() or at https://code.earthengine.google.com/tasks")
 
 
+def _fetch_table(fc, cols):
+    """The rows of a FeatureCollection as a DataFrame with exactly these columns (no geometry),
+    computed in this session. ee.data.computeFeatures pages through large tables."""
+    df = ee.data.computeFeatures({"expression": fc.select(cols, None, False),
+                                  "fileFormat": "PANDAS_DATAFRAME"})
+    return df.reindex(columns=cols)
+
+
+def _fetch_chunked(make_fc, sites, cols, chunk, min_chunk=5, retries=3):
+    """make_fc(sites_fc) for groups of `chunk` sites, one request each. A request that runs
+    out of memory or time is split in two (down to min_chunk sites); other errors (network)
+    are retried a few times with a pause."""
+    import time
+    parts, i = [], 0
+    while i < len(sites):
+        part = sites.iloc[i:i + chunk]
+        for attempt in range(retries + 1):
+            try:
+                parts.append(_fetch_table(make_fc(make_sites_fc(part)), cols))
+                i += len(part)
+                break
+            except ee.EEException as err:
+                msg = str(err).lower()
+                too_big = any(k in msg for k in ("memory", "timed out", "timeout", "too large",
+                                                 "too many", "aggregation"))
+                if too_big and len(part) > min_chunk:
+                    chunk = max(min_chunk, len(part) // 2)
+                    print(f"    request too large ({str(err)[:80]}); {chunk} sites per request")
+                    break                       # retry this position with a smaller chunk
+                if attempt == retries:
+                    raise
+                time.sleep(10 * (attempt + 1))
+            except Exception:                   # network hiccup
+                if attempt == retries:
+                    raise
+                time.sleep(10 * (attempt + 1))
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=cols)
+
+
+def download_all(sites, out_dir, years=None, groups=ALL_GROUPS, chunk=60, workers=6, cfg=CONFIG):
+    """Same tables as export_all(), but computed in this session and written straight to
+    out_dir on this computer (static.csv, era5_1990.csv, t2m_daily_1990.csv...), with the
+    same columns as the Drive exports, so assemble_features() and
+    Scripts/aldi_v6/era5land_for_b.py read the folder unchanged. No Google Drive needed.
+
+    Files already in out_dir are skipped, so an interrupted run continues where it stopped.
+    Each file is written under a temporary name and renamed when complete. Large groups
+    are requested `chunk` sites at a time; a request that is too large is split. `workers`
+    files are computed at the same time (Earth Engine allows a few dozen parallel requests);
+    one t2m_daily year takes about 10 minutes on its own."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    years = list(range(cfg["first_year"], cfg["last_year"] + 1)) if years is None else list(years)
+    os.makedirs(out_dir, exist_ok=True)
+    jobs, skipped = [], 0
+    for group in groups:
+        for y in ([None] if group == "static" else _years_for(group, years, cfg)):
+            name = group if y is None else f"{group}_{y}"
+            if os.path.exists(os.path.join(out_dir, name + ".csv")):
+                skipped += 1
+            else:
+                jobs.append((group, y, name))
+    print(f"{len(jobs)} files to download, {skipped} already in {out_dir}; "
+          f"{workers} at a time", flush=True)
+
+    def one(group, y, name):
+        path = os.path.join(out_dir, name + ".csv")
+        if group in ("era5", "t2m_daily") and not _check_era5_complete(y, cfg):
+            return name, None
+        if group == "static":
+            make_fc = lambda fc: static_collection(fc, cfg)[0]
+            cols = ["site_id"] + STATIC_BANDS
+        else:
+            make_fc = lambda fc: group_collection(group, y, fc, cfg)[0]
+            cols = group_collection(group, y, make_sites_fc(sites.head(1)), cfg)[1]
+        n = chunk if group != "fire" else len(sites)   # fire rows are few: one request
+        df = _fetch_chunked(make_fc, sites, cols, n)
+        tmp = path + ".part"
+        df.to_csv(tmp, index=False)
+        os.replace(tmp, path)
+        return name, len(df)
+
+    t0, done, errors = time.time(), 0, []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futs = {pool.submit(one, *j): j[2] for j in jobs}
+        for f in as_completed(futs):
+            try:
+                name, n = f.result()
+            except Exception as err:            # keep going; a rerun retries this file
+                errors.append(futs[f])
+                print(f"  {futs[f]}: FAILED ({str(err)[:120]})", flush=True)
+                continue
+            done += 1
+            print(f"  {name}: {'skipped (ERA5-Land year incomplete)' if n is None else f'{n} rows'}"
+                  f"   [{done + len(errors)}/{len(jobs)}, {(time.time() - t0) / 60:.0f} min]", flush=True)
+    print(f"Wrote {done} files to {out_dir}; {skipped} were already there.")
+    if errors:
+        print(f"{len(errors)} failed ({', '.join(errors)}): run the same command again to retry them.")
+    return errors
+
+
 def task_status(prefix="aldi_"):
     """Counts of this script's Earth Engine tasks by state, and the failed ones."""
     tasks = [t for t in ee.batch.Task.list() if str(t.config.get("description", "")).startswith(prefix)]

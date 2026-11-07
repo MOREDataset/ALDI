@@ -19,6 +19,29 @@ causal notebook reads. `GEE_causal_features_colab.ipynb` runs it in Colab.
 Put `gee_causal_features.py` in `/content/drive/MyDrive/UND/Index/scripts/`. The notebook
 sets all paths in its second cell.
 
+## Run on your own computer (no Colab, no Drive)
+
+```
+pip install earthengine-api geopandas scikit-learn
+earthengine authenticate                      # once; opens the browser
+```
+```python
+import ee, gee_causal_features as gcf
+ee.Initialize(project="your-earth-engine-project")
+sites = gcf.load_sites("alt_multisource_for_ALDI.csv")
+gcf.quick_test(sites)                                            # 3 sites, 1 year
+gcf.download_all(sites, "gee_exports", years=range(1988, 2026),
+                 groups=("static", "era5", "t2m_daily"))         # what ALDI v6 B needs
+gcf.download_all(sites, "gee_exports")                           # every group, 1990-2025
+```
+
+`download_all` computes the same tables as the Drive exports below, with the same file names
+and columns, and writes them straight to the folder. Six files are computed at a time; files
+already there are skipped, so a stopped run continues where it left off. The B groups for
+1988-2025 (339 sites) took about two hours; one t2m_daily year takes about 10 minutes.
+On 2015 the files matched the Drive exports to 1e-16. Steps 4 and 5 below then read this
+folder in place of the Drive folder.
+
 ## Run (Colab)
 
 1. `quick_test(sites)`: three sites, one year, all variables, computed directly (a few minutes; the MODIS snow-off step is the slowest). Check that the values look sensible.
