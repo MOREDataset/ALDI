@@ -4,6 +4,7 @@ STEP 3: ALDI A + B, the active layer dynamics index.
     py -3.12 3_aldi.py                A and B with ERA5-Land temperature   (about 10-30 min)
     py -3.12 3_aldi.py --power        also B with NASA POWER temperature   (robustness)
     py -3.12 3_aldi.py --validate     also the simulation check            (1-2 hours)
+    py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
 
 A  One hierarchical Bayesian trend model for all ALT series: each site's rate of change
    (% per decade), its 90 % interval and its class (rapid / gradual thickening, stable,
@@ -1654,6 +1655,188 @@ def region_bootstrap(values, regions, n_boot=4000, seed=0):
     return float(np.quantile(means, 0.025)), float(np.quantile(means, 0.975))
 
 
+# -----------------------------------------------------------------------------------------
+# Spatial checks (added 2026-11-07, geodata review). They use the fitted rates only, so
+# `--spatial` can rerun them on an existing aldi_v6_results.csv in a few seconds.
+# -----------------------------------------------------------------------------------------
+PF_MAP = DATA / "raw" / "permafrost_map" / "permaice.shp"   # IPA map (Brown et al. 2002)
+LOCATION_KM = 1.0              # series closer than this are one place (e.g. tube + grid)
+DECLUSTER_KM = (100, 250, 500)  # equal-area grid cells for the declustered network mean
+SPATIAL_RATES = ["rate_v6", "expected_rate", "resid_rate",
+                 "expected_rate_weather_memory", "resid_rate_weather_memory"]
+
+
+def laea_north_km(lat, lon, radius_km=EARTH_RADIUS_KM):
+    """Lambert azimuthal equal-area projection centred on the North Pole (sphere), in km.
+    Equal-area, so grid cells of one size cover the same ground at every latitude."""
+    lat, lon = np.radians(np.asarray(lat, float)), np.radians(np.asarray(lon, float))
+    rho = 2 * radius_km * np.sin((np.pi / 2 - lat) / 2)
+    return rho * np.sin(lon), -rho * np.cos(lon)
+
+
+def location_ids(lat, lon, km=LOCATION_KM):
+    """Single-linkage groups of series closer than km: one physical place measured by
+    several instruments or sources (a CALM thaw tube and its probing grid, a grid and the
+    borehole beside it). The build keeps them apart because the methods read different
+    levels; their trends are not independent evidence about the place."""
+    if len(lat) == 1:
+        return np.array([1])
+    d = haversine_matrix(np.asarray(lat, float), np.asarray(lon, float))
+    np.fill_diagonal(d, 0.0)
+    return fcluster(linkage(squareform(d, checks=False), method="single"), t=km, criterion="distance")
+
+
+def permafrost_zone(lat, lon, shapefile=PF_MAP, max_snap_km=20.0):
+    """Permafrost extent (C/D/S/I) and ground-ice content (h/m/l) of the IPA map polygon
+    each site is in; a site in a lake or on the coast takes the nearest permafrost polygon
+    within max_snap_km (same rule as 2_covariates.permafrost_classes). Returns None when
+    geopandas or the map is not available (the map is an independent source of ground-ice
+    information, so it can be used to stratify the residual trend without circularity)."""
+    try:
+        import geopandas as gpd
+    except ImportError:
+        return None
+    if not Path(shapefile).exists():
+        return None
+    shp = gpd.read_file(shapefile).to_crs("EPSG:6931")
+    code = shp["COMBO"].astype(str).str.lower()
+    poly = shp[(code.str.len() >= 3) & code.str[0].isin(list("cdsi"))][["COMBO", "geometry"]]
+    pts = gpd.GeoDataFrame({"i": np.arange(len(lat))}, geometry=gpd.points_from_xy(lon, lat),
+                           crs="EPSG:4326").to_crs("EPSG:6931")
+    hit = gpd.sjoin(pts, poly, how="left", predicate="within").drop_duplicates("i").set_index("i")["COMBO"]
+    miss = hit.isna().to_numpy()
+    if miss.any():
+        near = gpd.sjoin_nearest(pts[miss], poly, how="left", max_distance=max_snap_km * 1000)
+        near = near.drop_duplicates("i").set_index("i")["COMBO"]
+        hit = hit.fillna(near)
+    c = hit.reindex(np.arange(len(lat))).fillna("").astype(str).str.lower()
+    extent = c.str[0].map({"c": "continuous", "d": "discontinuous", "s": "sporadic", "i": "isolated"})
+    ice = c.str[1].map({"h": "high", "m": "medium", "l": "low"})
+    return pd.DataFrame({"pf_extent": extent.fillna("unknown").to_numpy(),
+                         "pf_ice": ice.fillna("unknown").to_numpy()})
+
+
+def _region_fe_contrast(y, group, region, base, n_boot=2000, seed=0):
+    """Difference of each group from `base` WITHIN regions (OLS with region fixed effects),
+    with a 95 % interval from resampling whole regions. Regions holding one group only
+    add nothing, so the contrast is not the difference between, say, Fairbanks and
+    the Mackenzie Delta."""
+    df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region)}).dropna()
+    levels = [g for g in sorted(df.g.unique()) if g != base]
+
+    def identified(dd):
+        """Levels that share at least one region with the base level (only those regions
+        inform a within-region difference)."""
+        with_base = set(dd.r[dd.g == base])
+        return {g for g in levels if ((dd.g == g) & dd.r.isin(with_base)).any()}
+
+    def est(dd):
+        # region fixed effects by the within transformation (demean inside each region)
+        ok = identified(dd)
+        X = pd.DataFrame({g: (dd.g == g).astype(float) for g in levels}, index=dd.index)
+        Xw = (X - X.groupby(dd.r).transform("mean")).to_numpy()
+        yw = (dd.y - dd.y.groupby(dd.r).transform("mean")).to_numpy()
+        b = np.linalg.lstsq(Xw, yw, rcond=None)[0]
+        return {g: (b[k] if g in ok else np.nan) for k, g in enumerate(levels)}
+
+    point = est(df)
+    n_shared = {g: df[df.g == g].r.isin(set(df.r[df.g == base])).groupby(df[df.g == g].r).any().sum()
+                for g in levels}
+    regions = df.r.unique()
+    rng = np.random.default_rng(seed)
+    boots = {g: [] for g in levels}
+    by_r = {r: g for r, g in df.groupby("r")}
+    for _ in range(n_boot):
+        pick = rng.choice(regions, len(regions))
+        dd = pd.concat([by_r[r].assign(r=f"{r}_{k}") for k, r in enumerate(pick)])
+        if dd.g.nunique() < 2 or base not in set(dd.g):
+            continue
+        e = est(dd)
+        for g in levels:
+            boots[g].append(e[g])
+    out = {}
+    for g in levels:
+        v = np.asarray(boots[g], float)
+        v = v[np.isfinite(v)]
+        out[g] = (point[g], *(np.quantile(v, [0.025, 0.975]) if len(v) > 50 else (np.nan, np.nan)),
+                  int(n_shared[g]))
+    return out
+
+
+def spatial_checks(res, shapefile=PF_MAP):
+    """Adds location_id, pf_extent and pf_ice to the results and returns the text block of
+    the spatial checks:
+    1. places: series within 1 km of each other count once in a location mean;
+    2. network means that do not let dense clusters dominate (equal-area grid declustering);
+    3. spatial correlation of site rates with distance, and of their deviations from the
+       region rate across region borders (does the 250 km region capture the dependence?);
+    4. rates by permafrost extent and ground-ice content (IPA map), within regions."""
+    res = res.copy()
+    rates = [c for c in SPATIAL_RATES if c in res]
+    L = ["\nSPATIAL CHECKS"]
+
+    # 1. locations
+    res["location_id"] = location_ids(res.lat, res.lon)
+    nloc = res.location_id.nunique()
+    multi = res.groupby("location_id").site_id.transform("size") > 1
+    disagree = int((res[multi].groupby("location_id").class_v6.nunique() > 1).sum())
+    L.append(f"locations (series within {LOCATION_KM:g} km joined): {nloc} places for {len(res)} series; "
+             f"{res[multi].location_id.nunique()} places hold {int(multi.sum())} series; "
+             f"at {disagree} of them the series fall in different v6 classes")
+    pairs = [(i, j) for _, g in res[multi].groupby("location_id") for k, i in enumerate(g.index) for j in g.index[k + 1:]]
+    if len(pairs) > 5:
+        a = np.array([[res.at[i, "rate_v6"], res.at[j, "rate_v6"]] for i, j in pairs])
+        L.append(f"  same-place pairs: {len(pairs)}; correlation of their v6 rates {np.corrcoef(a.T)[0, 1]:.2f}, "
+                 f"median absolute difference {np.median(np.abs(a[:, 0] - a[:, 1])):.1f} %/dec "
+                 f"(method and micro-site differences at one place)")
+
+    # 2. network means
+    x, y = laea_north_km(res.lat, res.lon)
+    rows = {"mean over series": res[rates].mean(),
+            "mean over places (1 km)": res.groupby("location_id")[rates].mean().mean(),
+            "mean over regions (250 km)": res.groupby("region_id")[rates].mean().mean()}
+    for cs in DECLUSTER_KM:
+        cell = pd.Series(np.floor(x / cs).astype(int).astype(str)) + "_" + np.floor(y / cs).astype(int).astype(str)
+        w = 1.0 / cell.map(cell.value_counts()).to_numpy()
+        rows[f"declustered, {cs} km cells ({cell.nunique()})"] = pd.Series(
+            {c: np.average(res[c].to_numpy(float)[np.isfinite(res[c])], weights=w[np.isfinite(res[c])]) for c in rates})
+    L.append("\nnetwork means, %/dec (declustered = each equal-area cell counts once; the network is not a"
+             " random sample, so the mean over series over-weights dense clusters):")
+    L.append(pd.DataFrame(rows).T.round(2).to_string())
+
+    # 3. spatial correlation
+    d = haversine_matrix(res.lat.to_numpy(float), res.lon.to_numpy(float))
+    same_r = res.region_id.to_numpy()[:, None] == res.region_id.to_numpy()[None, :]
+    dev = (res.rate_v6 - res.region_rate_v6).to_numpy(float)
+    L.append("\ncorrelation of site rates by distance (all pairs) and of deviations from the region rate"
+             " (pairs in different regions):")
+    for lo_, hi_ in [(0, 100), (100, 250), (250, 500), (500, 1000), (1000, 20000)]:
+        band = np.triu((d > lo_) & (d <= hi_), 1)
+        i, j = np.nonzero(band)
+        r_all = np.corrcoef(res.rate_v6.to_numpy()[i], res.rate_v6.to_numpy()[j])[0, 1] if len(i) > 10 else np.nan
+        i2, j2 = np.nonzero(band & ~same_r)
+        r_dev = np.corrcoef(dev[i2], dev[j2])[0, 1] if len(i2) > 10 else np.nan
+        L.append(f"  {lo_:>5}-{hi_:<5} km  rates {r_all:5.2f} ({len(i)} pairs)   deviations across regions "
+                 f"{r_dev:5.2f} ({len(i2)} pairs)")
+
+    # 4. permafrost map
+    pz = permafrost_zone(res.lat.to_numpy(float), res.lon.to_numpy(float), shapefile)
+    if pz is None:
+        L.append("\npermafrost zone: skipped (needs geopandas and data/raw/permafrost_map/permaice.shp)")
+        res["pf_extent"], res["pf_ice"] = np.nan, np.nan
+        return res, L
+    res["pf_extent"], res["pf_ice"] = pz.pf_extent.to_numpy(), pz.pf_ice.to_numpy()
+    for col, base in [("pf_extent", "continuous"), ("pf_ice", "high")]:
+        L.append(f"\nby {col} (IPA map; median %/dec, n):")
+        L.append(res.groupby(col)[rates].median().round(1).assign(n=res.groupby(col).size()).to_string())
+        for c in [c for c in ["rate_v6", "resid_rate", "resid_rate_weather_memory"] if c in res]:
+            con = _region_fe_contrast(res[c], res[col], res.region_id, base)
+            L.append(f"  {c}: difference from {base} within regions: " + "; ".join(
+                f"{g} {v[0]:+.1f} ({v[1]:+.1f} to {v[2]:+.1f}; {v[3]} regions)"
+                for g, v in con.items() if np.isfinite(v[0])))
+    return res, L
+
+
 def period_check(d, cfg, rho):
     """Long records: trend over the full record vs over the last `recent_years` years."""
     oc = cfg["outputs"]
@@ -1850,6 +2033,7 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
         res["two_axis"] = np.where(res.class_resid.isna(), np.nan,
                                    res.class_v6.astype(str) + " | " + res.class_resid.astype(str))
 
+    res, spatial_lines = spatial_checks(res)
     res.to_csv(out / f"{pre}_results.csv", index=False)
 
     # --- network table ---
@@ -1977,6 +2161,7 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
                                       "tdd_var_explained"]].median().round(2).to_string())
         L.append("\nresidual class by family:")
         L.append(pd.crosstab(b.family, b.class_resid).reindex(columns=RESID_ORDER, fill_value=0).to_string())
+    L += spatial_lines
     txt = "\n".join(L)
     (out / f"{pre}_summary.txt").write_text(txt)
     (out / f"{pre}_config_used.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
@@ -2337,7 +2522,20 @@ def main():
     ap.add_argument("--annual", type=Path, default=ANNUAL, help="ALT input (default: step 1 output)")
     ap.add_argument("--ee-dir", type=Path, default=EE_DIR, help="Earth Engine files (default: step 2 output)")
     ap.add_argument("--out", type=Path, default=OUT, help="output folder (default data/3_aldi)")
+    ap.add_argument("--spatial", action="store_true",
+                    help="only the spatial checks, on the existing results (about a minute; writes "
+                         "aldi_v6_spatial.txt and aldi_v6_spatial_sites.csv next to them)")
     a = ap.parse_args()
+    if a.spatial:
+        require(["numpy", "scipy", "pandas"])
+        f = a.out / "aldi_v6_results.csv"
+        if not f.exists():
+            sys.exit(f"{f} not found: run 3_aldi.py first")
+        res, lines = spatial_checks(pd.read_csv(f))
+        (a.out / "aldi_v6_spatial.txt").write_text("\n".join(lines))
+        res[["site_id", "location_id", "pf_extent", "pf_ice"]].to_csv(a.out / "aldi_v6_spatial_sites.csv", index=False)
+        print("\n".join(lines))
+        return
     require(NEEDED)
     cfg = load_settings()
 
