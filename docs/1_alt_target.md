@@ -1,6 +1,6 @@
-# ALT target data (one script, all sources and methods)
+# Step 1: the ALT target (`1_alt_target.py`)
 
-`build_alt_target.py` makes the circumarctic active layer thickness (ALT) target used by ALDI (`Scripts/aldi/`) and by the causal analysis. It gives one end-of-season value per site and year (cm), from probing grids, thaw tubes and ground-temperature profiles of about 35 sources. When the same physical site is found in several sources, it becomes one series. Only sites with at least 8 valid annual values are kept.
+`1_alt_target.py` makes the circumarctic active layer thickness (ALT) target used by ALDI (`3_aldi.py`) and by the causal analysis. It gives one end-of-season value per site and year (cm), from probing grids, thaw tubes and ground-temperature profiles of about 35 sources. When the same physical site is found in several sources, it becomes one series. Only sites with at least 8 valid annual values are kept.
 
 It replaces four scripts that each did part of this job:
 - `alt_core.py`: the rules.
@@ -14,40 +14,16 @@ On the same raw files, the combined script gives the same four data outputs as t
 
 ## Run
 
-```
-pip install numpy pandas requests xlrd openpyxl pdfplumber truststore
-pip install neonutilities xarray netCDF4        # only for NEON and MET Norway
-python build_alt_target.py --raw <raw folder> --out <output folder>
-```
+See the top of `1_alt_target.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-- `pdfplumber` reads the GSC Open File 9340 tables. Without it the run stops with an error, so the GSC data are never dropped without notice.
-- `truststore` lets Python check web certificates with the computer's own certificate store. Some sites (the UAF pages) fail without it on Windows. Certificate checks stay on.
-- NEON needs your personal API token (free, from your neonscience.org account). Set it for the session before the run: `set NEON_TOKEN=...` in the Windows command prompt, `$env:NEON_TOKEN="..."` in PowerShell, or `export NEON_TOKEN=...` on Linux and macOS. The script never writes the token to a file. Without it, NEON is listed as "get by hand" and the other sources run as usual.
-- `--raw` takes several folders: files are read from all of them, and downloads go to the first.
+Raw files: `data/raw/alt_sources/` (downloads land there). Outputs: `data/1_alt_target/`. NEON needs your own token for the session (PowerShell `$env:NEON_TOKEN="..."`); it is never written to a file.
 
-| Option | Use |
-|---|---|
-| `--no-download` | Use only the files already in the raw folder. |
-| `--download-only` | Stop after the download stage. |
-| `--only gtnp_platform neon` | Download and read only these sources (for testing). |
-| `--min-years 8` | The number of valid annual values a site needs. |
-
-A full run takes about 2 minutes plus the downloads. Files already in the raw folder are not downloaded again, so only the first run is long.
-
-If a reader fails, the run ends with an error code and names the reader. This way an incomplete target is never mistaken for a complete one.
-
-## Files
-
-| File | What it is |
-|---|---|
-| `build_alt_target.py` | The script. Its sections, in order: the settings (`CONFIG`, every rule with its reason); the shared rules (end of season, 0 °C crossing); stage 1, download; stage 2, one reader per source (`ADAPTERS`); stage 3, merge, flags and outputs. |
-| `source_files.csv` | Every file the readers use, with its link, sha256 checksum, licence and access (`open` or `login`). Stage 1 downloads the `open` files and checks their checksums. A changed checksum means the data owner updated the file, and the run reports it. |
 
 ## The three stages
 
 **1. Download**
 
-- **Direct links.** The 204 files with a link in `source_files.csv` are downloaded. They come from PANGAEA, the Arctic Data Center, EDI/LTER, ESS-DIVE, ScienceBase, open.canada.ca, Borealis, Zenodo and NRCan, plus 50 UAF files from the Wayback Machine.
+- **Direct links.** The 204 files with a link in `SOURCE_FILES` (at the end of `1_alt_target.py`) are downloaded. They come from PANGAEA, the Arctic Data Center, EDI/LTER, ESS-DIVE, ScienceBase, open.canada.ca, Borealis, Zenodo and NRCan, plus 50 UAF files from the Wayback Machine.
 - **APIs.** These sources are queried through their APIs:
   - the CALM summary table, found from the CALM page
   - the GTN-P data platform (boreholes and active-layer grids)

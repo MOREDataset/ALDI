@@ -1,2 +1,4 @@
+# data (raw downloads and every output) stays on the computer
+data/
 __pycache__/
 *.pyc
