@@ -28,7 +28,12 @@ sd(e) per site, log-normal around a family mean
 ```
 
 - Lower-bound years (thaw reached the probe or the deepest sensor) are latent values
-  above the bound, so they count as "at least this deep", with no made-up value.
+  above the bound, so they count as "at least this deep", with no made-up value. Since
+  7 November 2026 the latent value has no prior beyond "above the bound" (the standard
+  censored likelihood). Before, a HalfNormal(0.5) prior on log(latent / bound) held it
+  near the bound; where the sensors reach only 10 cm (SALTSIL 2017-2022, Parks Canada
+  C28 2015, ALT 90-190 cm) that pulled the latent ALT down to 10-20 cm and turned
+  SALTSIL's rate from about +10 into +3 %/dec. The HalfNormal priors are sensitivity runs.
 - Rates in % per decade = 100 (exp(b) - 1). Classes use the v5.2 rules on the 90 %
   credible interval (stable: inside ±5 %/dec; thickening/thinning: excludes 0; rapid:
   median beyond 10 %/dec). Every band probability is reported (`p6_*`).
@@ -108,102 +113,156 @@ too narrow for a statement about the permafrost region.
 
 See the top of `3_aldi.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
+`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (30-40 minutes, `data/3_aldi_sensitivity/`). `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
 
 ## Results on run 7 (229 sites, 4,550 site-years, 41 regions)
 
+Run of 7 November 2026 on the laptop (`py -3.12 3_aldi.py --power --sensitivity
+--validate`, about 2 h), with censored years flat above the bound (see A above). Every
+fit: R-hat <= 1.008, no divergent transitions. The same code on another computer gave
+the same network numbers to 0.05 %/dec, but 1-3 sites near a class threshold changed
+class (floating-point differences in the sampler), so a class count can differ by one or
+two between computers.
+
 | class | v5.2 site | v5.2 pooled | v6 | v6 no region-year | v6 Student-t |
 |---|---|---|---|---|---|
-| rapid thickening | 39 | 35 | 56 | 55 | 54 |
-| gradual thickening | 19 | 66 | 60 | 47 | 62 |
-| stable | 11 | 23 | 13 | 16 | 14 |
+| rapid thickening | 39 | 35 | 57 | 55 | 57 |
+| gradual thickening | 19 | 66 | 59 | 49 | 60 |
+| stable | 11 | 23 | 13 | 16 | 13 |
 | gradual thinning | 2 | 1 | 1 | 1 | 1 |
 | rapid thinning | 4 | 0 | 0 | 0 | 0 |
-| indeterminate | 154 | 104 | 99 | 110 | 98 |
+| indeterminate | 154 | 104 | 99 | 108 | 98 |
 
-- **Network:** +9.0 %/dec (95 % 6.5-11.7) as the mean over regions, +7.1 (6.1-8.1)
+- **Network:** +9.1 %/dec (95 % 6.6-11.9) as the mean over regions (mu), +7.1 (6.2-8.2)
   as the mean over sites (v5.2: +7.9, 5.6-10.3). Resampling whole regions widens the
-  site-mean interval to 5.2-9.3: the model interval treats these 229 sites as the
-  population. 144 sites thicken with probability >= 0.9; one site has probability < 0.1.
-  The rate depends on the window, and so does the site set: site mean +8.8 over
-  2000-2024 (205 sites), +6.6 over 2005-2024 (177 sites). Every region counts once in the
-  region mean, so large slow regions (Mackenzie Delta, 35 sites, +2.2; North Slope, 21
-  sites, +1.9) weigh as much as West Siberian regions of 2-3 sites at +16 to +18.
-- **Persistence and noise** (probe / thaw tube / temperature): rho 0.41 / 0.54 / 0.80,
-  noise 8 / 6 / 13 % of ALT; shared region-year anomaly 5.7 %.
-- **Record length:** rapid 30 % of 12-20-yr records vs 13 % of 26+ yr. In simulation
-  (truth independent of length) v6 gives 43 % vs 47 %, so this is the sites, not the
-  method: short records are mostly recent temperature cables and probes, long ones CALM
-  probes and slower thaw tubes; within shared regions short records are 1.2 %/dec faster.
+  site-mean interval to 5.2-9.4: the model interval treats these 229 sites as the
+  population. 148 sites thicken with probability >= 0.9; one site has probability < 0.1.
+  The rate depends on the window, and so does the site set: site mean +8.7 over
+  2000-2024 (205 sites; sensitivity runs below). Every region counts once in the region
+  mean, so large slow regions (Mackenzie Delta, 35 sites; North Slope, 21 sites) weigh as
+  much as West Siberian regions of 2-3 sites at +16 to +18.
+- **Persistence and noise** (probe / thaw tube / temperature): rho 0.41 / 0.54 / 0.74,
+  noise 8 / 6 / 11 % of ALT; shared region-year anomaly 5.7 %. Median 90 % interval width
+  13.0 %/dec (v5.2 site 18.5, v5.2 pooled 11.2).
+- **Record length:** rapid 31 % of 12-20-yr records vs 13 % of 26+ yr. In simulation
+  (truth independent of length) v6 gives 44-48 % at every length, so this is the sites,
+  not the method: short records are mostly recent temperature cables and probes, long ones
+  CALM probes and slower thaw tubes; within shared regions short records are 1.2 %/dec
+  faster.
 - **B (ERA5-Land TDD, all 229 sites, 4,550 site-years; Earth Engine export of 7 November
   2026).** This year's k = 0.21 (0.19-0.23; probe 0.26, thaw tube 0.17, temperature
-  0.20); median TDD trend +3.9 %/dec; TDD explains a median 15 % of the year-to-year ALT
-  variance (below 0 at 49 sites). Mean site trends in %/dec with region-bootstrap 95 %
-  intervals (total 6.3 in every variant):
+  0.21); median TDD trend +3.9 %/dec; TDD explains a median 14 % of the year-to-year ALT
+  variance (below 0 at 50 sites). Mean site trends in %/dec with region-bootstrap 95 %
+  intervals (total 6.4 in every variant):
 
   | variant | expected | residual | sites deeper than predicted |
   |---|---|---|---|
-  | main (this summer's TDD) | 1.3 (0.8-2.0) | 5.0 (3.0-7.4) | 77 |
-  | kfixed (k = 0.5) | 2.4 (1.3-3.9) | 3.9 (2.0-6.1) | 61 |
-  | lag (+ last summer) | 1.6 (1.0-2.6) | 4.6 (2.7-7.0) | 73 |
-  | memory (+ the two previous summers) | 1.9 (1.2-3.1) | 4.3 (2.4-6.7) | 68 |
-  | air (+ last summer, winter FDD) | 2.1 (1.4-3.0) | 4.1 (2.2-6.4) | 65 |
-  | weather (air + snow depth, summer rain) | 2.5 (1.8-3.4) | 3.7 (1.9-5.8) | 59 |
-  | weather_memory | 3.0 (2.1-4.0) | 3.2 (1.5-5.4) | 54 |
+  | main (this summer's TDD) | 1.3 (0.8-2.0) | 5.1 (3.1-7.5) | 76 |
+  | kfixed (k = 0.5) | 2.4 (1.3-3.9) | 4.1 (2.2-6.3) | 62 |
+  | lag (+ last summer) | 1.6 (1.0-2.6) | 4.7 (2.8-7.1) | 72 |
+  | memory (+ the two previous summers) | 1.9 (1.2-3.1) | 4.4 (2.5-6.8) | 69 |
+  | air (+ last summer, winter FDD) | 2.1 (1.4-3.0) | 4.2 (2.4-6.6) | 64 |
+  | weather (air + snow depth, summer rain) | 2.5 (1.8-3.4) | 3.8 (2.0-5.9) | 59 |
+  | weather_memory | 3.0 (2.1-4.1) | 3.3 (1.6-5.5) | 55 |
 
-  Long-run k with memory: probe 0.40, thaw tube 0.29, temperature 0.29. With NASA POWER
-  TDD (229 sites) the expected part is smaller, because POWER's TDD rose a median
-  1.6 %/dec more slowly at the same sites: main 0.7 (0.3-1.3) expected and 5.5 (3.4-8.1)
-  residual, memory 1.1 (0.5-2.0) and 5.0 (2.9-7.6); TDD explains a median 13 % there.
+  Long-run k with memory: probe 0.40, thaw tube 0.29, temperature 0.29 (weather_memory:
+  0.45 / 0.29 / 0.32). **NASA POWER** (`data/3_aldi_power`, 229 sites; no weather
+  variants): POWER's TDD rose more slowly at the same sites (median +2.4 vs +3.9 %/dec), so
+  the expected part is smaller: main 0.7 (0.3-1.3) expected and 5.6 (3.5-8.2) residual
+  (92 sites deeper than predicted), memory 1.1 (0.5-2.0) and 5.2 (3.1-7.8); TDD explains a
+  median 14 % there as well.
 
-Simulation (8 networks per scenario, run-7 design, real TDD):
+### Sensitivity runs (`--sensitivity`, `data/3_aldi_sensitivity/`)
+
+Each run changes one choice and refits A (main), B (main) and B (weather_memory); every
+fit R-hat <= 1.014, no divergences. Means over sites in %/dec; mu = network rate (mean over
+regions); declustered = 250 km equal-area cells count once. `aldi_v6_fig_sensitivity.png`
+shows the same.
+
+| run | sites | rapid / gradual thick. / stable / indet. | mu (95 %) | site mean | declustered | B expected | B residual | B residual (weather_memory) | deeper than TDD |
+|---|---|---|---|---|---|---|---|---|---|
+| main | 229 | 57 / 59 / 13 / 99 | 9.1 (6.6-11.9) | 7.04 | 10.2 | 1.25 | 5.17 | 3.43 | 76 |
+| censored HalfNormal(0.5) above bound | 229 | 56 / 60 / 13 / 99 | 9.0 | 6.98 | 10.0 | 1.25 | 5.07 | 3.31 | 77 |
+| censored HalfNormal(1.0) | 229 | 56 / 59 / 13 / 100 | 8.9 | 6.96 | 10.1 | 1.25 | 5.09 | 3.35 | 78 |
+| no censored years | 227 | 58 / 57 / 13 / 98 | 9.0 | 6.96 | 10.2 | 1.25 | 5.08 | 3.36 | 74 |
+| undated surveys: TDD to 31 Aug | 229 | (A unchanged) | 9.1 | 7.04 | 10.2 | 1.20 | 5.21 | 3.56 | 79 |
+| without coarse / high-dz / sea-cell sites | 171 | 41 / 28 / 10 / 92 | 8.8 (5.8-12.2) | 6.62 | 9.8 | 0.86 | 5.61 | 3.81 | 60 |
+| without fire-disturbed BNZ plots | 221 | 51 / 57 / 13 / 99 | 9.0 | 6.80 | 10.2 | 1.28 | 4.88 | 3.21 | 69 |
+| one series per place | 173 | 44 / 46 / 11 / 72 | 8.8 (6.3-11.7) | 7.27 | 9.8 | 1.31 | 5.57 | 3.95 | 59 |
+| window 2000-2024 | 205 | 63 / 64 / 1 / 77 | 9.7 (7.3-12.6) | 8.73 | 10.5 | 1.86 | 6.13 | 4.05 | 92 |
+| 8 instead of 10 years | 239 | 58 / 58 / 13 / 109 | 8.6 | 6.81 | 9.7 | 1.27 | 5.06 | 3.36 | 79 |
+| regions 150 km | 229 | 56 / 60 / 14 / 98 | 9.0 | 7.02 | 10.2 | 1.25 | 5.16 | 3.47 | 80 |
+| regions 500 km | 229 | 58 / 55 / 14 / 101 | 9.1 | 6.88 | 9.9 | 1.25 | 5.17 | 3.45 | 80 |
+
+Class margins without refit (main draws): stable +/-2.5 %/dec leaves no stable site (the
+13 become indeterminate: no record is precise enough to show a change below 2.5 %/dec);
+rapid at 15 %/dec gives 20 rapid instead of 57.
+
+- **The data choices hardly matter.** The censored-value treatment, the survey day of
+  undated probes (1,822 site-years), record length and region size move the site mean by
+  at most 0.25 and the B residual by at most 0.1 %/dec.
+- **Sample composition matters more.** Dropping the 58 sites with coarse coordinates (25),
+  a site more than 200 m from its ERA5-Land cell elevation (12) or a filled sea cell (25)
+  lowers the expected part (0.86 vs 1.25) and raises the residual by 0.4. Dropping the 8
+  fire-disturbed Bonanza Creek plots lowers the residual by 0.3 and the "deeper than TDD"
+  count from 76 to 69. One series per place (173) raises the residual by 0.4 and the
+  weather_memory residual by 0.5.
+- **The window matters most:** 2000-2024 is faster by 1.7 %/dec in A and 1.0 in B (expected
+  part also larger: 1.9), in line with the period check (long records: 4.6 %/dec over the
+  full record, 2.3 over the last 15 years).
+- Across all runs the B residual stays 4.9-6.1 %/dec (main) and 3.2-4.1 (weather_memory):
+  positive in every run.
+
+Simulation (`--validate`, 7 November 2026: 8 networks per scenario, run-7 design, real
+ERA5-Land TDD; 1,832 site intervals per scenario, so a coverage has a Monte Carlo SE of
+about 0.008):
 
 | | v6 | v5.2 site | v5.2 pooled |
 |---|---|---|---|
-| 90 % interval coverage (fitted truth) | 0.89 | 0.84 | 0.81 |
-| rate RMSE, %/dec | 4.7 | 10.8 | 5.3 |
-| wrong-direction calls | 0.7 % | 2.0 % | 1.0 % |
-| false trend calls when no trend anywhere | 0 % | 12 % | 1.5 % |
-| network-rate bias, %/dec | 0.0 | | -0.9 |
+| 90 % interval coverage (fitted truth) | 0.88 | 0.84 | 0.82 |
+| same, heavy-tailed truth (t, 3 df) | 0.88 | 0.86 | 0.81 |
+| rate RMSE, %/dec | 4.7 | 9.5 | 5.2 |
+| wrong-direction calls | 0.8 % | 1.6 % | 1.0 % |
+| false trend calls when no trend anywhere | 0 % | 11.5 % | 1.3 % |
+| network-rate bias, %/dec (95 % interval covers the truth) | 0.0 (8 of 8) | | -0.9 (6 of 8) |
 
-B (rerun 2026-11-04 with the fitted k, which the first run had doubled; 4 networks per
-scenario, ERA5-Land TDD): residual coverage 0.90; no false "deeper than TDD" calls when
-every trend is climatic, also with TDD error of 20 % of its variance. That error, about
-four times the real one (ERA5-Land vs POWER), lowers k by 0.06 (a quarter) and moves
-0.2-0.3 %/dec from expected into residual. With k = 0 (ALT ignores TDD) the residual
-coverage stays 0.90 and the expected trend is unbiased.
+B (8 networks per scenario): residual coverage 0.90 with the fitted truth (residual bias
+-0.4 %/dec); no false "deeper than TDD" calls when every trend is climatic, also with TDD
+error of 20 % of its variance. That error, about four times the real one (ERA5-Land vs
+POWER), lowers k by 0.05 and moves 0.2-0.3 %/dec from expected into residual. With k = 0
+(ALT ignores TDD) the residual coverage stays 0.89 and the expected trend is unbiased.
 
 ## Spatial checks (`spatial_checks`, also `--spatial`)
 
 Added 2026-11-07 after a geodata review. They use only the fitted rates, so
 `py -3.12 3_aldi.py --spatial` reruns them on the existing results in about a minute
-(the permafrost-map part needs geopandas, as step 2). Results on run 7:
+(the permafrost-map part needs geopandas, as step 2). Results on run 7 (7 November 2026 run):
 
 - **Places, not series.** 229 series stand at 173 places: series within 1 km of each other
   (a CALM thaw tube and its probing grid, a grid and the borehole beside it, CALM and LTER
   plots of one catchment) are one place. 36 places hold 92 series. Their rates correlate at
-  only 0.50 (median difference 2.7 %/dec), and at 25 of those places the series fall in
+  only 0.50 (median difference 2.9 %/dec), and at 24 of those places the series fall in
   different classes. The build keeps them apart on purpose (the methods read different
   levels), so class counts should be reported per series and per place, and the
   difference between series at one place is a direct measure of method and micro-site
   uncertainty. `location_id` in the results.
 - **Declustered network means.** The mean over series lets dense clusters dominate
-  (Mackenzie Delta 35 series at +1.3 %/dec, Fairbanks 33 at +10.3). Giving each cell of an
-  equal-area grid (Lambert azimuthal, North Pole) one vote gives +9.2, +10.0 and +9.6 %/dec
-  for 100, 250 and 500 km cells, close to the mean over regions (+9.3) and far from the mean
-  over series (+7.0). Residual (main): 6.6-7.2 declustered vs 5.0 over series; residual
-  (weather_memory): 4.6-5.2 vs 3.2.
-- **Do the 250 km regions capture the spatial dependence?** Site rates correlate at 0.38
+  (Mackenzie Delta 35 series, mean +2.1 %/dec; Fairbanks 33 series, mean +9.9). Giving each cell of an
+  equal-area grid (Lambert azimuthal, North Pole) one vote gives +9.3, +10.2 and +9.8 %/dec
+  for 100, 250 and 500 km cells, close to the mean over regions (+9.5) and far from the mean
+  over series (+7.0). Residual (main): 6.8-7.5 declustered vs 5.1 over series; residual
+  (weather_memory): 4.8-5.4 vs 3.3.
+- **Do the 250 km regions capture the spatial dependence?** Site rates correlate at 0.37
   within 100 km and 0.19 at 100-250 km, and not beyond 250 km. Deviations of site rates
   from their region rate do not correlate across region borders at any distance (-0.06 to
   0.03), so the region level of the model absorbs the spatial dependence of the trends.
 - **Permafrost zone and ground ice (IPA map, Brown et al. 2002).** 150 series are in
   continuous, 76 in discontinuous and 3 in sporadic permafrost; 92 in high, 87 in medium
   and 50 in low ground-ice terrain (sites in lakes or on the coast take the nearest polygon
-  within 20 km). Raw medians differ a lot (residual 7.5 %/dec in discontinuous vs 3.3 in
-  continuous; 7.7 in low-ice vs 3.3 in high-ice terrain), but almost all of that is between
+  within 20 km). Raw medians differ a lot (residual 7.5 %/dec in discontinuous vs 3.2 in
+  continuous; 7.9 in low-ice vs 3.2 in high-ice terrain), but almost all of that is between
   regions, mainly Fairbanks. Within the 5 regions that hold both kinds, discontinuous minus
-  continuous is +0.5 %/dec (-0.3 to +3.6) and low minus high ice +2.0 (-0.7 to +4.3). The
+  continuous is +0.5 %/dec (-0.3 to +3.9) and low minus high ice +2.1 (-0.6 to +4.6). The
   map is independent of the ALT data, so it is a valid stratifier for B; with 5 regions the
   within-region contrasts are weak. `pf_extent` and `pf_ice` in the results.
 

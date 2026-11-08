@@ -4,6 +4,8 @@ STEP 3: ALDI A + B, the active layer dynamics index.
     py -3.12 3_aldi.py                A and B with ERA5-Land temperature   (about 10-30 min)
     py -3.12 3_aldi.py --power        also B with NASA POWER temperature   (robustness)
     py -3.12 3_aldi.py --validate     also the simulation check            (1-2 hours)
+    py -3.12 3_aldi.py --sensitivity  also the sensitivity runs            (30-40 min)
+    py -3.12 3_aldi.py --no-main --sensitivity   only the sensitivity runs, on the existing data/3_aldi
     py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
 
 A  One hierarchical Bayesian trend model for all ALT series: each site's rate of change
@@ -24,7 +26,8 @@ Writes  data/3_aldi/
           aldi_v6_network.csv    network parameters (median and 95 % interval)
           aldi_v6_fig_*.png      figures
           temperature/           daily temperature per site, TDD and weather tables
-        data/3_aldi_power/ (--power), data/3_aldi_validation/ (--validate)
+        data/3_aldi_power/ (--power), data/3_aldi_validation/ (--validate),
+        data/3_aldi_sensitivity/ (--sensitivity: aldi_v6_sensitivity.txt / .csv, per-site results)
 
 A new run is written to data/3_aldi_building first and replaces data/3_aldi only when it
 finished without error; the run before is kept in data/previous/3_aldi.
@@ -146,7 +149,13 @@ model:
     mu_sd: 0.2         # network trend, log units per decade (0.2 = 22 %/dec)
     tau_sd: 0.1        # half-normal scale of region and site SDs (log/decade)
     a_sd: 0.5          # site level around its mean log ALT
-    cens_sd: 0.5       # how far above a lower bound the true ALT may be (log units)
+    # How far above a lower bound the true ALT may lie (log units). null: no prior beyond
+    # "above the bound" (flat), so a bound only says ALT >= bound: the standard censored
+    # likelihood. A number s: HalfNormal(s). 0.5 was used up to 2026-11-07; it pulled the
+    # true ALT toward bounds far below a site's ALT (cables whose sensors reach only 10 cm
+    # at SALTSIL 2017-2022 and Parks Canada C28 2015, where ALT is 90-190 cm), which
+    # turned SALTSIL's +26 %/dec into +3. Sensitivity runs keep 0.5 and 1.0.
+    cens_sd: null
 
 climate:
   # Variants of the climate-expected part. main: Stefan with this year's TDD and k per
@@ -1120,7 +1129,10 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
     y = y_obs
     ci = np.nonzero(cens)[0]
     if len(ci):
-        off = numpyro.sample("cens_offset", dist.HalfNormal(p.get("cens_sd", 0.5)).expand([len(ci)]))
+        if p.get("cens_sd") is None:     # flat above the bound (censored likelihood)
+            off = numpyro.sample("cens_offset", dist.ImproperUniform(dist.constraints.positive, (len(ci),), ()))
+        else:
+            off = numpyro.sample("cens_offset", dist.HalfNormal(p["cens_sd"]).expand([len(ci)]))
         y = y.at[ci].set(y_obs[ci] + off)
 
     e = y - mean
@@ -2171,6 +2183,323 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
 
 
 # =========================================================================================
+# PART 4b. Sensitivity runs (--sensitivity)
+# =========================================================================================
+# Each run changes ONE choice and refits A (main) and B (main and weather_memory) with
+# it. The "main" row repeats the same three fits with the main settings, so every row
+# compares like with like. Class margins need no refit: they are read from the main
+# fit's draws. Written to data/3_aldi_sensitivity:
+#   aldi_v6_sensitivity.csv        one row per run: sample size, class counts, network
+#                                  rates (A) and expected / residual means (B)
+#   aldi_v6_sensitivity_sites.csv  one row per site and run: rate, class, residual
+#   aldi_v6_sensitivity.txt        the table with the change from main and the reasons
+SENSITIVITY = [
+    dict(name="main", why="main settings (reference row; same fits as every other row)"),
+    dict(name="cens_sd_0.5", set={"model.priors.cens_sd": 0.5},
+         why="lower-bound years: true ALT a HalfNormal(0.5) above the bound (log units; the choice up "
+             "to 2026-11-07) instead of anywhere above it"),
+    dict(name="cens_sd_1.0", set={"model.priors.cens_sd": 1.0},
+         why="lower-bound years: true ALT a HalfNormal(1.0) above the bound"),
+    dict(name="no_censored", set={"sample.use_censored": False},
+         why="lower-bound years left out instead of used as censored values"),
+    dict(name="undated_doy_243", undated_doy=243, skip_A=True,
+         why="probe surveys without a date (no date at the site either): TDD to 31 Aug (DOY 243) "
+             "instead of the network median survey day (DOY 262); changes B only"),
+    dict(name="drop_site_quality", drop="site_quality",
+         why="without sites whose latitude or longitude is given to 0.1 deg or coarser, whose elevation differs "
+             "from the ERA5-Land cell by more than 200 m, or whose cell is sea (temperature filled from "
+             "neighbours)"),
+    dict(name="drop_disturbed", drop="disturbed",
+         why="without the fire-disturbed Bonanza Creek plots (burned, fire line, safety zone)"),
+    dict(name="one_per_place", drop="one_per_place",
+         why="one series per place (series within 1 km: keep the one with most years), so a "
+             "thaw tube and its grid do not count twice"),
+    dict(name="window_2000_2024", set={"sample.min_year": 2000, "sample.max_year": 2024},
+         why="common window 2000-2024 (the Streletskiy et al. 2026 period)"),
+    dict(name="min_obs_8", set={"sample.min_obs": 8},
+         why="shorter records allowed (8 instead of 10 uncensored years)"),
+    dict(name="region_150km", set={"pooling.region_km": 150}, why="smaller regions (150 km)"),
+    dict(name="region_500km", set={"pooling.region_km": 500}, why="larger regions (500 km)"),
+]
+SENS_MARGINS = [(2.5, 10.0), (5.0, 15.0)]     # (stable margin, rapid threshold), %/dec
+DISTURBED_NOTE = re.compile(r"burned|fire line|safety region", re.I)
+DISTURBED_NOT = re.compile(r"control|did not burn", re.I)
+
+
+def site_flags(d, annual, temp):
+    """Per-site quality and disturbance flags for the drop rules of the sensitivity runs."""
+    s = d.groupby("site_id").agg(lat=("lat", "first"), lon=("lon", "first"),
+                                 n_obs=("censored", lambda c: int((~c).sum())),
+                                 span=("year", lambda y: int(y.max() - y.min() + 1)),
+                                 family=("family", "first")).reset_index()
+    # latitude or longitude given to 0.1 deg (about 5-11 km) or coarser: the ERA5-Land cell
+    # and its elevation offset may then be the wrong ones
+    s["coarse_coords"] = (np.isclose(s.lat, s.lat.round(1), atol=1e-6)
+                          | np.isclose(s.lon, s.lon.round(1), atol=1e-6))
+    cells = Path(temp) / "era5land_cells.csv"
+    if cells.exists():
+        c = pd.read_csv(cells).set_index("site_id")
+        s["dz_era5_m"] = s.site_id.map(c["dz_era5_m"])
+        s["sea_filled"] = s.site_id.map(c["era5_filled"]).fillna(0).astype(int) == 1
+    else:
+        s["dz_era5_m"], s["sea_filled"] = np.nan, False
+    s["high_dz"] = s.dz_era5_m.abs() > 200
+    a = annual[annual.site_id.isin(s.site_id)]
+    burned = set(a.loc[a.flag.fillna("").str.contains("burned_site"), "site_id"])
+    note = a.groupby("site_id").site_note.first().fillna("")
+    noted = set(note.index[note.str.contains(DISTURBED_NOTE) & ~note.str.contains(DISTURBED_NOT)])
+    s["disturbed"] = s.site_id.isin(burned | noted)
+    # one series per place: most uncensored years, then the longest span, then probe
+    # (the CALM standard) before thaw tube before temperature
+    s["location_id"] = location_ids(s.lat, s.lon)
+    order = s.assign(f=s.family.map({f: i for i, f in enumerate(FAMILIES)})).sort_values(
+        ["location_id", "n_obs", "span", "f"], ascending=[True, False, False, True])
+    s["place_rep"] = s.site_id.isin(order.drop_duplicates("location_id").site_id)
+    return s
+
+
+def sens_drop(flags, rule):
+    if rule == "site_quality":
+        return set(flags.site_id[flags.coarse_coords | flags.high_dz | flags.sea_filled])
+    if rule == "disturbed":
+        return set(flags.site_id[flags.disturbed])
+    if rule == "one_per_place":
+        return set(flags.site_id[~flags.place_rep])
+    raise ValueError(rule)
+
+
+def retime_undated(tdd, cache, doy):
+    """TDD of the probe site-years that use the network median survey day, recomputed to
+    1 Jan - day `doy`."""
+    t = tdd.copy()
+    m = t.tdd_rule.astype(str).str.startswith("network_median_survey_doy")
+    for sid, g in t[m].groupby("site_id"):
+        f = Path(cache) / cache_name(sid)
+        if not f.exists():
+            continue
+        ser = pd.read_csv(f, parse_dates=["date"]).set_index("date")["t2m_c"]
+        v, _ = tdd_for_site(ser, g.year.to_numpy(int), np.full(len(g), doy))
+        t.loc[g.index, "tdd"] = v
+        t.loc[g.index, "tdd_end_doy"] = doy
+    return t, int(m.sum())
+
+
+def _set(cfg, key, value):
+    node = cfg
+    *path, last = key.split(".")
+    for p in path:
+        node = node[p]
+    assert last in node, f"unknown setting {key}"
+    node[last] = value
+
+
+def declustered_mean(lat, lon, v, km=250):
+    x, y = laea_north_km(lat, lon)
+    cell = pd.Series(np.floor(x / km).astype(int).astype(str)) + "_" + np.floor(y / km).astype(int).astype(str)
+    w = 1.0 / cell.map(cell.value_counts()).to_numpy()
+    v = np.asarray(v, float)
+    ok = np.isfinite(v)
+    return float(np.average(v[ok], weights=w[ok]))
+
+
+def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
+    """The runs in SENSITIVITY; see the comment above it."""
+    out, temp = Path(out), Path(temp)
+    annual = pd.read_csv(annual_file, low_memory=False)
+    tdd = pd.read_csv(temp / "tdd_site_years.csv")
+    tdd_all = pd.read_csv(temp / "tdd_all_years.csv")
+    weather = pd.read_csv(temp / "weather_site_years.csv") if (temp / "weather_site_years.csv").exists() else None
+    wm = next(v for v in cfg["climate"]["variants"] if v["name"] == "weather_memory")
+    rows, site_rows, log, main_A = [], [], [], None
+    data0, _ = load_series(annual, cfg)
+    flags = site_flags(eligible_sites(data0, cfg), annual, temp)
+    flags.to_csv(out / "aldi_v6_sensitivity_flags.csv", index=False)
+    for sc in SENSITIVITY:
+        t0 = time.time()
+        c = copy.deepcopy(cfg)
+        for k, v in sc.get("set", {}).items():
+            _set(c, k, v)
+        pri = c["model"]["priors"]
+        data, _ = load_series(annual, c)
+        d = eligible_sites(data, c)
+        if sc.get("drop"):
+            d = eligible_sites(d[~d.site_id.isin(sens_drop(flags, sc["drop"]))], c)
+        t, n_retimed = (retime_undated(tdd, temp / "daily_t2m", sc["undated_doy"])
+                        if sc.get("undated_doy") else (tdd, 0))
+        row = {"run": sc["name"]}
+        diags = []
+        # A
+        if sc.get("skip_A") and main_A is not None:
+            sA, netA = main_A
+        else:
+            arr = build_arrays(d, c)
+            mc = fit(arr, "A", region_year=c["model"]["region_year"], slope_dist=c["model"]["slope_dist"],
+                     priors=pri, **fit_kw)
+            sA, netA, rateA = summarise_A(mc, arr, c)
+            diags.append(diagnostics(mc))
+            row.update(n_sites=arr["n_sites"], n_site_years=len(arr["y"]), n_censored=int(arr["cens"].sum()),
+                       n_regions=arr["n_regions"])
+            if sc["name"] == "main":
+                main_A = (sA, netA)
+                main_rows = row.copy()
+                for m_, r_ in SENS_MARGINS:
+                    cls, *_ = classes_from_draws(rateA, c["trend"]["ci_level"], m_, r_)
+                    mrow = {"run": f"margins_{m_:g}_{r_:g}", "n_sites": row["n_sites"],
+                            "n_site_years": row["n_site_years"]}
+                    mrow.update({f"A_{k}": v for k, v in counts(pd.Series(cls), ORDER).items()})
+                    rows.append(mrow)
+            del mc
+            free_jit()
+        if sc.get("skip_A"):
+            row.update({k: main_rows[k] for k in ["n_sites", "n_site_years", "n_censored", "n_regions"]})
+        row.update({f"A_{k}": v for k, v in counts(sA.class_v6, ORDER).items()})
+        mu = netA["mu"]
+        row.update(A_network_rate=float(np.median(mu)), A_network_lo95=float(np.quantile(mu, 0.025)),
+                   A_network_hi95=float(np.quantile(mu, 0.975)), A_mean_site_rate=float(sA.rate_v6.mean()),
+                   A_declustered_250km=declustered_mean(sA.lat, sA.lon, sA.rate_v6),
+                   A_mean_over_regions=float(sA.groupby("region_id").rate_v6.mean().mean()))
+        # B main and B weather_memory
+        arrB = build_arrays(d, c, t)
+        p2 = dict(pri, k_fixed=c["climate"]["k_fixed"])
+        mcB = fit(arrB, "B", k_mode="hierarchical", region_year=c["climate"]["region_year"], priors=p2, **fit_kw)
+        sB, netB = summarise_B(mcB, arrB, c, "hierarchical")
+        diags.append(diagnostics(mcB))
+        del mcB
+        free_jit()
+        ex = extra_climate(tdd_all, wm["extra"], weather) if weather is not None else None
+        if ex is not None:
+            arrW = build_arrays(d, c, t, ex, wm["extra"])
+            mcW = fit(arrW, "B", k_mode=wm["k_mode"], region_year=c["climate"]["region_year"], priors=p2, **fit_kw)
+            sW, netW = summarise_B(mcW, arrW, c, wm["k_mode"])
+            diags.append(diagnostics(mcW))
+            del mcW
+            free_jit()
+        rc = counts(sB.class_resid, RESID_ORDER)
+        row.update(B_n_sites=arrB["n_sites"], B_n_site_years=len(arrB["y"]), B_undated_retimed=n_retimed,
+                   B_mean_expected=float(np.median(netB["expected_mean"])),
+                   B_mean_residual=float(np.median(netB["resid_mean"])),
+                   B_mean_residual_declustered_250km=declustered_mean(sB.lat, sB.lon, sB.resid_rate),
+                   B_median_k=float(sB.k_site.median()),
+                   **{f"B_{k}": v for k, v in rc.items()})
+        if ex is not None:
+            row.update(Bwm_n_sites=arrW["n_sites"], Bwm_mean_expected=float(np.median(netW["expected_mean"])),
+                       Bwm_mean_residual=float(np.median(netW["resid_mean"])),
+                       Bwm_deeper_than_TDD=int((sW.class_resid == "deeper_than_TDD").sum()))
+        row.update(max_rhat=max(x["max_rhat"] for x in diags), divergences=sum(x["divergences"] for x in diags),
+                   seconds=round(time.time() - t0))
+        rows.append(row)
+        st = sA[["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6"]].merge(
+            sB[["site_id", "expected_rate", "resid_rate", "class_resid"]], on="site_id", how="outer")
+        if ex is not None:
+            st = st.merge(sW[["site_id", "expected_rate", "resid_rate", "class_resid"]].rename(
+                columns=lambda x: x if x == "site_id" else f"{x}_weather_memory"), on="site_id", how="outer")
+        site_rows.append(st.assign(run=sc["name"]))
+        log.append(f"{sc['name']}: {row['n_sites']} sites, B {row['B_n_sites']}; max R-hat {row['max_rhat']:.3f}, "
+                   f"divergences {row['divergences']} ({row['seconds']} s)")
+        print(log[-1], flush=True)
+
+    tab = pd.DataFrame(rows).set_index("run")
+    for col in tab:
+        if (col.startswith(("n_", "B_n_", "Bwm_n_", "A_", "B_", "Bwm_")) and col.split("_", 1)[1] in
+                ORDER + RESID_ORDER + ["sites", "site_years", "censored", "regions", "n_sites", "n_site_years",
+                                       "undated_retimed", "deeper_than_TDD"]) or col in ("divergences", "seconds"):
+            tab[col] = tab[col].astype("Int64")
+    tab = tab.loc[[s["name"] for s in SENSITIVITY] + [f"margins_{m:g}_{r:g}" for m, r in SENS_MARGINS]]
+    tab.to_csv(out / "aldi_v6_sensitivity.csv")
+    sites = pd.concat(site_rows, ignore_index=True)
+    sites.to_csv(out / "aldi_v6_sensitivity_sites.csv", index=False)
+
+    # change of class at the sites a run shares with main
+    m0 = sites[sites.run == "main"].set_index("site_id")
+    changed = {}
+    for r, g in sites[sites.run != "main"].groupby("run"):
+        g = g.set_index("site_id")
+        shared = g.index.intersection(m0.index)
+        changed[r] = (int((g.loc[shared, "class_v6"] != m0.loc[shared, "class_v6"]).sum()),
+                      int((g.loc[shared, "class_resid"].astype(str) != m0.loc[shared, "class_resid"].astype(str)).sum()),
+                      len(shared))
+    L = ["SENSITIVITY RUNS (each changes one choice; A main + B main + B weather_memory refitted)", ""]
+    L += log + [""]
+    L.append("flags used by the drop rules (eligible sites of the main sample):")
+    L.append(f"  coarse coordinates (lat or lon to 0.1 deg) {int(flags.coarse_coords.sum())}; |site - ERA5-Land cell "
+             f"elevation| > 200 m {int(flags.high_dz.sum())}; sea cell filled {int(flags.sea_filled.sum())}; "
+             f"any of the three {int((flags.coarse_coords | flags.high_dz | flags.sea_filled).sum())}")
+    L.append(f"  fire-disturbed plots {int(flags.disturbed.sum())}: " + ", ".join(flags.site_id[flags.disturbed]))
+    L.append(f"  places (series within 1 km joined) {flags.location_id.nunique()}; series that are not their "
+             f"place's representative {int((~flags.place_rep).sum())}")
+    L.append("\nA: class counts and network rates (%/dec; network = model mean mu with its 95 % interval; "
+             "declustered = 250 km equal-area cells count once):")
+    cols_a = ["n_sites", "n_site_years"] + [f"A_{k}" for k in ORDER] + [
+        "A_network_rate", "A_network_lo95", "A_network_hi95", "A_mean_site_rate", "A_declustered_250km",
+        "A_mean_over_regions"]
+    L.append(tab[[c for c in cols_a if c in tab]].rename(columns=lambda x: x.replace("A_", "")).round(2).to_string())
+    L.append("\nB: means over sites, %/dec (main = this summer's TDD; wm = weather_memory) and residual classes:")
+    cols_b = ["B_n_sites", "B_mean_expected", "B_mean_residual", "B_mean_residual_declustered_250km", "B_median_k"] + [
+        f"B_{k}" for k in RESID_ORDER] + ["Bwm_mean_expected", "Bwm_mean_residual", "Bwm_deeper_than_TDD"]
+    L.append(tab.drop(index=[i for i in tab.index if i.startswith("margins")])[[c for c in cols_b if c in tab]]
+             .round(2).to_string())
+    L.append("\nchange from main (shared sites): A mean site rate, B mean residual (main / wm), class changes:")
+    base = tab.loc["main"]
+    for r in tab.index:
+        if r == "main" or r.startswith("margins"):
+            continue
+        n_a, n_b, n_sh = changed.get(r, (0, 0, 0))
+        L.append(f"  {r:18s} A {tab.at[r, 'A_mean_site_rate'] - base.A_mean_site_rate:+5.2f}  "
+                 f"B {tab.at[r, 'B_mean_residual'] - base.B_mean_residual:+5.2f} / "
+                 f"{tab.at[r, 'Bwm_mean_residual'] - base.Bwm_mean_residual:+5.2f}   "
+                 f"A class changed {n_a}, residual class changed {n_b} of {n_sh}")
+    L.append("\nwhy each run:")
+    for s in SENSITIVITY:
+        L.append(f"  {s['name']:18s} {s['why']}")
+    for m, r in SENS_MARGINS:
+        L.append(f"  {'margins_%g_%g' % (m, r):18s} class margins stable +/-{m:g}, rapid {r:g} %/dec "
+                 f"(from the main fit's draws, no refit)")
+    txt = "\n".join(L)
+    (out / "aldi_v6_sensitivity.txt").write_text(txt)
+    sensitivity_figure(tab.drop(index=[i for i in tab.index if i.startswith("margins")]), out)
+    print(txt)
+    return tab
+
+
+def sensitivity_figure(tab, out):
+    """Network rates (A) and expected / residual means (B) for every sensitivity run."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    yy = np.arange(len(tab))[::-1]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 0.42 * len(tab) + 2.2), sharey=True)
+    ax = axes[0]
+    ax.errorbar(tab.A_network_rate, yy, xerr=[tab.A_network_rate - tab.A_network_lo95,
+                                              tab.A_network_hi95 - tab.A_network_rate],
+                fmt="o", color="#2166ac", ms=5, lw=1, label="network mean (model, 95 %)")
+    ax.plot(tab.A_mean_site_rate, yy, "s", mfc="none", color="#4d4d4d", ms=5, label="mean over series")
+    ax.plot(tab.A_declustered_250km, yy, "x", color="#b2182b", ms=6, label="declustered, 250 km cells")
+    ax.axvline(tab.loc["main", "A_network_rate"], color="#2166ac", lw=0.6, ls="--")
+    ax.set_xlabel("A: ALT trend (% per decade)")
+    ax.set_title("Trend (A)")
+    ax.legend(fontsize=7, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2)
+    ax = axes[1]
+    ax.plot(tab.B_mean_expected, yy + 0.15, "o", color="#4d4d4d", ms=5, label="expected, TDD only")
+    ax.plot(tab.B_mean_residual, yy + 0.15, "o", color="#b2182b", ms=5, label="residual, TDD only")
+    if "Bwm_mean_residual" in tab:
+        ax.plot(tab.Bwm_mean_expected, yy - 0.15, "s", mfc="none", color="#4d4d4d", ms=5,
+                label="expected, weather + memory")
+        ax.plot(tab.Bwm_mean_residual, yy - 0.15, "s", mfc="none", color="#b2182b", ms=5,
+                label="residual, weather + memory")
+    ax.axvline(0, color="0.6", lw=0.6)
+    ax.set_xlabel("B: mean over sites (% per decade)")
+    ax.set_title("Climate-adjusted (B)")
+    ax.legend(fontsize=7, frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.12), ncol=2)
+    axes[0].set_yticks(yy)
+    axes[0].set_yticklabels(tab.index)
+    for a_ in axes:
+        a_.grid(axis="x", color="0.9", lw=0.6)
+    fig.tight_layout()
+    fig.savefig(out / "aldi_v6_fig_sensitivity.png", dpi=200)
+    plt.close(fig)
+
+
+# =========================================================================================
 # PART 5. Simulation check (--validate)
 # =========================================================================================
 # Simulation check of ALDI v6 on the real sampling design.
@@ -2517,6 +2846,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--power", action="store_true", help="also run B with NASA POWER temperature")
     ap.add_argument("--validate", action="store_true", help="also run the simulation check")
+    ap.add_argument("--sensitivity", action="store_true",
+                    help="also run the sensitivity runs (one choice changed at a time; about 30-40 min)")
+    ap.add_argument("--no-main", action="store_true",
+                    help="do not rerun the main fit: --power, --sensitivity and --validate use the "
+                         "existing data/3_aldi (and its temperature folder)")
     ap.add_argument("--reps", type=int, default=8, help="simulated networks per scenario (--validate)")
     ap.add_argument("--scenarios", default=None, help="simulation scenarios, comma-separated (--validate)")
     ap.add_argument("--annual", type=Path, default=ANNUAL, help="ALT input (default: step 1 output)")
@@ -2550,7 +2884,11 @@ def main():
         tdd_tables([str(a.annual), str(temp), "--source", "cache"])
         run_aldi(cfg, a.annual, work, temp / "tdd_site_years.csv", temp / "tdd_all_years.csv",
                  temp / "weather_site_years.csv")
-    stage(a.out, main_run)
+    if a.no_main:
+        if not (a.out / "temperature" / "tdd_site_years.csv").exists():
+            sys.exit(f"--no-main: {a.out / 'temperature'} has no TDD tables; run without --no-main first")
+    else:
+        stage(a.out, main_run)
 
     if a.power:
         def power_run(work):
@@ -2558,6 +2896,17 @@ def main():
             run_aldi(cfg, a.annual, work, POWER_CACHE / "tdd_site_years.csv",
                      POWER_CACHE / "tdd_all_years.csv")
         stage(a.out.with_name(a.out.name + "_power"), power_run)
+
+    if a.sensitivity:
+        mc_cfg = cfg["model"]
+        fit_kw = dict(chains=mc_cfg["chains"], warmup=mc_cfg["warmup"], draws=mc_cfg["draws"],
+                      target_accept=mc_cfg["target_accept"], seed=mc_cfg["seed"])
+        import numpyro
+        numpyro.set_host_device_count(mc_cfg["chains"])
+
+        def sensitivity_run(work):
+            sensitivity_runs(cfg, a.annual, a.out / "temperature", work, fit_kw)
+        stage(a.out.with_name(a.out.name + "_sensitivity"), sensitivity_run)
 
     if a.validate:
         temp = a.out / "temperature"
