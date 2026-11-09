@@ -421,7 +421,8 @@ if ismember('pf_ice', res.Properties.VariableNames)
         xline(ax, 0, ':');
         yticks(ax, 1:numel(d)); yticklabels(ax, lbl(:) + " (" + nn(:, 1) + "/" + nn(:, 2) + ")");
         xlabel(ax, 'Low minus high ice, residual (% per decade)');
-        title(ax, sprintf('Within regions: %+.1f (%+.1f to %+.1f)', ice_fe(1:3)), 'FontWeight', 'normal');
+        title(ax, sprintf('Within regions: %+.1f (%+.1f to %+.1f)', ice_fe(1:3)), 'FontWeight', 'normal', ...
+            'HorizontalAlignment', 'left', 'Units', 'normalized', 'Position', [0.02 1.0]);
     end
     panel_label(ax, 'b');
     save_figure(fig, OUT, 'FigS2_residual_by_ground_ice');
