@@ -409,13 +409,19 @@ if ismember('pf_ice', res.Properties.VariableNames)
             nn(end+1, :) = [sum(lo_k) sum(hi_k)]; %#ok<SAGROW>
         end
     end
+    % the summary is the region fixed-effects contrast of 3_aldi.py (spatial checks): it
+    % weights each region by how much it holds of both groups, so one small region with an
+    % extreme difference counts little; the bars are the plain per-region differences
+    ice_fe = fe_contrast(rs, res.pf_ice, res.region_id, "low", "high", 2000);
     if ~isempty(d)
+        patch(ax, [ice_fe(2) ice_fe(3) ice_fe(3) ice_fe(2)], [0.4 0.4 numel(d) + 0.6 numel(d) + 0.6], ...
+            CLS_C(1, :), 'FaceAlpha', 0.12, 'EdgeColor', 'none');
         barh(ax, 1:numel(d), d, 0.6, 'FaceColor', [0.55 0.55 0.55], 'EdgeColor', 'none');
-        xline(ax, mean(d), '--', 'Color', CLS_C(1, :), 'LineWidth', 1);
+        xline(ax, ice_fe(1), '--', 'Color', CLS_C(1, :), 'LineWidth', 1);
         xline(ax, 0, ':');
         yticks(ax, 1:numel(d)); yticklabels(ax, lbl(:) + " (" + nn(:, 1) + "/" + nn(:, 2) + ")");
         xlabel(ax, 'Low minus high ice, residual (% per decade)');
-        title(ax, sprintf('Within regions, mean %+.1f', mean(d)), 'FontWeight', 'normal');
+        title(ax, sprintf('Within regions: %+.1f (%+.1f to %+.1f)', ice_fe(1:3)), 'FontWeight', 'normal');
     end
     panel_label(ax, 'b');
     save_figure(fig, OUT, 'FigS2_residual_by_ground_ice');
@@ -487,7 +493,9 @@ p('  burned plots: %d, all deeper than temperature explains: %d', sum(burned), .
     sum(burned & res.class_resid == RES(1)));
 p('  residual without burned plots: %.1f (all %.1f)', mean(rs(~burned), 'omitnan'), mean(rs, 'omitnan'));
 if exist('d', 'var') && ~isempty(d)
-    p('  low minus high ground ice within %d regions: %+.1f (%.1f to %.1f)', numel(d), mean(d), min(d), max(d));
+    p('  low minus high ground ice within regions (region fixed effects, %d regions): %+.1f (%+.1f to %+.1f)', ...
+        ice_fe(4), ice_fe(1:3));
+    p('    plain per-region differences: %.1f to %.1f', min(d), max(d));
 end
 if have_sim
     p('');
@@ -597,6 +605,40 @@ for i = 1:size(groups, 1)
         ch = rgb(:, :, c); ch(m) = groups{i, 2}(c); rgb(:, :, c) = ch;
     end
 end
+end
+
+function out = fe_contrast(y, g, r, level, base, nboot)
+% Difference of group `level` from `base` within regions (least squares with region fixed
+% effects, other groups as extra levels), as in the spatial checks of 3_aldi.py; 95 %
+% interval from resampling whole regions. Returns [estimate lo hi n_shared_regions].
+ok = ~isnan(y) & ~ismissing(g);
+y = y(ok); g = string(g(ok)); r = r(ok);
+b = fe_est(y, g, r, level, base);
+ur = unique(r); bb = nan(nboot, 1);
+rs = RandStream('mt19937ar', 'Seed', 0);
+for i = 1:nboot
+    pick = ur(randi(rs, numel(ur), numel(ur), 1));
+    idx = arrayfun(@(k) find(r == pick(k)), (1:numel(pick))', 'UniformOutput', false);
+    lab = arrayfun(@(k) k * ones(numel(idx{k}), 1), (1:numel(pick))', 'UniformOutput', false);
+    idx = vertcat(idx{:}); lab = vertcat(lab{:});
+    bb(i) = fe_est(y(idx), g(idx), lab, level, base);
+end
+bb = sort(bb(isfinite(bb)));
+q = @(p) interp1(((1:numel(bb))' - 0.5) / numel(bb), bb, p, 'linear', 'extrap');
+out = [b q(0.025) q(0.975) numel(intersect(r(g == level), r(g == base)))];
+end
+
+function b = fe_est(y, g, r, level, base)
+levels = setdiff(unique(g), base);
+if ~any(g == level) || isempty(intersect(r(g == level), r(g == base))), b = NaN; return; end
+X = double(g == levels(:)');
+[~, ~, ri] = unique(r);
+for j = 1:size(X, 2)
+    mj = accumarray(ri, X(:, j), [], @mean); X(:, j) = X(:, j) - mj(ri);
+end
+my = accumarray(ri, y, [], @mean); y = y - my(ri);
+coef = lsqminnorm(X, y);
+b = coef(levels == level);
 end
 
 function m = circmean(lon)
