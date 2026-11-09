@@ -14,6 +14,9 @@
 %   data\3_aldi_sensitivity\          (--sensitivity)
 %   data\3_aldi_validation\           (--validate; the per-site OLS rows need the
 %                                      3_aldi.py of 9 November 2026 or later)
+%   data\3_aldi_checks\               (--checks: detection time, the standard per-site
+%                                      test, shrinkage, rates in cm; 3_aldi.py of
+%                                      9 November 2026 or later)
 %   data\1_alt_target\alt_multisource_annual.csv, source_inventory.csv
 %   data\raw\permafrost_map\nhipa.byte  (IPA permafrost map, NSIDC GGD318; map background)
 %
@@ -31,7 +34,12 @@
 %   Fig S1  Site-years per year by measurement method
 %   Fig S2  Sensitivity runs, Models A and B
 %   Fig S3  Residual trend, low minus high ground ice within regions
+%   Fig S4  Site rate on its own (per-site OLS) vs in the hierarchical model
 %   Table S1  Sensitivity runs   Table S2  By measurement method   Table S3  Simulation check
+%   Table S4  Years of record a site needs, per method    Table S5  By record length:
+%             observed and expected shares, the standard per-site test
+%   Table S6  Residual trend by ground ice and method     Table S7  Rates in cm per decade
+%             beside published values                     Table S8  MCMC diagnostics
 
 clear; close all;
 
@@ -83,6 +91,17 @@ if have_sens, sens = rd(sens_f); end
 sim_f = fullfile(DATA, '3_aldi_validation', 'aldi_v6_simulation.csv');
 have_sim = isfile(sim_f);
 if have_sim, sim = rd(sim_f); end
+CK = fullfile(DATA, '3_aldi_checks');
+have_ck = isfile(fullfile(CK, 'aldi_v6_checks_by_span.csv'));
+if have_ck
+    cksp = read_text_cols(fullfile(CK, 'aldi_v6_checks_by_span.csv'), {'span'});
+    cks  = read_text_cols(fullfile(CK, 'aldi_v6_checks_sites.csv'), {'site_id', 'span_bin', 'family', ...
+        'class_v6', 'class_site', 'class_ols', 'pf_ice'});
+    ckd  = rd(fullfile(CK, 'aldi_v6_checks_detection.csv'));
+    ck_txt = fileread(fullfile(CK, 'aldi_v6_checks.txt'));
+else
+    warning('No %s: run py -3.12 3_aldi.py --no-main --checks for the dashes of Fig 3, Fig S4 and Tables S4-S8', CK);
+end
 
 n_sites = height(res);
 span_bin = strings(n_sites, 1);
@@ -187,6 +206,12 @@ legend(ax, [h1 h2], {sprintf('Network rate, %.1f (%.1f to %.1f)', nw), ...
 save_figure(fig, OUT, 'Fig2_regional_rates');
 
 %% Figure 3: site classes by record length, per-site method vs hierarchical
+% Black dashes (3_aldi.py --checks): the share of sites expected NOT to be resolved yet,
+% from each record's years and noise and the hierarchical rate as the true rate; for a
+% site on its own on the S bars, with the shared year-to-year anomalies of its region
+% removed on the H bars. The hierarchical model also pools toward the region, so it can
+% resolve more sites than its dash. Where a bar's grey top reaches its dash, the
+% unresolved sites are what record length allows, not a weakness of the method.
 fig = new_figure(12, 7.5);
 ax = axes(fig); hold(ax, 'on');
 Y = zeros(8, numel(CLS)); xpos = [1 2 4 5 7 8 10 11]; nbin = zeros(1, 4);
@@ -203,7 +228,21 @@ text(ax, xpos, 101 * ones(size(xpos)), repmat(["S" "H"], 1, 4), 'HorizontalAlign
     'VerticalAlignment', 'bottom', 'FontSize', FONT - 1);
 xlabel(ax, {'Record length (years)', 'S: per-site Sen + AR(1), H: hierarchical (this study)'});
 ylabel(ax, 'Share of sites (%)');
-legend(ax, fliplr(hb), fliplr(CLS_L), 'Location', 'eastoutside', 'Box', 'off', 'FontSize', FONT - 1);
+hL = fliplr(hb); lL = fliplr(CLS_L); hE = [];
+if have_ck
+    for b = 1:4
+        k = cksp.span == SPAN_L(b);
+        if ~any(k), continue; end
+        yS = 100 - cksp.expected_unresolved_alone_pct(k);
+        yH = 100 - cksp.expected_unresolved_network_pct(k);
+        hE = plot(ax, xpos(2*b - 1) + [-0.42 0.42], [yS yS], 'k-', 'LineWidth', 1.4);
+        plot(ax, xpos(2*b) + [-0.42 0.42], [yH yH], 'k-', 'LineWidth', 1.4);
+    end
+end
+if ~isempty(hE)                         % bars and a line: concatenate, do not assign
+    hL = [hL hE]; lL = [lL sprintf('Expected not resolved\n(record length, noise)')];
+end
+legend(ax, hL, lL, 'Location', 'eastoutside', 'Box', 'off', 'FontSize', FONT - 1);
 save_figure(fig, OUT, 'Fig3_classes_by_record_length');
 
 %% Figure 4: simulation check, coverage of 90 % intervals by record length
@@ -230,7 +269,12 @@ if have_sim
 end
 
 %% Figure 5: Model B, expected from air temperature vs residual trend
-fig = new_figure(11, 8.5);
+% Large markers: the mean over sites of the main fit; with k fixed at 0.5 (Stefan's
+% exponent: errors in TDD pull a fitted k toward 0, so this is about the most the
+% expected part can be); and with thaw subsidence added at the probe and thaw-tube
+% series on medium- or high-ice ground (sensitivity runs: 0.2, 0.5 and 1.0 cm/yr; the
+% surface these methods measure from sinks, so their ALT trend is too small).
+fig = new_figure(16, 9);
 ax = axes(fig); hold(ax, 'on');
 plot(ax, [res.expected_lo res.expected_hi]', [rs rs]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
 plot(ax, [ex ex]', [res.resid_lo res.resid_hi]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
@@ -247,9 +291,30 @@ if any(burned)
     h(end+1) = scatter(ax, ex(burned), rs(burned), 40, 'k', 'LineWidth', 0.8);
     lab(end+1) = sprintf('Burned plots (%d)', sum(burned));
 end
+h = fliplr(h); lab = fliplr(lab);
+bm = [net_value(net, 'B_main_mean_expected_pct_dec'); net_value(net, 'B_main_mean_residual_pct_dec')];
+bk = [net_value(net, 'B_kfixed_mean_expected_pct_dec'); net_value(net, 'B_kfixed_mean_residual_pct_dec')];
+sub_runs = ["main" "subsidence_0.2" "subsidence_0.5" "subsidence_1.0"];
+if have_sens
+    [tf, loc] = ismember(sub_runs, sens.run);
+    if sum(tf) >= 2
+        h(end+1) = plot(ax, sens.B_mean_expected(loc(tf)), sens.B_mean_residual(loc(tf)), '-^', 'Color', 'k', ...
+            'MarkerFaceColor', [0.6 0.6 0.6], 'MarkerSize', 5, 'LineWidth', 0.8);
+        lab(end+1) = sprintf('Mean, subsidence %s cm/yr: residual %s', ...
+            strjoin(erase(sub_runs(tf & sub_runs ~= "main"), "subsidence_"), ' / '), ...
+            strjoin(compose('%.1f', sens.B_mean_residual(loc(tf & sub_runs ~= "main"))'), ' / '));
+    end
+end
+if ~isnan(bk(1, 1))
+    h(end+1) = plot(ax, bk(1, 1), bk(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
+        'LineWidth', 1);
+    lab(end+1) = sprintf('Mean, k fixed at 0.5: %.1f expected, %.1f residual', bk(1, 1), bk(2, 1));
+end
+h(end+1) = plot(ax, bm(1, 1), bm(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'k', 'MarkerSize', 7);
+lab(end+1) = sprintf('Mean of sites: %.1f expected, %.1f residual', bm(1, 1), bm(2, 1));
 xlabel(ax, 'Expected from air temperature (% per decade)');
 ylabel(ax, 'Residual trend (% per decade)');
-legend(ax, fliplr(h), fliplr(lab), 'Location', 'northeast', 'Box', 'off', 'FontSize', FONT - 1);
+legend(ax, h, lab, 'Location', 'eastoutside', 'Box', 'off', 'FontSize', FONT - 1);
 save_figure(fig, OUT, 'Fig5_expected_vs_residual');
 
 %% Table 1: data sources of the analysed series
@@ -353,11 +418,13 @@ if have_sens
     end
     xline(ax, 0, '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.4);
     RUN_ID = ["main" "cens_sd_0.5" "cens_sd_1.0" "no_censored" "undated_doy_243" "drop_site_quality" ...
-              "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km"];
+              "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km" ...
+              "subsidence_0.2" "subsidence_0.5" "subsidence_1.0"];
     RUN_L  = ["Main run" "Censored years: HalfNormal(0.5)" "Censored years: HalfNormal(1.0)" ...
               "Censored years left out" "Undated surveys on 31 August" "Without imprecise locations" ...
               "Without fire-disturbed plots" "One series per place" "2000-2024 only" ...
-              "At least 8 years (not 10)" "Regions of 150 km" "Regions of 500 km"];
+              "At least 8 years (not 10)" "Regions of 150 km" "Regions of 500 km" ...
+              "Subsidence 0.2 cm/yr, ice-rich" "Subsidence 0.5 cm/yr, ice-rich" "Subsidence 1.0 cm/yr, ice-rich"];
     run_l = strrep(sf.run, '_', ' ');
     [tf, loc] = ismember(sf.run, RUN_ID); run_l(tf) = RUN_L(loc(tf));
     yticks(ax, 1:nrun); yticklabels(ax, flipud(run_l)); ylim(ax, [0.5 nrun + 0.5]);
@@ -402,6 +469,37 @@ if ismember('pf_ice', res.Properties.VariableNames)
     end
 end
 
+%% Supplement: Fig S4, site rate on its own vs in the hierarchical model (shrinkage)
+% Each site's own per-site OLS rate against its hierarchical rate. On the 1:1 line the
+% model keeps the site's own rate; flat means it takes the region's rate. Short records
+% move most, because their own rate is the least certain. Own rates beyond the axis are
+% drawn at its edge (open triangles).
+if have_ck
+    SPAN_C = [0.78 0.86 0.94; 0.52 0.68 0.85; 0.26 0.47 0.72; 0.08 0.25 0.50];
+    fig = new_figure(W1 + 3, 9);
+    ax = axes(fig); hold(ax, 'on');
+    XLIM = [-40 60];
+    plot(ax, XLIM, XLIM, '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.6);
+    xline(ax, 0, ':', 'Color', [0.4 0.4 0.4]); yline(ax, 0, ':', 'Color', [0.4 0.4 0.4]);
+    hs = gobjects(1, 4); ls = strings(1, 4);
+    for b = 1:4
+        k = cks.span_bin == SPAN_L(b);
+        x = cks.ols_rate(k); y = cks.rate_v6(k);
+        in = x >= XLIM(1) & x <= XLIM(2);
+        hs(b) = scatter(ax, x(in), y(in), 12, SPAN_C(b, :), 'filled', 'MarkerEdgeColor', [0.3 0.3 0.3], ...
+            'LineWidth', 0.2);
+        if any(x < XLIM(1)), scatter(ax, XLIM(1) * ones(sum(x < XLIM(1)), 1), y(x < XLIM(1)), 14, SPAN_C(b, :), '<'); end
+        if any(x > XLIM(2)), scatter(ax, XLIM(2) * ones(sum(x > XLIM(2)), 1), y(x > XLIM(2)), 14, SPAN_C(b, :), '>'); end
+        ls(b) = sprintf('%s yr (%d): moved %.0f %% of the way', SPAN_L(b), sum(k), ...
+            100 * cksp.median_shrinkage(cksp.span == SPAN_L(b)));
+    end
+    xlim(ax, XLIM + [-2 2]); ylim(ax, [min(cks.rate_v6) - 3, max(cks.rate_v6) + 3]);
+    xlabel(ax, 'Site on its own: per-site OLS rate (% per decade)');
+    ylabel(ax, 'Hierarchical rate (% per decade)');
+    legend(ax, hs, ls, 'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
+    save_figure(fig, OUT, 'FigS4_shrinkage');
+end
+
 %% Supplement: Table S2 by measurement method, Table S3 simulation
 T = table();
 for f = 1:numel(FAM)
@@ -417,6 +515,18 @@ if have_sim
         'called_trend', 'trend_p05', 'network_err', 'network_cover95', 'expected_coverage90', 'resid_bias', ...
         'false_deeper'}, sim.Properties.VariableNames, 'stable');
     writetable(sim(:, keep), fullfile(OUT, 'TableS3_simulation.csv'));
+end
+
+%% Supplement: Tables S4-S8 from the paper checks (copied from data\3_aldi_checks)
+if have_ck
+    copies = {'aldi_v6_checks_detection.csv', 'TableS4_detection_time.csv'
+              'aldi_v6_checks_by_span.csv', 'TableS5_by_record_length.csv'
+              'aldi_v6_checks_ice_method.csv', 'TableS6_residual_by_ice_and_method.csv'
+              'aldi_v6_checks_cm.csv', 'TableS7_rates_in_cm.csv'
+              'aldi_v6_checks_diagnostics.csv', 'TableS8_mcmc_diagnostics.csv'};
+    for i = 1:size(copies, 1)
+        copyfile(fullfile(CK, copies{i, 1}), fullfile(OUT, copies{i, 2}));
+    end
 end
 
 %% Key numbers for the text
@@ -440,9 +550,10 @@ if have_sens
         p('  declustered (250 km cells): %.1f; mean over regions %.1f', sens.A_declustered_250km(m0), ...
             sens.A_mean_over_regions(m0));
     end
+    ks = ~startsWith(sens.run, "subsidence");               % bounds, reported under MODEL B
     p('  sensitivity runs: network %.1f to %.1f, residual %.1f to %.1f, residual all weather %.1f to %.1f', ...
-        min(sens.A_network_rate), max(sens.A_network_rate), min(sens.B_mean_residual), max(sens.B_mean_residual), ...
-        min(sens.Bwm_mean_residual), max(sens.Bwm_mean_residual));
+        min(sens.A_network_rate(ks)), max(sens.A_network_rate(ks)), min(sens.B_mean_residual(ks)), ...
+        max(sens.B_mean_residual(ks)), min(sens.Bwm_mean_residual(ks)), max(sens.Bwm_mean_residual(ks)));
 end
 for c = 1:numel(CLS)
     p('  %s: %d hierarchical, %d per site (v5.2)', CLS_L(c), sum(res.class_v6 == CLS(c)), sum(res.class_site == CLS(c)));
@@ -467,6 +578,20 @@ for c = 1:numel(RES), p('  %s: %d sites', RES_L(c), sum(res.class_resid == RES(c
 p('  burned plots: %d, all deeper than temperature explains: %d', sum(burned), ...
     sum(burned & res.class_resid == RES(1)));
 p('  residual without burned plots: %.1f (all %.1f)', mean(rs(~burned), 'omitnan'), mean(rs, 'omitnan'));
+bk = [net_value(net, 'B_kfixed_mean_expected_pct_dec'); net_value(net, 'B_kfixed_mean_residual_pct_dec')];
+if ~isnan(bk(1, 1))
+    p('  k fixed at 0.5 (most the expected part can take): expected %s, residual %s %%/dec', ci(bk(1, :)), ci(bk(2, :)));
+end
+if have_sens
+    for r = ["subsidence_0.2" "subsidence_0.5" "subsidence_1.0"]
+        k = sens.run == r;
+        if any(k)
+            p('  %s cm/yr at ice-rich probe and tube series (%d series): network %.1f, expected %.2f, residual %.2f %%/dec', ...
+                erase(r, "subsidence_"), sens.n_subsidence_series(k), sens.A_network_rate(k), ...
+                sens.B_mean_expected(k), sens.B_mean_residual(k));
+        end
+    end
+end
 if exist('d', 'var') && ~isempty(d)
     p('  low minus high ground ice within regions (region fixed effects, %d regions): %+.1f (%+.1f to %+.1f)', ...
         ice_fe(4), ice_fe(1:3));
@@ -490,6 +615,53 @@ if have_sim
     if any(k), p('  Model B residual: coverage %.2f, bias %+.2f %%/dec', sim.coverage90(k), sim.resid_bias(k)); end
     k = sim.method == "v6_B_resid" & ismember(sim.scenario, ["B_climate" "B_tdderr"]);
     if any(k), p('  Model B, no residual trend: sites called deeper %.3f', max(sim.false_deeper(k))); end
+end
+if have_ck
+    p('');
+    p('PAPER CHECKS (data\\3_aldi_checks; all lines in aldi_v6_checks.txt)');
+    p('  years of record a site needs, consecutive (network / alone):');
+    for f = 1:numel(FAM)
+        kn = ckd.family == FAM(f) & ckd.noise == "network"; ka = ckd.family == FAM(f) & ckd.noise == "alone";
+        if ~any(kn), continue; end
+        p('    %s: thickening at the network rate, 90 %% chance %d / %d yr, 50 %% %d / %d yr; stable %d / %d yr', ...
+            FAM_L(f), ckd.years_thickening_90pct(kn), ckd.years_thickening_90pct(ka), ...
+            ckd.years_thickening_50pct(kn), ckd.years_thickening_50pct(ka), ...
+            ckd.years_stable_90pct(kn), ckd.years_stable_90pct(ka));
+    end
+    for b = 1:4
+        k = cksp.span == SPAN_L(b);
+        p('  %s yr: not resolved %.0f %% hierarchical (expected at most %.0f %%), %.0f %% per site (expected %.0f %% for OLS)', ...
+            SPAN_L(b), cksp.unresolved_hierarchical_pct(k), cksp.expected_unresolved_network_pct(k), ...
+            cksp.unresolved_per_site_pct(k), cksp.expected_unresolved_alone_pct(k));
+    end
+    sig = cks.ols_p < 0.05;
+    a = cksp(cksp.span == "all", :); a1 = cksp(cksp.span == SPAN_L(1), :);
+    p('  standard per-site test (OLS on log ALT): p < 0.05 increasing %d (%.0f %%), decreasing %d; after FDR %d', ...
+        sum(sig & cks.ols_rate > 0), 100 * mean(sig & cks.ols_rate > 0), sum(sig & cks.ols_rate < 0), sum(cks.ols_q < 0.05));
+    p('    with no trend at all it would call %.0f %% of sites significant (nominal 5 %%: autocorrelation)', ...
+        a.ols_false_pos_if_no_trend_pct);
+    p('    significant rates overstate the true rate %.1f times (12-15 yr: %.1f times); wrong sign %.1f %%', ...
+        a.ols_exaggeration_among_significant, a1.ols_exaggeration_among_significant, ...
+        a.ols_wrong_sign_among_significant_pct);
+    p('    of the sites it calls not significant, the hierarchical model classes %d thickening and %d stable', ...
+        sum(~sig & contains(cks.class_v6, "thickening")), sum(~sig & cks.class_v6 == "stable"));
+    p('  shrinkage toward the region (median): %s', strjoin(compose('%s yr %.2f', cksp.span, cksp.median_shrinkage)', ', '));
+    keys = ["share that is regional" "class of a site with NO data" "POSTERIOR EXPECTED CLASS COUNTS" ...
+            "P(rate >" "with site fixed effects R2" "share of the TREND" "MCMC:" "survey date drift" ...
+            "low_minus_high_within_regions"];
+    lines = splitlines(string(ck_txt));
+    for kk = keys
+        for ln = lines(contains(lines, kk))'
+            p('  %s', strtrim(ln));
+        end
+    end
+    cm = rd(fullfile(CK, 'aldi_v6_checks_cm.csv'));
+    p('  rates in cm (Table S7):');
+    for i = 1:height(cm)
+        if ~startsWith(cm.what(i), "ALDI region")
+            p('    %s: %.2f %s', cm.what(i), cm.value(i), cm.unit(i));
+        end
+    end
 end
 fclose(fid);
 fprintf('Done: figures and tables in %s\n', OUT);
@@ -520,6 +692,14 @@ end
 
 function s = ci(v)
 s = sprintf('%.1f (%.1f to %.1f)', v(1), v(2), v(3));
+end
+
+function T = read_text_cols(f, cols)
+% readtable with the named columns kept as text (a label such as 12-15 could be read as
+% a date otherwise)
+opts = detectImportOptions(f, 'TextType', 'string', 'VariableNamingRule', 'preserve', 'Delimiter', ',');
+opts = setvartype(opts, intersect(cols, opts.VariableNames), 'string');
+T = readtable(f, opts);
 end
 
 function v = net_value(T, name)

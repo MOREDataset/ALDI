@@ -4,8 +4,10 @@ STEP 3: ALDI A + B, the active layer dynamics index.
     py -3.12 3_aldi.py                A and B with ERA5-Land temperature   (about 10-30 min)
     py -3.12 3_aldi.py --power        also B with NASA POWER temperature   (robustness)
     py -3.12 3_aldi.py --validate     also the simulation check            (1-2 hours)
-    py -3.12 3_aldi.py --sensitivity  also the sensitivity runs            (30-40 min)
-    py -3.12 3_aldi.py --no-main --sensitivity   only the sensitivity runs, on the existing data/3_aldi
+    py -3.12 3_aldi.py --sensitivity  also the sensitivity runs            (about 1 hour)
+    py -3.12 3_aldi.py --checks       also the paper checks (detection time, per-site OLS test,
+                                      residual by ice and method, cm per decade; ~1 min, no refit)
+    py -3.12 3_aldi.py --no-main --sensitivity --checks   only these, on the existing data/3_aldi
     py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
 
 A  One hierarchical Bayesian trend model for all ALT series: each site's rate of change
@@ -28,6 +30,7 @@ Writes  data/3_aldi/
           temperature/           daily temperature per site, TDD and weather tables
         data/3_aldi_power/ (--power), data/3_aldi_validation/ (--validate),
         data/3_aldi_sensitivity/ (--sensitivity: aldi_v6_sensitivity.txt / .csv, per-site results)
+        data/3_aldi_checks/ (--checks: aldi_v6_checks.txt and its tables, see PART 4c)
 
 A new run is written to data/3_aldi_building first and replaces data/3_aldi only when it
 finished without error; the run before is kept in data/previous/3_aldi.
@@ -2220,6 +2223,21 @@ SENSITIVITY = [
          why="shorter records allowed (8 instead of 10 uncensored years)"),
     dict(name="region_150km", set={"pooling.region_km": 150}, why="smaller regions (150 km)"),
     dict(name="region_500km", set={"pooling.region_km": 500}, why="larger regions (500 km)"),
+    # Thaw subsidence (added 2026-11-09). A probe, and a thaw tube read against the ground
+    # surface (the GSC Mackenzie tubes here), measure ALT from a surface that sinks where
+    # ground ice melts, so their trend misses part of the deepening of the permafrost
+    # table. These runs add a published subsidence rate to the probe and tube ALT of the
+    # series on medium- or high-ice ground (IPA map), counted from the first year of each
+    # record. A bound, not a correction. Rates in undisturbed tundra: 0.4-1.0 cm/yr at
+    # Utqiagvik 2003-2015 (Streletskiy et al. 2017), 0.4 cm/yr median in the Mackenzie
+    # Valley (Smith et al. 2024), 12-15 cm in 18 years on the North Slope (Nyland et al. 2021).
+    dict(name="subsidence_0.2", subsidence_cm_yr=0.2,
+         why="ALT + 0.2 cm/yr of subsidence since the first year, probe and tube series on medium- or "
+             "high-ice ground (low end of published rates)"),
+    dict(name="subsidence_0.5", subsidence_cm_yr=0.5,
+         why="as above with 0.5 cm/yr (typical published rate)"),
+    dict(name="subsidence_1.0", subsidence_cm_yr=1.0,
+         why="as above with 1.0 cm/yr (high end: Utqiagvik, warm Interior Alaska)"),
 ]
 SENS_MARGINS = [(2.5, 10.0), (5.0, 15.0)]     # (stable margin, rapid threshold), %/dec
 DISTURBED_NOTE = re.compile(r"burned|fire line|safety region", re.I)
@@ -2268,6 +2286,24 @@ def sens_drop(flags, rule):
     raise ValueError(rule)
 
 
+def site_ice(flags):
+    """Ground-ice class (IPA map: high, medium, low, unknown) per site_id, or None when
+    geopandas or the map is missing."""
+    pz = permafrost_zone(flags.lat.to_numpy(float), flags.lon.to_numpy(float))
+    return None if pz is None else pd.Series(pz.pf_ice.to_numpy(), index=flags.site_id.to_numpy())
+
+
+def add_subsidence(d, ice, s_cm_yr):
+    """ALT plus s * (years since the first year of the record) for probe and thaw-tube
+    series on medium- or high-ice ground: the thaw depth below the first year's surface
+    if that surface sank by s cm a year. Returns the table and the number of series changed."""
+    d = d.copy()
+    on = d.family.isin(["probe", "thaw_tube"]) & d.site_id.map(ice).isin(["medium", "high"])
+    first = d.groupby("site_id").year.transform("min")
+    d.loc[on, "alt_cm"] = d.loc[on, "alt_cm"] + s_cm_yr * (d.loc[on, "year"] - first[on])
+    return d, int(d.loc[on, "site_id"].nunique())
+
+
 def retime_undated(tdd, cache, doy):
     """TDD of the probe site-years that use the network median survey day, recomputed to
     1 Jan - day `doy`."""
@@ -2314,6 +2350,7 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
     data0, _ = load_series(annual, cfg)
     flags = site_flags(eligible_sites(data0, cfg), annual, temp)
     flags.to_csv(out / "aldi_v6_sensitivity_flags.csv", index=False)
+    ice = None
     for sc in SENSITIVITY:
         t0 = time.time()
         c = copy.deepcopy(cfg)
@@ -2324,9 +2361,19 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
         d = eligible_sites(data, c)
         if sc.get("drop"):
             d = eligible_sites(d[~d.site_id.isin(sens_drop(flags, sc["drop"]))], c)
+        n_subsided = 0
+        if sc.get("subsidence_cm_yr"):
+            ice = site_ice(flags) if ice is None else ice
+            if ice is None:
+                log.append(f"{sc['name']}: skipped (needs geopandas and {PF_MAP})")
+                print(log[-1], flush=True)
+                continue
+            d, n_subsided = add_subsidence(d, ice, sc["subsidence_cm_yr"])
         t, n_retimed = (retime_undated(tdd, temp / "daily_t2m", sc["undated_doy"])
                         if sc.get("undated_doy") else (tdd, 0))
         row = {"run": sc["name"]}
+        if n_subsided:
+            row["n_subsidence_series"] = n_subsided
         diags = []
         # A
         if sc.get("skip_A") and main_A is not None:
@@ -2402,9 +2449,11 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
     for col in tab:
         if (col.startswith(("n_", "B_n_", "Bwm_n_", "A_", "B_", "Bwm_")) and col.split("_", 1)[1] in
                 ORDER + RESID_ORDER + ["sites", "site_years", "censored", "regions", "n_sites", "n_site_years",
-                                       "undated_retimed", "deeper_than_TDD"]) or col in ("divergences", "seconds"):
+                                       "undated_retimed", "deeper_than_TDD"]) or col in (
+                "divergences", "seconds", "n_subsidence_series"):
             tab[col] = tab[col].astype("Int64")
-    tab = tab.loc[[s["name"] for s in SENSITIVITY] + [f"margins_{m:g}_{r:g}" for m, r in SENS_MARGINS]]
+    tab = tab.loc[[s["name"] for s in SENSITIVITY if s["name"] in tab.index]
+                  + [f"margins_{m:g}_{r:g}" for m, r in SENS_MARGINS]]
     tab.to_csv(out / "aldi_v6_sensitivity.csv")
     sites = pd.concat(site_rows, ignore_index=True)
     sites.to_csv(out / "aldi_v6_sensitivity_sites.csv", index=False)
@@ -2497,6 +2546,401 @@ def sensitivity_figure(tab, out):
     fig.tight_layout()
     fig.savefig(out / "aldi_v6_fig_sensitivity.png", dpi=200)
     plt.close(fig)
+
+
+# =========================================================================================
+# PART 4c. Paper checks (--checks): from the outputs above, no refit (about a minute)
+# =========================================================================================
+# Added 2026-11-09 (novelty review). Uses data/3_aldi (results, network table, summary,
+# TDD table) and, when present, data/3_aldi_sensitivity. Written to data/3_aldi_checks:
+#   aldi_v6_checks_sites.csv        one row per site: per-site OLS on the same series (the
+#                                   standard test of CALM syntheses), the chance that a
+#                                   record of this length and noise resolves its trend,
+#                                   shrinkage toward the region, rate in cm per decade
+#   aldi_v6_checks_by_span.csv      observed and expected shares by record length
+#   aldi_v6_checks_detection.csv    years of record a site needs, per method family
+#   aldi_v6_checks_ice_method.csv   residual trend by ground-ice class and method family
+#   aldi_v6_checks_cm.csv           rates in cm per decade beside published numbers
+#   aldi_v6_checks_diagnostics.csv  MCMC diagnostics of the fits of the main run
+#   aldi_v6_checks.txt              the numbers for the text
+#
+# Detection time. A record's trend is classed when its 90 % interval clears zero (or,
+# for "stable", lies inside +-5 %/decade). With the noise of the fitted model (AR(1)
+# with the family's rho and the site's sigma) the SD of a trend from given years is
+# exact (w' C w for the OLS weights w), so the chance of each class follows from the
+# true rate. Two noise levels bracket what a site needs: IN THE NETWORK, the shared
+# region-year anomalies are learned from neighbours and removed (the hierarchical model;
+# its pooling toward the region narrows the interval further, so the expected share of
+# unresolved sites is an upper bound for it); ALONE, they stay in the record's noise (a
+# per-site test). For long consecutive records
+# this is Weatherhead et al. (1998, JGR 103:17149), written for annual values:
+#   n* = [C * sqrt(12) * sigma * sqrt((1 + rho) / (1 - rho)) / |w0|]^(2/3),  w0 = ln(1 + p/100) / 10
+# (their formula is for monthly values; one value a year adds the sqrt(12)); C = 1.645 +
+# 1.282 = 2.93 to class a site thickening with 90 % probability, 3.29 to show "stable".
+# The years below are found from the exact SD, not from this approximation.
+#
+# Standard test. Per-site OLS of log ALT on year, p from the t (= F) test, all years
+# (lower-bound years at their bound, as a per-site analysis would use them), as in
+# Streletskiy et al. (2026, Commun. Earth Environ. 7:671). Its expected behaviour on
+# these records (power, false positives without a trend, sign errors and exaggeration
+# of the "significant" rates, Gelman & Carlin 2014) follows from the same noise model,
+# with the hierarchical rate as the true rate.
+CHECK_SPANS = ["12-15", "16-20", "21-25", "26+"]
+
+
+def noise_cov(years, sigma, rho, sd_shared=0.0):
+    """Noise covariance at the given years: AR(1) with stationary SD sigma (a gap of g
+    years gives rho**g) plus an independent shared-year term of SD sd_shared."""
+    lag = np.abs(np.subtract.outer(years, years))
+    return sigma ** 2 * rho ** lag + sd_shared ** 2 * np.eye(len(years))
+
+
+def ols_slope_sd(years, cov):
+    """SD of the OLS slope (log units per decade) for noise with covariance cov."""
+    t = (np.asarray(years, float) - np.mean(years)) / 10.0
+    w = t / np.sum(t ** 2)
+    return float(np.sqrt(w @ cov @ w))
+
+
+def class_chances(b, s, z, margin):
+    """Chances of thickening, stable, thinning and unresolved for an estimate normal
+    around the true slope b (log units per decade) with SD s and interval +- z*s, with
+    the rules of classify (stable first, then the sign)."""
+    b, s = np.asarray(b, float), np.asarray(s, float)
+    lm, um = np.log(1 - margin / 100), np.log(1 + margin / 100)
+    F = lambda v: stats.norm.cdf((v - b) / s)  # noqa: E731
+    stable = np.clip(F(um - z * s) - F(lm + z * s), 0, None)
+    up = 1 - F(z * s) - np.clip(F(um - z * s) - F(z * s), 0, None)
+    down = F(-z * s) - np.clip(F(-z * s) - F(lm + z * s), 0, None)
+    return up, stable, down, 1 - up - stable - down
+
+
+def years_needed(sigma, rho, sd_shared, b, z, power, margin, n_max=150):
+    """Fewest consecutive annual values for which a site with true slope b is classed
+    thickening (b > 0) or stable (b = 0) with at least the given chance."""
+    for n in range(5, n_max + 1):
+        yrs = np.arange(n, dtype=float)
+        s = ols_slope_sd(yrs, noise_cov(yrs, sigma, rho, sd_shared))
+        up, st, _, _ = class_chances(b, s, z, margin)
+        if (st if b == 0 else up) >= power:
+            return n
+    return np.nan
+
+
+def retrodesign(b, sd_true, se_nominal, df):
+    """Per-site OLS test at p < 0.05 when the estimate is normal around b with SD sd_true
+    but the test uses se_nominal (Gelman & Carlin 2014): power, chance of a wrong sign
+    among significant results (Type S), E|estimate| / |b| among significant results
+    (Type M, the exaggeration) and the chance of a significant result when b = 0."""
+    c = stats.t.ppf(0.975, df) * se_nominal
+    a_hi, a_lo = (c - b) / sd_true, (-c - b) / sd_true
+    p_hi, p_lo = 1 - stats.norm.cdf(a_hi), stats.norm.cdf(a_lo)
+    power = p_hi + p_lo
+    type_s = np.where(b >= 0, p_lo, p_hi) / power
+    # E[|est|; |est| > c] from the moments of the truncated normal
+    e_abs = (b * p_hi + sd_true * stats.norm.pdf(a_hi)) + (-b * p_lo + sd_true * stats.norm.pdf(a_lo))
+    type_m = e_abs / power / np.abs(b)
+    false_pos = 2 * stats.norm.cdf(-c / sd_true)
+    return power, type_s, type_m, false_pos
+
+
+def mcmc_table(summary_text):
+    """The diagnostics lines of aldi_v6_summary.txt as a table."""
+    rows = []
+    pat = re.compile(r"^(A|B) (\S+): \{'max_rhat': ([\d.naninf]+), 'min_ess': ([\d.naninf]+), "
+                     r"'divergences': (\d+)\}")
+    for line in summary_text.splitlines():
+        m = pat.match(line.strip())
+        if m:
+            rows.append({"model": m.group(1), "fit": m.group(2), "max_rhat": float(m.group(3)),
+                         "min_ess": float(m.group(4)), "divergences": int(m.group(5))})
+    return pd.DataFrame(rows)
+
+
+def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
+    """The checks described above PART 4c."""
+    main_out, out = Path(main_out), Path(out)
+    pre = cfg["outputs"]["prefix"]
+    res = pd.read_csv(main_out / f"{pre}_results.csv")
+    net = pd.read_csv(main_out / f"{pre}_network.csv", index_col=0)
+    summary = (main_out / f"{pre}_summary.txt").read_text()
+    z = stats.norm.ppf(0.5 + cfg["trend"]["ci_level"] / 2)
+    margin, rapid = cfg["classes"]["stable_margin_pct_dec"], cfg["classes"]["rapid_pct_dec"]
+    nv = lambda k: float(net.loc[k, "median"]) if k in net.index else np.nan  # noqa: E731
+    rho_f = {f: nv(f"A_main_rho_{f}") for f in FAMILIES}
+    sig_f = {f: nv(f"A_main_sigma_{f}_pct") / 100 for f in FAMILIES}
+    sd_ry = nv("A_main_sd_region_year_pct") / 100
+    sd_ry = 0.0 if not np.isfinite(sd_ry) else sd_ry
+    mu = nv("A_main_network_rate_pct_dec")
+    L = ["PAPER CHECKS (from data/3_aldi; nothing refitted)", ""]
+
+    # --- the analysed series (same rules as the main run) ---
+    annual = pd.read_csv(annual_file, low_memory=False)
+    data, _ = load_series(annual, cfg)
+    d = eligible_sites(data, cfg)
+    d = d[d.site_id.isin(set(res.site_id))]
+    r = res.set_index("site_id")
+    rows = []
+    for sid, g in d.groupby("site_id"):
+        g = g.sort_values("year")
+        yrs = g.year.to_numpy(float)
+        y = np.log(g.alt_cm.to_numpy(float))
+        n = len(yrs)
+        tdec = (yrs - yrs.mean()) / 10.0
+        sxx = float(np.sum(tdec ** 2))
+        b_ols, a_ols = np.polyfit(tdec, y, 1)
+        res_sd = float(np.sqrt(np.sum((y - a_ols - b_ols * tdec) ** 2) / (n - 2)))
+        se = res_sd / np.sqrt(sxx)
+        p = 2 * stats.t.sf(abs(b_ols / se), n - 2)
+        q90 = stats.t.ppf(0.5 + cfg["trend"]["ci_level"] / 2, n - 2)
+        lo, hi = pct(b_ols - q90 * se), pct(b_ols + q90 * se)
+        # same test on ALT in cm (the unit of the syntheses), for the cm/yr comparison
+        bc, ac = np.polyfit(yrs, g.alt_cm.to_numpy(float), 1)
+        sdc = np.sqrt(np.sum((g.alt_cm.to_numpy(float) - ac - bc * yrs) ** 2) / (n - 2))
+        p_cm = 2 * stats.t.sf(abs(bc / (sdc / np.sqrt(np.sum((yrs - yrs.mean()) ** 2)))), n - 2)
+        s_i = r.at[sid, "sigma_pct"] / 100 if np.isfinite(r.at[sid, "sigma_pct"]) else sig_f[r.at[sid, "family"]]
+        rho = rho_f[r.at[sid, "family"]]
+        b_true = np.log(1 + r.at[sid, "rate_v6"] / 100)
+        s_net = ols_slope_sd(yrs, noise_cov(yrs, s_i, rho))
+        s_alone = ols_slope_sd(yrs, noise_cov(yrs, s_i, rho, sd_ry))
+        up_n, st_n, dn_n, un_n = class_chances(b_true, s_net, z, margin)
+        up_a, st_a, dn_a, un_a = class_chances(b_true, s_alone, z, margin)
+        se_nom = np.sqrt((s_i ** 2 + sd_ry ** 2) / sxx)      # what OLS reports, on average
+        with np.errstate(divide="ignore", invalid="ignore"):
+            power, type_s, type_m, fp = retrodesign(b_true, s_alone, se_nom, n - 2)
+        rows.append({"site_id": sid, "n_years": n, "ols_rate": pct(b_ols), "ols_lo": lo, "ols_hi": hi,
+                     "ols_p": p, "ols_p_cm": p_cm, "ols_slope_cm_yr": bc,
+                     "class_ols": classify(pct(b_ols), lo, hi, margin, rapid),
+                     "p_resolved_network": 1 - un_n, "p_resolved_alone": 1 - un_a,
+                     "p_stable_network": st_n, "p_stable_alone": st_a,
+                     "trend_sd_network": 100 * s_net, "trend_sd_alone": 100 * s_alone,
+                     "ols_power": power, "ols_type_s": type_s, "ols_type_m": type_m,
+                     "ols_false_pos": fp})
+    ck = pd.DataFrame(rows)
+    ck["ols_q"] = bh_qvalues(ck.ols_p.to_numpy())
+    ck = res[["site_id", "family", "region_id", "span_years", "rate_v6", "rate_v6_sd", "region_rate_v6",
+              "class_v6", "class_site", "alt_ref_cm", "pf_ice", "resid_rate"]].merge(ck, on="site_id", how="inner")
+    ck["span_bin"] = span_bins(ck.span_years).astype(str)
+    # shrinkage toward the region: 0 = the site's own OLS rate, 1 = the region rate
+    gap = ck.ols_rate - ck.region_rate_v6
+    ck["shrinkage"] = np.where(np.abs(gap) >= 2, (ck.ols_rate - ck.rate_v6) / gap, np.nan)
+    ck["rate_v6_cm_dec"] = ck.rate_v6 * ck.alt_ref_cm / 100
+    ck.to_csv(out / "aldi_v6_checks_sites.csv", index=False)
+
+    # --- by record length ---
+    sig = ck.ols_p < 0.05
+    big = np.abs(ck.rate_v6) >= 1                     # Type M is undefined at a true rate of 0
+    pw = lambda col, k: float(np.sum((ck[col] * ck.ols_power)[k]) / np.sum(ck.ols_power[k]))  # noqa: E731
+    span_rows = []
+    for sb in CHECK_SPANS + ["all"]:
+        k = (ck.span_bin == sb) if sb != "all" else np.ones(len(ck), bool)
+        kb = k & big
+        span_rows.append({
+            "span": sb, "sites": int(k.sum()),
+            "unresolved_hierarchical_pct": 100 * (ck.class_v6[k] == "indeterminate").mean(),
+            "unresolved_per_site_pct": 100 * (ck.class_site[k] == "indeterminate").mean(),
+            "expected_unresolved_network_pct": 100 * (1 - ck.p_resolved_network[k]).mean(),
+            "expected_unresolved_alone_pct": 100 * (1 - ck.p_resolved_alone[k]).mean(),
+            "stable_hierarchical_pct": 100 * (ck.class_v6[k] == "stable").mean(),
+            "expected_stable_network_pct": 100 * ck.p_stable_network[k].mean(),
+            "ols_significant_up_pct": 100 * (sig & (ck.ols_rate > 0))[k].mean(),
+            "ols_significant_down_pct": 100 * (sig & (ck.ols_rate < 0))[k].mean(),
+            "ols_significant_fdr_pct": 100 * (ck.ols_q[k] < 0.05).mean(),
+            "ols_expected_significant_pct": 100 * ck.ols_power[k].mean(),
+            "ols_false_pos_if_no_trend_pct": 100 * ck.ols_false_pos[k].mean(),
+            "ols_wrong_sign_among_significant_pct": 100 * pw("ols_type_s", kb),
+            "ols_exaggeration_among_significant": pw("ols_type_m", kb),
+            "median_shrinkage": float(np.nanmedian(ck.shrinkage[k])),
+            "median_trend_sd_network": float(ck.trend_sd_network[k].median()),
+            "median_trend_sd_alone": float(ck.trend_sd_alone[k].median())})
+    sp = pd.DataFrame(span_rows)
+    sp.to_csv(out / "aldi_v6_checks_by_span.csv", index=False)
+    L.append("BY RECORD LENGTH (% of sites; expected = from record length and the fitted noise, with the "
+             "hierarchical rate as the true rate):")
+    L.append(sp.round(1).to_string(index=False))
+    L.append(f"(OLS significant at p < 0.05 on ALT in cm instead of log ALT: {100 * (ck.ols_p_cm < 0.05).mean():.0f} % "
+             f"of sites; on log ALT {100 * sig.mean():.0f} %)")
+
+    # --- detection time per family ---
+    det = []
+    b_net = np.log(1 + mu / 100)
+    for f in FAMILIES:
+        for where, sh in [("network", 0.0), ("alone", sd_ry)]:
+            lr = sig_f[f] ** 2 * (1 + rho_f[f]) / (1 - rho_f[f]) + sh ** 2   # long-run variance
+            det.append({"family": f, "noise": where, "sigma_pct": 100 * sig_f[f], "rho": rho_f[f],
+                        "sd_region_year_pct": 100 * sh,
+                        "longrun_sd_pct": 100 * np.sqrt(lr),
+                        "years_thickening_90pct": years_needed(sig_f[f], rho_f[f], sh, b_net, z, 0.9, margin),
+                        "years_thickening_50pct": years_needed(sig_f[f], rho_f[f], sh, b_net, z, 0.5, margin),
+                        "years_stable_90pct": years_needed(sig_f[f], rho_f[f], sh, 0.0, z, 0.9, margin),
+                        "weatherhead_thickening_90pct": float((2.93 * np.sqrt(12 * lr) / (b_net / 10)) ** (2 / 3)),
+                        "sites": int((res.family == f).sum())})
+    det = pd.DataFrame(det)
+    det.to_csv(out / "aldi_v6_checks_detection.csv", index=False)
+    L.append(f"\nYEARS OF RECORD A SITE NEEDS (consecutive years; thickening at the network rate {mu:.1f} %/dec, "
+             f"stable = a trendless site shown inside +-{margin:g} %/dec; network = shared region-year anomalies "
+             f"removed, alone = left in; region-year SD {100 * sd_ry:.1f} %):")
+    L.append(det.round(2).to_string(index=False))
+    for f in FAMILIES:
+        L.append(f"  share of the year-to-year noise that is shared within a region, {f}: "
+                 f"{100 * sd_ry ** 2 / (sd_ry ** 2 + sig_f[f] ** 2):.0f} %")
+
+    # --- standard test on the real series ---
+    n = len(ck)
+    L.append(f"\nSTANDARD PER-SITE TEST ON THE {n} SERIES (OLS on log ALT, t/F test):")
+    L.append(f"  p < 0.05 increasing {int((sig & (ck.ols_rate > 0)).sum())} ({100 * (sig & (ck.ols_rate > 0)).mean():.0f} %), "
+             f"decreasing {int((sig & (ck.ols_rate < 0)).sum())}, not significant {int((~sig).sum())} "
+             f"({100 * (~sig).mean():.0f} %)")
+    L.append(f"  after the false-discovery-rate correction (Benjamini-Hochberg, q < 0.05): "
+             f"{int((ck.ols_q < 0.05).sum())} ({100 * (ck.ols_q < 0.05).mean():.0f} %)")
+    L.append(f"  of the 'not significant' sites the hierarchical model classes {int(((~sig) & ck.class_v6.str.contains('thickening')).sum())} "
+             f"thickening, {int(((~sig) & (ck.class_v6 == 'stable')).sum())} stable, "
+             f"{int(((~sig) & (ck.class_v6 == 'indeterminate')).sum())} not yet resolved")
+    L.append("  OLS classes with the same 90 % rules: " + ", ".join(
+        f"{c} {int((ck.class_ols == c).sum())}" for c in ORDER))
+    a = sp[sp.span == "all"].iloc[0]
+    L.append(f"  expected from the noise model: {a.ols_expected_significant_pct:.0f} % significant; "
+             f"{a.ols_false_pos_if_no_trend_pct:.0f} % significant if there were no trend at all (nominal 5 %); "
+             f"significant rates overstate the true rate by a factor {a.ols_exaggeration_among_significant:.2f} "
+             f"(12-15 yr: {sp.ols_exaggeration_among_significant.iloc[0]:.2f}); wrong sign among significant "
+             f"{a.ols_wrong_sign_among_significant_pct:.1f} %")
+
+    # --- shrinkage and the regional prior alone ---
+    tau = nv("A_main_tau_site_pct") / 100
+    tr = nv("A_main_tau_region_pct") / 100
+    L.append("\nPOOLING: median shrinkage of the site rate toward its region (0 = own OLS rate, 1 = region rate) "
+             + ", ".join(f"{row.span} {row.median_shrinkage:.2f}" for row in sp.itertuples()))
+    L.append(f"  between-site spread of trends: regions {100 * tr:.1f}, sites within a region {100 * tau:.1f} %/dec "
+             f"(log units x 100); share that is regional {100 * tr ** 2 / (tr ** 2 + tau ** 2):.0f} %")
+    reg = res.groupby("region_id").agg(region_rate=("region_rate_v6", "first"), n=("site_id", "size"))
+    bp = np.log(1 + reg.region_rate / 100)
+    prior_cls = [classify(pct(m_), pct(m_ - z * tau), pct(m_ + z * tau), margin, rapid) for m_ in bp]
+    pc = pd.Series(prior_cls).value_counts()
+    L.append(f"  class of a site with NO data, from its region's rate and the between-site spread "
+             f"(tau_site {100 * tau:.1f} %; region uncertainty left out, so this overstates the prior): "
+             + ", ".join(f"{k} {v}" for k, v in pc.items()) + f" of {len(reg)} regions")
+
+    # --- expected class counts and probabilities ---
+    pcols = [f"p6_{c}" for c in ORDER if f"p6_{c}" in res]
+    L.append("\nPOSTERIOR EXPECTED CLASS COUNTS (sum of the band probabilities; bands, not interval rules): "
+             + ", ".join(f"{c[3:]} {res[c].sum():.0f}" for c in pcols))
+    if {"p6_rapid_thickening", "p6_gradual_thickening"} <= set(res):
+        p5 = res.p6_rapid_thickening + res.p6_gradual_thickening
+        L.append(f"  P(rate > {margin:g} %/dec) > 0.9 at {int((p5 > 0.9).sum())} sites, > 0.5 at {int((p5 > 0.5).sum())}; "
+                 f"P(thickening) > 0.9 at {int((res.p6_thickening > 0.9).sum())}")
+
+    # --- TDD: share of the variance vs share of the trend ---
+    tf = main_out / "temperature" / "tdd_site_years.csv"
+    if tf.exists():
+        t = pd.read_csv(tf)[["site_id", "year", "method", "tdd"]].drop_duplicates(["site_id", "year", "method"])
+        dt = d.merge(t, on=["site_id", "year", "method"], how="inner")
+        dt = dt[dt.tdd > 0]
+        yv, xv = dt.alt_cm.to_numpy(float), np.sqrt(dt.tdd.to_numpy(float))
+        g_ = dt.site_id.to_numpy()
+        yw = yv - pd.Series(yv).groupby(g_).transform("mean").to_numpy()
+        xw = xv - pd.Series(xv).groupby(g_).transform("mean").to_numpy()
+        beta = float(np.sum(xw * yw) / np.sum(xw ** 2))
+        ssr = float(np.sum((yw - beta * xw) ** 2))
+        r2_fe = 1 - ssr / float(np.sum((yv - yv.mean()) ** 2))
+        r2_within = 1 - ssr / float(np.sum(yw ** 2))
+        # the same within each site after removing its linear trend: year-to-year only
+        def detr(v):
+            return pd.Series(v).groupby(g_).transform(
+                lambda s: s - np.polyval(np.polyfit(dt.year.to_numpy(float)[s.index], s.to_numpy(), 1),
+                                         dt.year.to_numpy(float)[s.index])).to_numpy()
+        yd, xd = detr(yv), detr(xv)
+        bd = float(np.sum(xd * yd) / np.sum(xd ** 2))
+        r2_yy = 1 - float(np.sum((yd - bd * xd) ** 2)) / float(np.sum(yd ** 2))
+        e_, t_ = nv("B_main_mean_expected_pct_dec"), nv("B_main_mean_total_pct_dec")
+        L.append(f"\nTDD AND ALT ({len(dt)} site-years; ALT in cm on sqrt(TDD), as Streletskiy et al. 2026):")
+        L.append(f"  with site fixed effects R2 = {100 * r2_fe:.0f} % (mostly the differences between sites); "
+                 f"within sites {100 * r2_within:.0f} %; year-to-year (each site detrended) {100 * r2_yy:.0f} %; "
+                 f"{beta:.2f} cm per unit sqrt(TDD)")
+        L.append(f"  share of the TREND that TDD explains (model B main): {e_:.1f} of {t_:.1f} %/dec = "
+                 f"{100 * e_ / t_:.0f} %")
+    for vn in ["main", "kfixed"]:
+        if f"B_{vn}_mean_expected_pct_dec" in net.index:
+            L.append(f"  B {vn}: expected {nv(f'B_{vn}_mean_expected_pct_dec'):.2f}, residual "
+                     f"{nv(f'B_{vn}_mean_residual_pct_dec'):.2f} %/dec"
+                     + (" (k = 0.5, Stefan: the most the expected part can take if the fitted k is attenuated"
+                        " by errors in TDD)" if vn == "kfixed" else ""))
+
+    # --- residual by ground ice and method ---
+    rows = []
+    b = res.dropna(subset=["resid_rate"])
+    for f in FAMILIES + ["all"]:
+        bf = b if f == "all" else b[b.family == f]
+        for ice in ["low", "medium", "high", "unknown"]:
+            k = bf.pf_ice.astype(str) == ice
+            if not k.any():
+                continue
+            rows.append({"family": f, "pf_ice": ice, "sites": int(k.sum()),
+                         "mean_resid": float(bf.resid_rate[k].mean()) if k.any() else np.nan,
+                         "median_resid": float(bf.resid_rate[k].median()) if k.any() else np.nan})
+        if bf.pf_ice.isin(["low"]).any() and bf.pf_ice.isin(["high"]).any():
+            con = _region_fe_contrast(bf.resid_rate, bf.pf_ice.astype(str), bf.region_id, "high")
+            if "low" in con and np.isfinite(con["low"][0]):
+                rows.append({"family": f, "pf_ice": "low_minus_high_within_regions", "sites": con["low"][3],
+                             "mean_resid": con["low"][0], "lo95": con["low"][1], "hi95": con["low"][2]})
+    im = pd.DataFrame(rows)
+    im.to_csv(out / "aldi_v6_checks_ice_method.csv", index=False)
+    L.append("\nRESIDUAL TREND BY GROUND ICE (IPA) AND METHOD (%/dec; contrast rows: sites = shared regions):")
+    L.append(im.round(2).to_string(index=False))
+
+    # --- cm per decade beside published numbers ---
+    cm = [{"what": "ALDI hierarchical, mean of site rates", "value": float(ck.rate_v6_cm_dec.mean()),
+           "unit": "cm/decade", "sites": len(ck)},
+          {"what": "ALDI hierarchical, median of site rates", "value": float(ck.rate_v6_cm_dec.median()),
+           "unit": "cm/decade", "sites": len(ck)},
+          {"what": "ALDI per-site OLS on cm, sites with a significant increase (as Streletskiy et al. 2026)",
+           "value": float(ck.ols_slope_cm_yr[(ck.ols_p_cm < 0.05) & (ck.ols_slope_cm_yr > 0)].mean()),
+           "unit": "cm/yr", "sites": int(((ck.ols_p_cm < 0.05) & (ck.ols_slope_cm_yr > 0)).sum())},
+          {"what": "ALDI per-site OLS on cm, all increasing sites (as Lin et al. 2026)",
+           "value": float(ck.ols_slope_cm_yr[ck.ols_slope_cm_yr > 0].mean()), "unit": "cm/yr",
+           "sites": int((ck.ols_slope_cm_yr > 0).sum())},
+          {"what": "ALDI share of sites with a significant increase, OLS on cm",
+           "value": float(100 * ((ck.ols_p_cm < 0.05) & (ck.ols_slope_cm_yr > 0)).mean()), "unit": "%",
+           "sites": len(ck)}]
+    sens_sites = Path(sens_dir) / "aldi_v6_sensitivity_sites.csv" if sens_dir else None
+    if sens_sites is not None and sens_sites.exists():
+        ss = pd.read_csv(sens_sites)
+        w = ss[ss.run == "window_2000_2024"].merge(res[["site_id", "alt_ref_cm"]], on="site_id")
+        if len(w):
+            cm.append({"what": "ALDI hierarchical, 2000-2024 window run, mean of site rates",
+                       "value": float((w.rate_v6 * w.alt_ref_cm / 100).mean()), "unit": "cm/decade",
+                       "sites": len(w)})
+    for reg_id, g in ck.groupby("region_id"):
+        if len(g) >= 4:
+            cm.append({"what": f"ALDI region {reg_id} ({g.region_rate_v6.iloc[0]:.1f} %/dec)",
+                       "value": float(g.region_rate_v6.iloc[0] * g.alt_ref_cm.mean() / 100),
+                       "unit": "cm/decade", "sites": len(g)})
+    pub = [("Streletskiy et al. 2026, Arctic CALM 2000-2024, sites with a significant increase", 0.8, "cm/yr", np.nan),
+           ("Streletskiy et al. 2026, Northern Hemisphere, share with a significant increase", 66.4, "%", 156),
+           ("Lin et al. EGUsphere-2026-841, circum-Arctic mean at increasing sites", 1.48, "cm/yr", np.nan),
+           ("Smith et al. 2024 (ICOP), Mackenzie Valley thaw tubes, ALT", 1.0, "cm/decade", np.nan),
+           ("Smith et al. 2024 (ICOP), Mackenzie Valley thaw tubes, thaw penetration (fixed datum)", 8.0, "cm/decade", np.nan)]
+    for w_, v_, u_, n_ in pub:
+        cm.append({"what": "PUBLISHED: " + w_, "value": v_, "unit": u_, "sites": n_})
+    cmt = pd.DataFrame(cm)
+    cmt["sites"] = cmt.sites.astype("Int64")
+    cmt.to_csv(out / "aldi_v6_checks_cm.csv", index=False)
+    L.append("\nRATES IN CM (site rates times the site's fitted ALT; published values for comparison):")
+    L.append(cmt.round(2).to_string(index=False))
+
+    # --- MCMC diagnostics and the survey-date drift flag ---
+    mt = mcmc_table(summary)
+    mt.to_csv(out / "aldi_v6_checks_diagnostics.csv", index=False)
+    if len(mt):
+        L.append(f"\nMCMC: {len(mt)} fits; max R-hat {mt.max_rhat.max():.3f}; min ESS {mt.min_ess.min():.0f}; "
+                 f"divergences {int(mt.divergences.sum())}")
+    if "flag_doy_drift" in res:
+        dr = res.survey_doy_drift_days
+        L.append(f"survey date drift > {cfg['diagnostics']['survey_doy_drift_days']} days over the record: "
+                 f"{int(res.flag_doy_drift.astype(str).str.lower().eq('true').sum())} of {int(dr.notna().sum())} "
+                 f"sites with dates (median drift {dr.median():+.1f} days)")
+    txt = "\n".join(L)
+    (out / "aldi_v6_checks.txt").write_text(txt)
+    print(txt)
 
 
 # =========================================================================================
@@ -2878,8 +3322,11 @@ def main():
     ap.add_argument("--validate", action="store_true", help="also run the simulation check")
     ap.add_argument("--sensitivity", action="store_true",
                     help="also run the sensitivity runs (one choice changed at a time; about 30-40 min)")
+    ap.add_argument("--checks", action="store_true",
+                    help="also the paper checks (detection time, standard per-site test, residual by ice "
+                         "and method, rates in cm; about a minute, no refit)")
     ap.add_argument("--no-main", action="store_true",
-                    help="do not rerun the main fit: --power, --sensitivity and --validate use the "
+                    help="do not rerun the main fit: --power, --sensitivity, --checks and --validate use the "
                          "existing data/3_aldi (and its temperature folder)")
     ap.add_argument("--reps", type=int, default=8, help="simulated networks per scenario (--validate)")
     ap.add_argument("--scenarios", default=None, help="simulation scenarios, comma-separated (--validate)")
@@ -2937,6 +3384,11 @@ def main():
         def sensitivity_run(work):
             sensitivity_runs(cfg, a.annual, a.out / "temperature", work, fit_kw)
         stage(a.out.with_name(a.out.name + "_sensitivity"), sensitivity_run)
+
+    if a.checks:
+        def checks_run(work):
+            paper_checks(cfg, a.annual, a.out, work, a.out.with_name(a.out.name + "_sensitivity"))
+        stage(a.out.with_name(a.out.name + "_checks"), checks_run)
 
     if a.validate:
         temp = a.out / "temperature"

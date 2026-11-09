@@ -46,16 +46,19 @@ step, with its settings at the top.
   sites first. The default gets what ALDI B needs; `--all` gets every variable and merges
   them for the causal analysis. A stopped run continues where it left off.
 - **Step 3** options: `--power` (NASA POWER temperature, robustness run), `--validate`
-  (simulation check, 1-2 h), `--sensitivity` (twelve runs that each change one choice:
+  (simulation check, 1-2 h), `--sensitivity` (fifteen runs that each change one choice:
   censored prior, undated surveys, site quality, disturbed plots, one series per place,
-  2000-2024 window, record length, region size; 30-40 min), `--spatial` (only the spatial
-  checks on the existing results, about a minute; needs geopandas for the permafrost-map
-  part). `--no-main` skips the main fit and adds the other runs to the existing
-  `data/3_aldi`. Everything at once: `py -3.12 3_aldi.py --power --sensitivity --validate`.
-- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-5 and S1-S3 of the
-  Results (PNG and PDF) and writes Tables 1-3 and S1-S3 (CSV) and `key_numbers.txt` (the
+  2000-2024 window, record length, region size, and three thaw-subsidence bounds; about
+  1 h), `--checks` (the paper checks: years of record a site needs, the standard per-site
+  test on the same series, shrinkage, residual by ground ice and method, rates in cm; about
+  a minute, no refit), `--spatial` (only the spatial checks on the existing results, about
+  a minute; needs geopandas for the permafrost-map part). `--no-main` skips the main fit
+  and adds the other runs to the existing `data/3_aldi`. Everything at once:
+  `py -3.12 3_aldi.py --power --sensitivity --checks --validate`.
+- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-5 and S1-S4 of the
+  Results (PNG and PDF) and writes Tables 1-3 and S1-S8 (CSV) and `key_numbers.txt` (the
   numbers quoted in the text). It uses the outputs of `3_aldi.py --power --sensitivity
-  --validate`; a missing run only drops its figure or table.
+  --checks --validate`; a missing run only drops its figure, table or markers.
 - A new output replaces the current one only when its run finished without error. The
   output before it is kept in `data/previous/` (one copy).
 - Every script prints its options with `-h`. Python 3.12 is needed (on this laptop `py -3.12`;
