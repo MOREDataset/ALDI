@@ -221,7 +221,7 @@ if have_sim
         cov = arrayfun(@(b) sim.(char("coverage_" + SPAN_L(b)))(k), 1:4);
         hm(end+1) = plot(ax, 1:4, 100 * cov, '-o', 'Color', METH_C(m, :), 'MarkerFaceColor', METH_C(m, :), ...
             'MarkerSize', 4, 'LineWidth', 1); %#ok<SAGROW>
-        ml(end+1) = sprintf('%s (all sites %.0f %%)', METH_L(m), 100 * sim.coverage90(k)); %#ok<SAGROW>
+        ml(end+1) = sprintf('%s: %.0f %% overall', METH_L(m), 100 * sim.coverage90(k)); %#ok<SAGROW>
     end
     xticks(ax, 1:4); xticklabels(ax, SPAN_L); xlim(ax, [0.6 4.4]); ylim(ax, [50 100]);
     xlabel(ax, 'Record length (years)'); ylabel(ax, 'Coverage of 90 % intervals (%)');
@@ -352,7 +352,15 @@ if have_sens
         for j = 1:numel(vals), xline(ax, vals{j}(m0), ':', 'Color', cols{j}, 'LineWidth', 0.6); end
     end
     xline(ax, 0, '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.4);
-    yticks(ax, 1:nrun); yticklabels(ax, flipud(strrep(sf.run, '_', ' '))); ylim(ax, [0.5 nrun + 0.5]);
+    RUN_ID = ["main" "cens_sd_0.5" "cens_sd_1.0" "no_censored" "undated_doy_243" "drop_site_quality" ...
+              "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km"];
+    RUN_L  = ["Main run" "Censored years: HalfNormal(0.5)" "Censored years: HalfNormal(1.0)" ...
+              "Censored years left out" "Undated surveys on 31 August" "Without imprecise locations" ...
+              "Without fire-disturbed plots" "One series per place" "2000-2024 only" ...
+              "At least 8 years (not 10)" "Regions of 150 km" "Regions of 500 km"];
+    run_l = strrep(sf.run, '_', ' ');
+    [tf, loc] = ismember(sf.run, RUN_ID); run_l(tf) = RUN_L(loc(tf));
+    yticks(ax, 1:nrun); yticklabels(ax, flipud(run_l)); ylim(ax, [0.5 nrun + 0.5]);
     xlim(ax, [min([0; sf.B_mean_expected]) - 0.5, max(sf.A_network_hi95) + 0.5]);
     xlabel(ax, 'Rate of ALT change (% per decade)');
     legend(ax, hS, sl, 'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
