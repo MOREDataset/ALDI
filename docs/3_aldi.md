@@ -252,6 +252,21 @@ years on the North Slope, Nyland et al. 2021), and refit A and B. They bound how
 network rate and the B residual can grow; they are not a correction (no site has its own
 subsidence record here). Fig 5 of `paper_figures.m` marks the B means of the three runs.
 
+Results (laptop, 9 November 2026; 146 probe and tube series on medium- or high-ice ground;
+every fit R-hat <= 1.008, one divergence in one fit of the 1.0 run):
+
+| run | network rate mu (95 %) | site mean | B expected | B residual | B residual (weather_memory) | deeper than TDD |
+|---|---|---|---|---|---|---|
+| main | 9.1 (6.6-11.9) | 7.04 | 1.25 | 5.17 | 3.43 | 76 |
+| +0.2 cm/yr | 10.8 (8.5-13.3) | 9.25 | 1.23 | 7.31 | 5.55 | 119 |
+| +0.5 cm/yr | 13.5 (11.2-16.1) | 12.54 | 1.19 | 10.59 | 8.75 | 186 |
+| +1.0 cm/yr | 18.0 (15.3-21.2) | 17.76 | 1.13 | 15.79 | 13.92 | 203 |
+
+Even the low end (0.2 cm/yr, 2 cm per decade) raises the residual by 2.1 %/dec. Read with
+care: the corrected quantity is the lowering of the permafrost table (thaw penetration from
+a fixed datum), not ALT itself, so the runs say that 5.2 %/dec is a lower bound for how fast
+the permafrost table drops beyond what air temperature explains, not that ALT grows faster.
+
 ## Paper checks (`paper_checks`, `--checks`, `data/3_aldi_checks/`; added 2026-11-09)
 
 Computed from the outputs of the main run (and of `--sensitivity` for the 2000-2024 cm
@@ -297,6 +312,46 @@ accounting) into numbers a reader can compare with the usual analysis:
   (EGUsphere-2026-841), beside their published values and Smith et al. (2024).
 - **MCMC diagnostics** of every fit of the main run (Table S8) and the count of sites whose
   survey date drifts by more than 14 days over the record.
+
+Results on run 7 (laptop, 9 November 2026; `data/3_aldi_checks/aldi_v6_checks.txt`):
+
+- **Years needed** (consecutive, to class a site thickening at the network rate of
+  9.1 %/dec with 90 % chance, network / alone): probes 28 / 30, thaw tubes 25 / 27, ground
+  temperature 45 / 46; to show a trendless site as "stable": 44 / 47, 39 / 43, 73 / 74. A
+  coin flip (50 %) needs 19, 16 and 30 years. The shared region-year noise is 20-46 % of the
+  year-to-year variance, but removing it saves only 1-4 years: the gain of the hierarchical
+  model is mainly its pooling, not the shared anomalies.
+- **Unresolved sites match what record length allows.** Hierarchical, observed vs expected
+  at most: 12-15 yr 57 vs 73 %, 16-20 yr 61 vs 64 %, 21-25 yr 43 vs 48 %, 26+ yr 25 vs 26 %.
+  The per-site Sen + AR(1) method leaves 64 % unresolved at 26+ yr where an OLS test with
+  the same noise would leave 35 %: it is more conservative than its noise needs.
+- **Standard per-site test**: 104 sites (45 %) significantly increasing at p < 0.05, 15
+  decreasing; 94 after the FDR correction. With no trend anywhere it would call 11 % of
+  sites significant (nominal 5 %, because the years are autocorrelated). Its significant
+  rates overstate the true rate by 1.9 times (3.7 times for 12-15 year records); wrong sign
+  2.3 %. Of the 110 sites it calls not significant, the hierarchical model classes 22
+  thickening and 12 stable.
+- **Pooling**: median shrinkage toward the region 0.84 (12-15 yr), 0.68, 0.50, 0.21 (26+);
+  51 % of the between-site spread of trends is regional (tau_region 5.2, tau_site 5.1).
+- **Bands**: expected class counts 69 rapid, 64 gradual thickening, 90 stable, 5 gradual
+  thinning (the interval rules give 57 / 59 / 13 / 1 and 99 not resolved: the 90 "stable"
+  is posterior mass inside +-5 %/dec, not a class); P(rate > 5 %/dec) > 0.9 at 54 sites.
+- **TDD**: R2 of ALT on sqrt(TDD) is 95 % with site fixed effects but 9 % within sites and
+  11 % from year to year (each site detrended); TDD explains 19 % of the trend (1.3 of
+  6.5 %/dec). The 92-95 % R2 of syntheses is the difference between sites, not the change
+  at a site. With k fixed at 0.5 the expected part is 2.4 and the residual 4.2 %/dec.
+- **Ground ice by method** (mean residual low / medium / high): probes 8.5 / 5.4 / 4.6,
+  thaw tubes 7.2 / 3.6 / 1.4, ground temperature 7.5 / 2.8 / 5.4. Low ice is faster in all
+  three, also in ground temperatures that subsidence cannot bias, but only 2-5 regions hold
+  both low- and high-ice sites, so the within-region contrasts are not resolved (all
+  families +2.1, -0.6 to +4.6).
+- **cm**: hierarchical site rates average 6.2 cm/decade (median 4.2; 7.3 in the 2000-2024
+  run). The per-site OLS on cm gives 1.33 cm/yr at the 106 sites with a significant
+  increase (Streletskiy et al. 2026: 0.8 cm/yr, Arctic CALM 2000-2024) and 0.96 cm/yr over
+  all increasing sites (Lin et al.: 1.48). Averages over "significant" sites are 2x the
+  hierarchical mean, as the exaggeration above predicts.
+- **MCMC**: 10 fits of the main run, max R-hat 1.008, min ESS 726, no divergences. Survey
+  date drifts by more than 14 days at 12 of the 39 sites with dates (median +6 days).
 
 ## Spatial checks (`spatial_checks`, also `--spatial`)
 
