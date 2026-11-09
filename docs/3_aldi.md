@@ -338,8 +338,10 @@ Results on run 7 (laptop, 9 November 2026; `data/3_aldi_checks/aldi_v6_checks.tx
   is posterior mass inside +-5 %/dec, not a class); P(rate > 5 %/dec) > 0.9 at 54 sites.
 - **TDD**: R2 of ALT on sqrt(TDD) is 95 % with site fixed effects but 9 % within sites and
   11 % from year to year (each site detrended); TDD explains 19 % of the trend (1.3 of
-  6.5 %/dec). The 92-95 % R2 of syntheses is the difference between sites, not the change
-  at a site. With k fixed at 0.5 the expected part is 2.4 and the residual 4.2 %/dec.
+  6.5 %/dec). The same fit as the panel of Streletskiy et al. (2026: R2 92 % with site
+  fixed effects, 1.05 cm per unit sqrt(DDT) in the Arctic lowlands; here 95 % and 1.57)
+  owes its R2 to the differences between sites, not to the change at a site. With k fixed
+  at 0.5 the expected part is 2.4 and the residual 4.2 %/dec.
 - **Ground ice by method** (mean residual low / medium / high): probes 8.5 / 5.4 / 4.6,
   thaw tubes 7.2 / 3.6 / 1.4, ground temperature 7.5 / 2.8 / 5.4. Low ice is faster in all
   three, also in ground temperatures that subsidence cannot bias, but only 2-5 regions hold
