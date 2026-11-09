@@ -35,6 +35,7 @@ step, with its settings at the top.
 | 1. ALT target | `py -3.12 1_alt_target.py` | ~3 min | `data/raw/alt_sources/` | `data/1_alt_target/` |
 | 2. Covariates (Earth Engine) | `py -3.12 2_covariates.py` | ~2 h the first time | step 1 | `data/2_covariates/` |
 | 3. ALDI A + B | `py -3.12 3_aldi.py` | ~10-30 min | steps 1 and 2 | `data/3_aldi/` |
+| 4. Paper figures and tables | in MATLAB, from this folder: `paper_figures` | ~1 min | step 3 | `data/4_paper/` |
 
 - **Step 1** rebuilds the ALT target from the raw files on the computer. `--download` first
   fetches new or missing source files (NEON then needs your token for that terminal:
@@ -51,6 +52,10 @@ step, with its settings at the top.
   checks on the existing results, about a minute; needs geopandas for the permafrost-map
   part). `--no-main` skips the main fit and adds the other runs to the existing
   `data/3_aldi`. Everything at once: `py -3.12 3_aldi.py --power --sensitivity --validate`.
+- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-4 and S1-S2 of the
+  Results (PNG and PDF) and writes Tables 1-3 and S1-S3 (CSV) and `key_numbers.txt` (the
+  numbers quoted in the text). It uses the outputs of `3_aldi.py --power --sensitivity
+  --validate`; a missing run only drops its figure or table.
 - A new output replaces the current one only when its run finished without error. The
   output before it is kept in `data/previous/` (one copy).
 - Every script prints its options with `-h`. Python 3.12 is needed (on this laptop `py -3.12`;
@@ -64,6 +69,7 @@ step, with its settings at the top.
 | `1_alt_target.py` | ALT from every source and method (probing grids, thaw tubes, ground temperatures): download, read, merge, flags. The list of source files is at its end |
 | `2_covariates.py` | climate, snow, soil, vegetation, fire, terrain and permafrost-map variables per site and year, from Google Earth Engine |
 | `3_aldi.py` | ALDI v6: A (hierarchical trends and classes) and B (trend expected from air temperature and residual), the v5.2 comparison, the simulation check |
-| `data/` | everything that is data. Only on the computer, not on GitHub: `raw/` (downloads: ALT sources, permafrost map, NASA POWER), `1_alt_target/`, `2_covariates/`, `3_aldi/`, `previous/` |
+| `paper_figures.m` | the figures and tables of the paper's Results section (MATLAB), from the outputs of step 3 |
+| `data/` | everything that is data. Only on the computer, not on GitHub: `raw/` (downloads: ALT sources, permafrost map, NASA POWER), `1_alt_target/`, `2_covariates/`, `3_aldi/`, `4_paper/`, `previous/` |
 | `docs/` | the method of each step in detail (`1_alt_target.md`, `2_covariates.md`, `3_aldi.md`) and the list of covariate columns |
 | `extras/` | earlier and exploratory work, not part of the current analysis: `ALDI_causality.ipynb` (the class-stratified causal analysis of v4, kept for reference), `IndexVX_FiguresScriptV2.m` (v4 figures, MATLAB), and the v4 paper version: `ALDI_Calculation_final.ipynb` and its data in `v4_data/` |
