@@ -274,7 +274,7 @@ end
 % expected part can be); and with thaw subsidence added at the probe and thaw-tube
 % series on medium- or high-ice ground (sensitivity runs: 0.2, 0.5 and 1.0 cm/yr; the
 % surface these methods measure from sinks, so their ALT trend is too small).
-fig = new_figure(16, 9);
+fig = new_figure(14, 12.5);
 ax = axes(fig); hold(ax, 'on');
 plot(ax, [res.expected_lo res.expected_hi]', [rs rs]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
 plot(ax, [ex ex]', [res.resid_lo res.resid_hi]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
@@ -300,21 +300,26 @@ if have_sens
     if sum(tf) >= 2
         h(end+1) = plot(ax, sens.B_mean_expected(loc(tf)), sens.B_mean_residual(loc(tf)), '-^', 'Color', 'k', ...
             'MarkerFaceColor', [0.6 0.6 0.6], 'MarkerSize', 5, 'LineWidth', 0.8);
-        lab(end+1) = sprintf('Mean, subsidence %s cm/yr: residual %s', ...
-            strjoin(erase(sub_runs(tf & sub_runs ~= "main"), "subsidence_"), ' / '), ...
-            strjoin(compose('%.1f', sens.B_mean_residual(loc(tf & sub_runs ~= "main"))'), ' / '));
+        lab(end+1) = "Mean with thaw subsidence added";
+        for r = find(tf & sub_runs ~= "main")
+            text(ax, sens.B_mean_expected(loc(r)) + 2, sens.B_mean_residual(loc(r)), ...
+                "+" + erase(sub_runs(r), "subsidence_") + " cm/yr", 'FontSize', FONT - 1, ...
+                'VerticalAlignment', 'middle', 'BackgroundColor', 'w', 'Margin', 0.5);
+        end
     end
 end
 if ~isnan(bk(1, 1))
     h(end+1) = plot(ax, bk(1, 1), bk(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
         'LineWidth', 1);
-    lab(end+1) = sprintf('Mean, k fixed at 0.5: %.1f expected, %.1f residual', bk(1, 1), bk(2, 1));
+    lab(end+1) = "Mean with k fixed at 0.5";
 end
 h(end+1) = plot(ax, bm(1, 1), bm(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'k', 'MarkerSize', 7);
-lab(end+1) = sprintf('Mean of sites: %.1f expected, %.1f residual', bm(1, 1), bm(2, 1));
+lab(end+1) = "Mean of sites (main fit)";
+xlim(ax, [floor(min(res.expected_lo)) - 0.5, ceil(max(res.expected_hi)) + 0.5]);
+ylim(ax, [floor(min(res.resid_lo)) - 1, ceil(max(res.resid_hi)) + 1]);
 xlabel(ax, 'Expected from air temperature (% per decade)');
 ylabel(ax, 'Residual trend (% per decade)');
-legend(ax, h, lab, 'Location', 'eastoutside', 'Box', 'off', 'FontSize', FONT - 1);
+legend(ax, h, lab, 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', 'FontSize', FONT - 1);
 save_figure(fig, OUT, 'Fig5_expected_vs_residual');
 
 %% Table 1: data sources of the analysed series
@@ -647,13 +652,28 @@ if have_ck
         sum(~sig & contains(cks.class_v6, "thickening")), sum(~sig & cks.class_v6 == "stable"));
     p('  shrinkage toward the region (median): %s', strjoin(compose('%s yr %.2f', cksp.span, cksp.median_shrinkage)', ', '));
     keys = ["share that is regional" "class of a site with NO data" "POSTERIOR EXPECTED CLASS COUNTS" ...
-            "P(rate >" "with site fixed effects R2" "share of the TREND" "MCMC:" "survey date drift" ...
-            "low_minus_high_within_regions"];
+            "P(rate >" "with site fixed effects R2" "share of the TREND" "MCMC:" "survey date drift"];
     lines = splitlines(string(ck_txt));
     for kk = keys
         for ln = lines(contains(lines, kk))'
             p('  %s', strtrim(ln));
         end
+    end
+    im = rd(fullfile(CK, 'aldi_v6_checks_ice_method.csv'));
+    p('  residual trend by ground ice, mean %%/dec (low / medium / high; sites):');
+    for f = [FAM "all"]
+        v = nan(1, 3); n = zeros(1, 3); ICE = ["low" "medium" "high"];
+        for j = 1:3
+            k = im.family == f & im.pf_ice == ICE(j);
+            if any(k), v(j) = im.mean_resid(k); n(j) = im.sites(k); end
+        end
+        k = im.family == f & im.pf_ice == "low_minus_high_within_regions" & f ~= "all";  % "all": under MODEL B
+        s = sprintf('    %s: %.1f / %.1f / %.1f (%d / %d / %d)', f, v, n);
+        if any(k)
+            s = [s sprintf('; low minus high within %d shared regions %+.1f (%+.1f to %+.1f)', im.sites(k), ...
+                im.mean_resid(k), im.lo95(k), im.hi95(k))]; %#ok<AGROW>
+        end
+        p('%s', s);
     end
     cm = rd(fullfile(CK, 'aldi_v6_checks_cm.csv'));
     p('  rates in cm (Table S7):');
