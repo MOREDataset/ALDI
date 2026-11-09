@@ -217,14 +217,20 @@ Simulation (`--validate`, 7 November 2026: 8 networks per scenario, run-7 design
 ERA5-Land TDD; 1,832 site intervals per scenario, so a coverage has a Monte Carlo SE of
 about 0.008):
 
-| | v6 | v5.2 site | v5.2 pooled |
-|---|---|---|---|
-| 90 % interval coverage (fitted truth) | 0.88 | 0.84 | 0.82 |
-| same, heavy-tailed truth (t, 3 df) | 0.88 | 0.86 | 0.81 |
-| rate RMSE, %/dec | 4.7 | 9.5 | 5.2 |
-| wrong-direction calls | 0.8 % | 1.6 % | 1.0 % |
-| false trend calls when no trend anywhere | 0 % | 11.5 % | 1.3 % |
-| network-rate bias, %/dec (95 % interval covers the truth) | 0.0 (8 of 8) | | -0.9 (6 of 8) |
+| | v6 | v5.2 site | v5.2 pooled | per-site OLS |
+|---|---|---|---|---|
+| 90 % interval coverage (fitted truth) | 0.88 | 0.84 | 0.82 | 0.75 |
+| same, heavy-tailed truth (t, 3 df) | 0.88 | 0.86 | 0.81 | 0.77 |
+| rate RMSE, %/dec | 4.7 | 9.5 | 5.2 | 10.4 |
+| wrong-direction calls | 0.8 % | 1.6 % | 1.0 % | 3.2 % |
+| false trend calls when no trend anywhere | 0 % | 11.5 % | 1.3 % | 23.5 % (16.3 % at p < 0.05) |
+| network-rate bias, %/dec (95 % interval covers the truth) | 0.0 (8 of 8) | | -0.9 (6 of 8) | |
+
+Per-site OLS (added 9 November 2026, same simulated networks) is the method of recent
+syntheses: a linear trend per site tested at p < 0.05 (e.g. Streletskiy et al. 2026), with
+no autocorrelation, censoring or pooling. Its intervals are too narrow at every record
+length (coverage 0.69-0.80), and with no trend anywhere it finds a significant trend at
+16 % of sites against the nominal 5 %. The v6 and v5.2 numbers are unchanged by the rerun.
 
 B (8 networks per scenario): residual coverage 0.90 with the fitted truth (residual bias
 -0.4 %/dec); no false "deeper than TDD" calls when every trend is climatic, also with TDD

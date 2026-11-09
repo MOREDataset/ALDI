@@ -2600,6 +2600,27 @@ def v52(arr, cfg):
     return res, net
 
 
+def ols_site(arr, cfg, level):
+    """Ordinary least squares of log ALT on year, site by site, with a t interval: the
+    method of recent syntheses (per-site linear trend tested at p < 0.05, e.g.
+    Streletskiy et al. 2026). No autocorrelation, no censoring, no pooling. Returns
+    rate, interval and class in %/decade, classed with the same rules as v5.2 and v6."""
+    m, rp = cfg["classes"]["stable_margin_pct_dec"], cfg["classes"]["rapid_pct_dec"]
+    y, t, s_idx = np.asarray(arr["y"]), np.asarray(arr["t"]), np.asarray(arr["s_idx"])
+    est, lo, hi = (np.full(arr["n_sites"], np.nan) for _ in range(3))
+    cls = []
+    for i in range(arr["n_sites"]):
+        idx = s_idx == i
+        ti, yi = t[idx], y[idx]
+        n = len(ti)
+        b, a = np.polyfit(ti, yi, 1)
+        se = np.sqrt(np.sum((yi - a - b * ti) ** 2) / (n - 2) / np.sum((ti - ti.mean()) ** 2))
+        q = stats.t.ppf(0.5 + level / 2, n - 2)
+        est[i], lo[i], hi[i] = pct(b), pct(b - q * se), pct(b + q * se)
+        cls.append(classify(est[i], lo[i], hi[i], m, rp))
+    return est, lo, hi, np.asarray(cls)
+
+
 def score(name, method, est, lo, hi, cls, true_rate, bins, mu_hat=None, mu_lo=None, mu_hi=None, mu_true=None):
     cover = (lo <= true_rate) & (true_rate <= hi)
     thick = np.isin(cls, ["rapid_thickening", "gradual_thickening"])
@@ -2667,8 +2688,17 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
                              res.class_pooled.to_numpy(), true_rate, bins,
                              net["mu"], net["mu"] - z * net["se_mu"], net["mu"] + z * net["se_mu"], mu_true),
                      "rep": rep})
+        # per-site OLS, the method of recent syntheses: scored with its 90 % interval like
+        # the others, plus the share of sites with a trend at p < 0.05 (95 % interval
+        # excludes 0), the test those papers report
+        est, lo, hi, cls = ols_site(sim, cfg, 0.90)
+        _, lo95, hi95, _ = ols_site(sim, cfg, 0.95)
+        rows.append({**score(scen, "ols_site", est, lo, hi, cls, true_rate, bins),
+                     "trend_p05": float(np.mean((lo95 > 0) | (hi95 < 0))),
+                     "wrong_p05": float(np.mean(((lo95 > 0) & (true_rate <= 0)) | ((hi95 < 0) & (true_rate >= 0)))),
+                     "rep": rep})
         print(f"{scen} rep {rep}: " + "; ".join(f"{r['method']} cov {r['coverage90']:.2f} wrong {r['wrong_direction']:.3f} "
-                                                f"resolved {r['resolved']:.2f}" for r in rows[-4:]), flush=True)
+                                                f"resolved {r['resolved']:.2f}" for r in rows[-5:]), flush=True)
     return rows
 
 
