@@ -355,7 +355,7 @@ if have_sens
     yticks(ax, 1:nrun); yticklabels(ax, flipud(strrep(sf.run, '_', ' '))); ylim(ax, [0.5 nrun + 0.5]);
     xlim(ax, [min([0; sf.B_mean_expected]) - 0.5, max(sf.A_network_hi95) + 0.5]);
     xlabel(ax, 'Rate of ALT change (% per decade)');
-    legend(ax, hS, sl, 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', 'FontSize', FONT - 1);
+    legend(ax, hS, sl, 'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
     save_figure(fig, OUT, 'FigS2_sensitivity');
 end
 
