@@ -113,7 +113,7 @@ too narrow for a statement about the permafrost region.
 
 See the top of `3_aldi.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (30-40 minutes, `data/3_aldi_sensitivity/`). `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
+`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below). `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
 
 ## Results on run 7 (229 sites, 4,550 site-years, 41 regions)
 
@@ -237,6 +237,66 @@ B (8 networks per scenario): residual coverage 0.90 with the fitted truth (resid
 error of 20 % of its variance. That error, about four times the real one (ERA5-Land vs
 POWER), lowers k by 0.05 and moves 0.2-0.3 %/dec from expected into residual. With k = 0
 (ALT ignores TDD) the residual coverage stays 0.89 and the expected trend is unbiased.
+
+### Thaw-subsidence bounds (sensitivity runs `subsidence_0.2`, `_0.5`, `_1.0`; added 2026-11-09)
+
+A probe measures ALT from the ground surface, and so do the GSC Mackenzie thaw tubes read
+against the surface. Where ground ice melts the surface sinks, so these series miss part of
+the deepening of the permafrost table and their trend is too small (Smith et al. 2024: thaw
+penetration about 8 cm/decade against about 1 cm/decade of ALT in the Mackenzie Valley).
+The three runs add 0.2, 0.5 or 1.0 cm/yr of subsidence, counted from each record's first
+year, to the probe and tube ALT of the series on medium- or high-ice ground of the IPA map
+(published rates in undisturbed tundra: 0.4-1.0 cm/yr at Utqiagvik 2003-2015, Streletskiy
+et al. 2017; 0.4 cm/yr median in the Mackenzie Valley, Smith et al. 2024; 12-15 cm in 18
+years on the North Slope, Nyland et al. 2021), and refit A and B. They bound how much the
+network rate and the B residual can grow; they are not a correction (no site has its own
+subsidence record here). Fig 5 of `paper_figures.m` marks the B means of the three runs.
+
+## Paper checks (`paper_checks`, `--checks`, `data/3_aldi_checks/`; added 2026-11-09)
+
+Computed from the outputs of the main run (and of `--sensitivity` for the 2000-2024 cm
+row), with no refit; about a minute. They turn the novelty of the paper (its uncertainty
+accounting) into numbers a reader can compare with the usual analysis:
+
+- **Years of record a site needs** (`aldi_v6_checks_detection.csv`, Table S4), per method
+  family. With the fitted noise (each family's AR(1) coefficient and sigma) the SD of a
+  trend from a given set of years is exact, so the chance of each class follows from the
+  true rate. Two noise levels: in the network (the shared region-year anomalies removed,
+  as the hierarchical model does) and alone (left in, as a per-site test). For consecutive
+  years this is the detection time of Weatherhead et al. (1998), written for annual values:
+  n* = [C sqrt(12) sigma sqrt((1 + rho)/(1 - rho)) / |w0|]^(2/3), with C = 2.93 for
+  thickening at 90 % and 3.29 for showing "stable"; the table gives both.
+- **Expected shares by record length** (`aldi_v6_checks_by_span.csv`, Table S5): the share
+  of sites expected to stay unresolved from each record's own years and noise, beside the
+  observed share (the dashes of Fig 3). Pooling toward the region narrows the hierarchical
+  intervals further, so its expected share is an upper bound.
+- **The standard per-site test on the same series**: OLS of log ALT on year with the
+  t (F) test at p < 0.05 (the test of recent CALM syntheses, e.g. Streletskiy et al. 2026),
+  Benjamini-Hochberg false-discovery-rate q values, the same 90 % class rules on its
+  intervals, and from the noise model its power, its false-positive rate with no trend
+  (above 5 % because the years are autocorrelated), and the sign error (Type S) and
+  exaggeration (Type M) of its significant rates (Gelman and Carlin 2014), with the
+  hierarchical rate as the true rate.
+- **Shrinkage** (Fig S4): how far the hierarchical rate sits from the site's own OLS rate
+  toward its region's rate (0 = own rate, 1 = region rate), by record length; the class a
+  site with no data would get from its region alone; the regional share of the between-site
+  spread of trends (tau_region^2 / (tau_region^2 + tau_site^2)).
+- **Expected class counts** (sums of the band probabilities) and the sites with
+  P(rate > 5 %/dec) > 0.9.
+- **TDD share of the variance vs share of the trend**: R2 of ALT on sqrt(TDD) with site
+  fixed effects (mostly differences between sites, the number reported as about 92 % by
+  Streletskiy et al. 2026), within sites, and year to year (each site detrended), beside
+  the share of the trend that TDD explains (B main expected / total). The k = 0.5 run (B
+  kfixed) is the bound for an attenuated k: errors in TDD pull a fitted k toward 0, and
+  Stefan's exponent is about the most the expected part can take.
+- **Residual by ground ice and method** (`aldi_v6_checks_ice_method.csv`, Table S6): the
+  low-minus-high ice contrast within regions, per method family, since probes and
+  surface-referenced tubes carry the subsidence bias and ground temperatures do not.
+- **Rates in cm** (`aldi_v6_checks_cm.csv`, Table S7): site rates times the site's fitted
+  ALT, and the per-site OLS on ALT in cm as in Streletskiy et al. (2026) and Lin et al.
+  (EGUsphere-2026-841), beside their published values and Smith et al. (2024).
+- **MCMC diagnostics** of every fit of the main run (Table S8) and the count of sites whose
+  survey date drifts by more than 14 days over the record.
 
 ## Spatial checks (`spatial_checks`, also `--spatial`)
 
