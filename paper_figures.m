@@ -106,7 +106,7 @@ set(ax, 'YDir', 'normal');
 for la = [60 70 80]                                     % parallels
     [x, y] = ease_xy(la * ones(1, 181), 0:2:360);
     plot(ax, x, y, ':', 'Color', [0.45 0.45 0.45], 'LineWidth', 0.4);
-    [x, y] = ease_xy(la, -35);
+    [x, y] = ease_xy(la, -10);                          % labels clear of the legend
     text(ax, x, y, sprintf('%d°N', la), 'FontSize', FONT - 1, 'Color', [0.35 0.35 0.35]);
 end
 for lo = 0:45:315                                       % meridians
@@ -203,8 +203,7 @@ ylim(ax, [0 100]); xlim(ax, [0 12]);
 xticks(ax, [1.5 4.5 7.5 10.5]); xticklabels(ax, compose('%s\\newlinen=%d', SPAN_L', nbin'));
 text(ax, xpos, 101 * ones(size(xpos)), repmat(["S" "H"], 1, 4), 'HorizontalAlignment', 'center', ...
     'VerticalAlignment', 'bottom', 'FontSize', FONT - 1);
-xlabel(ax, 'Record length (years)'); ylabel(ax, 'Share of sites (%)');
-title(ax, 'Classes (S: per site, H: hierarchical)', 'FontWeight', 'normal');
+xlabel(ax, {'Record length (years)', 'S: per site, H: hierarchical'}); ylabel(ax, 'Share of sites (%)');
 legend(ax, fliplr(hb), fliplr(CLS_L), 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', ...
     'FontSize', FONT - 1);
 panel_label(ax, 'a');
@@ -221,7 +220,7 @@ if have_sim
         ml(end+1) = METH_L(m); %#ok<SAGROW>
     end
     xticks(ax, 1:4); xticklabels(ax, SPAN_L); xlim(ax, [0.6 4.4]); ylim(ax, [50 100]);
-    xlabel(ax, 'Record length (years)'); ylabel(ax, '90 % intervals containing the true trend (%)');
+    xlabel(ax, 'Record length (years)'); ylabel(ax, 'Coverage of 90 % intervals (%)');
     title(ax, 'Simulation: interval coverage', 'FontWeight', 'normal');
     legend(ax, hm, ml, 'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
     panel_label(ax, 'b');
@@ -238,8 +237,9 @@ if have_sim
     hb = bar(ax, V, 0.85, 'EdgeColor', 'none');
     for m = 1:numel(METH), hb(m).FaceColor = METH_C(m, :); end
     xticks(ax, 1:3);
-    xticklabels(ax, {sprintf('Trend called,\\newlineno true trend'), sprintf('Wrong sign'), ...
-        sprintf('Trend resolved')});
+    xticklabels(ax, {sprintf('Trend called,\\newlineno true trend'), sprintf('Wrong\\newlinesign'), ...
+        sprintf('Trend\\newlineresolved')});
+    xtickangle(ax, 0); xlim(ax, [0.5 3.5]);
     ylabel(ax, 'Share of sites (%)');
     title(ax, 'Simulation: decisions', 'FontWeight', 'normal');
     for g = 1:3
@@ -276,7 +276,7 @@ if any(burned)
 end
 xlabel(ax, 'Expected from air temperature (% per decade)');
 ylabel(ax, 'Residual trend (% per decade)');
-legend(ax, fliplr(h), fliplr(lab), 'Location', 'northwest', 'Box', 'off', 'FontSize', FONT - 1);
+legend(ax, fliplr(h), fliplr(lab), 'Location', 'northeast', 'Box', 'off', 'FontSize', FONT - 1);
 panel_label(ax, 'a');
 
 ax = nexttile(tl, 4, [1 2]); hold(ax, 'on');
@@ -287,7 +287,7 @@ hb = bar(ax, 1:numel(B), [E(:, 1) R(:, 1)], 0.6, 'stacked', 'EdgeColor', 'none')
 hb(1).FaceColor = [0.55 0.66 0.80]; hb(2).FaceColor = CLS_C(1, :);
 errorbar(ax, 1:numel(B), E(:, 1), E(:, 1) - E(:, 2), E(:, 3) - E(:, 1), 'k', 'LineStyle', 'none', 'CapSize', 3);
 errorbar(ax, 1:numel(B), E(:, 1) + R(:, 1), R(:, 1) - R(:, 2), R(:, 3) - R(:, 1), 'k', 'LineStyle', 'none', 'CapSize', 3);
-xticks(ax, 1:numel(B)); xticklabels(ax, {B.label}); xtickangle(ax, 0);
+xticks(ax, 1:numel(B)); xticklabels(ax, {B.label}); xtickangle(ax, 0); xlim(ax, [0.4 numel(B) + 0.6]);
 ylabel(ax, 'Mean site trend (% per decade)');
 legend(ax, hb, {'Expected from weather', 'Not explained by weather'}, 'Location', 'northoutside', 'Box', 'off');
 panel_label(ax, 'b');
@@ -353,24 +353,26 @@ if have_sens
 
     fig = new_figure(FIG_WIDTH_CM, 8);
     tl = tiledlayout(fig, 1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
-    nrun = height(sens); yy = (nrun:-1:1)';
+    sf = sens(~isnan(sens.A_network_rate), :);           % margins_* runs only reclassify: no rates
+    nrun = height(sf); yy = (nrun:-1:1)';
     ax = nexttile(tl); hold(ax, 'on');
     patch(ax, [nw(2) nw(3) nw(3) nw(2)], [0.5 0.5 nrun + 0.5 nrun + 0.5], CLS_C(1, :), 'FaceAlpha', 0.1, ...
         'EdgeColor', 'none');
-    hE = errorbar(ax, sens.A_network_rate, yy, sens.A_network_rate - sens.A_network_lo95, ...
-        sens.A_network_hi95 - sens.A_network_rate, 'horizontal', 'o', 'Color', 'k', 'MarkerFaceColor', 'k', ...
+    hE = errorbar(ax, sf.A_network_rate, yy, sf.A_network_rate - sf.A_network_lo95, ...
+        sf.A_network_hi95 - sf.A_network_rate, 'horizontal', 'o', 'Color', 'k', 'MarkerFaceColor', 'k', ...
         'MarkerSize', 3, 'CapSize', 2);
-    hM = plot(ax, sens.A_mean_site_rate, yy, 's', 'Color', [0.45 0.45 0.45], 'MarkerSize', 4);
-    yticks(ax, 1:nrun); yticklabels(ax, flipud(strrep(sens.run, '_', ' '))); ylim(ax, [0.5 nrun + 0.5]);
+    hM = plot(ax, sf.A_mean_site_rate, yy, 's', 'Color', [0.45 0.45 0.45], 'MarkerSize', 4);
+    yticks(ax, 1:nrun); yticklabels(ax, flipud(strrep(sf.run, '_', ' '))); ylim(ax, [0.5 nrun + 0.5]);
+    xlim(ax, [min(sf.A_network_lo95) - 0.4, max(sf.A_network_hi95) + 0.4]);
     xlabel(ax, 'ALT change (% per decade)');
     legend(ax, [hE hM], {'Network rate (95 %)', 'Mean of sites'}, 'Location', 'southoutside', 'Box', 'off');
     panel_label(ax, 'a');
     ax = nexttile(tl); hold(ax, 'on');
-    hS = plot(ax, sens.B_mean_expected, yy, 'o', 'Color', [0.55 0.66 0.80], 'MarkerFaceColor', [0.55 0.66 0.80], 'MarkerSize', 4);
-    hS(2) = plot(ax, sens.B_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerFaceColor', CLS_C(1, :), 'MarkerSize', 4);
+    hS = plot(ax, sf.B_mean_expected, yy, 'o', 'Color', [0.55 0.66 0.80], 'MarkerFaceColor', [0.55 0.66 0.80], 'MarkerSize', 4);
+    hS(2) = plot(ax, sf.B_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerFaceColor', CLS_C(1, :), 'MarkerSize', 4);
     sl = {'Expected, air temperature', 'Residual, air temperature'};
-    if ismember('Bwm_mean_residual', sens.Properties.VariableNames)
-        hS(3) = plot(ax, sens.Bwm_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerSize', 4);
+    if ismember('Bwm_mean_residual', sf.Properties.VariableNames)
+        hS(3) = plot(ax, sf.Bwm_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerSize', 4);
         sl{3} = 'Residual, all weather + memory';
     end
     xline(ax, 0, ':', 'Color', [0.4 0.4 0.4]);
@@ -394,7 +396,7 @@ if ismember('pf_ice', res.Properties.VariableNames)
         text(ax, i, max(rs) + 2, sprintf('n=%d', sum(k)), 'HorizontalAlignment', 'center', 'FontSize', FONT - 1);
     end
     yline(ax, 0, ':');
-    xticks(ax, 1:3); xticklabels(ax, ICE + " ice"); xlim(ax, [0.5 3.5]);
+    xticks(ax, 1:3); xticklabels(ax, ICE + " ice"); xlim(ax, [0.5 3.5]); ylim(ax, [min(rs) - 2, max(rs) + 6]);
     ylabel(ax, 'Residual trend (% per decade)'); title(ax, 'All sites', 'FontWeight', 'normal');
     panel_label(ax, 'a');
     ax = nexttile(tl); hold(ax, 'on');
