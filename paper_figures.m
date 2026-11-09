@@ -302,7 +302,7 @@ if have_sens
             'MarkerFaceColor', [0.6 0.6 0.6], 'MarkerSize', 5, 'LineWidth', 0.8);
         lab(end+1) = "Mean with thaw subsidence added";
         for r = find(tf & sub_runs ~= "main")
-            text(ax, sens.B_mean_expected(loc(r)) + 0.5, sens.B_mean_residual(loc(r)), ...
+            text(ax, sens.B_mean_expected(loc(r)) + 2, sens.B_mean_residual(loc(r)), ...
                 "+" + erase(sub_runs(r), "subsidence_") + " cm/yr", 'FontSize', FONT - 1, ...
                 'VerticalAlignment', 'middle', 'BackgroundColor', 'w', 'Margin', 0.5);
         end
@@ -316,6 +316,7 @@ end
 h(end+1) = plot(ax, bm(1, 1), bm(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'k', 'MarkerSize', 7);
 lab(end+1) = "Mean of sites (main fit)";
 xlim(ax, [floor(min(res.expected_lo)) - 0.5, ceil(max(res.expected_hi)) + 0.5]);
+ylim(ax, [floor(min(res.resid_lo)) - 1, ceil(max(res.resid_hi)) + 1]);
 xlabel(ax, 'Expected from air temperature (% per decade)');
 ylabel(ax, 'Residual trend (% per decade)');
 legend(ax, h, lab, 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', 'FontSize', FONT - 1);
@@ -666,7 +667,7 @@ if have_ck
             k = im.family == f & im.pf_ice == ICE(j);
             if any(k), v(j) = im.mean_resid(k); n(j) = im.sites(k); end
         end
-        k = im.family == f & im.pf_ice == "low_minus_high_within_regions";
+        k = im.family == f & im.pf_ice == "low_minus_high_within_regions" & f ~= "all";  % "all": under MODEL B
         s = sprintf('    %s: %.1f / %.1f / %.1f (%d / %d / %d)', f, v, n);
         if any(k)
             s = [s sprintf('; low minus high within %d shared regions %+.1f (%+.1f to %+.1f)', im.sites(k), ...
