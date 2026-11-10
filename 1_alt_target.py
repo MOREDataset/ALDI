@@ -160,6 +160,15 @@ CONFIG = {
     # used. Other sensors are not checked: a cool moss-layer sensor near the surface
     # (Parks Canada 2.5 cm) or a faulty deep one does not enter the interpolation.
     "inversion_tol_c": 1.0,
+    # Temperature series pinned to a sensor depth: when the sensor below the 0 C crossing
+    # stays just under 0 C while the one above is warm, the linear crossing lands a few cm
+    # above the lower sensor every year, wherever the thaw front is in between (GSC cable
+    # KP313T5: 99.5 +/- 0.2 cm over 12 years, sensors at 50 and 100 cm, the 100 cm sensor
+    # -0.08 to -0.15 C at most). The year-to-year change is then sensor spacing, not thaw.
+    # A series whose valid ALT has SD < pinned_sd_cm and < pinned_cv of its median over at
+    # least min_years years is flagged 'pinned_to_sensor' in every year and not used.
+    "pinned_sd_cm": 2.0,
+    "pinned_cv": 0.03,
     # Two records are the same physical site when they share a site key (CALM code or
     # station id), or lie within this distance and use the same method family.
     "dup_distance_km": 1.0,
@@ -307,7 +316,8 @@ CONFIG = {
 INVALID_FLAG_NAMES = ("calm_footnote", "talik", "possible_talik", "sensor_cap",
                       "wide_sensor_spacing", "lower_bound", "treatment", "early_measurement",
                       "no_refreeze", "borehole_equilibration", "disturbed_site",
-                      "profile_inversion", "sensor_problem", "sensor_moved", "check_only")
+                      "profile_inversion", "sensor_problem", "sensor_moved", "check_only",
+                      "pinned_to_sensor")
 INVALID_FLAGS = r"(?:^|;)(?:" + "|".join(INVALID_FLAG_NAMES) + r")(?:;|$)"
 
 # Flags that belong to the physical site, not to one source's copy of a value (applied
@@ -320,7 +330,7 @@ INVALID_FLAGS = r"(?:^|;)(?:" + "|".join(INVALID_FLAG_NAMES) + r")(?:;|$)"
 STATE_FLAGS = ("talik", "possible_talik")
 YEAR_STATE_FLAGS = ("no_refreeze",)
 COPY_FLAGS = ("calm_footnote", "sensor_cap", "lower_bound", "treatment", "early_measurement",
-              "borehole_equilibration", "disturbed_site")
+              "borehole_equilibration", "disturbed_site", "pinned_to_sensor")
 
 COUNTRY_ALIASES = {"United States": "USA", "United States of America": "USA", "US": "USA",
                    "United States (Alaska)": "USA", "Alaska": "USA",
@@ -4807,6 +4817,30 @@ def _has_flag(flags: pd.Series, name: str) -> pd.Series:
     return flags.fillna("").str.contains(r"(?:^|;)" + name + r"(?:;|$)")
 
 
+def pinned_series_flags(rec: pd.DataFrame) -> pd.DataFrame:
+    """
+    Temperature series whose ALT is set by a sensor depth (CONFIG pinned_sd_cm, pinned_cv):
+    at least min_years valid years whose SD is below pinned_sd_cm and below pinned_cv of
+    the median. Every year of such a series is flagged 'pinned_to_sensor' (not used); a
+    copy of it in another source gets the flag in site_state_flags (COPY_FLAGS).
+    """
+    rec = rec.copy()
+    rec["flag"] = rec.flag.fillna("")
+    temp = pd.Series(is_temperature_method(rec.method), index=rec.index)
+    valid = temp & ~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)
+    yr = rec[valid].groupby(["source", "source_site_id", "year"]).alt_cm.mean()
+    st = yr.groupby(level=[0, 1]).agg(["size", "std", "median"])
+    pin = st[(st["size"] >= CONFIG["min_years"]) & (st["std"] < CONFIG["pinned_sd_cm"])
+             & (st["std"] < CONFIG["pinned_cv"] * st["median"])]
+    hit = temp & pd.Series(list(zip(rec.source, rec.source_site_id)), index=rec.index).isin(set(pin.index))
+    rec["flag"] = add_flag(rec.flag, hit, "pinned_to_sensor")
+    for (src, sid), r in pin.iterrows():
+        log(f"    {src}:{sid}: ALT {r['median']:.1f} +/- {r['std']:.2f} cm over {int(r['size'])} valid "
+            f"years, pinned to a sensor depth: flagged pinned_to_sensor")
+    log(f"  pinned_to_sensor: {len(pin)} temperature series, {int(hit.sum())} site-years")
+    return rec
+
+
 def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
     """
     Flags that belong to the physical site rather than to one source. Without this step a
@@ -5114,7 +5148,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> lis
 
     log("\n== STAGE 3: build\n[merge]")
     rec = assign_physical_sites(drop_short_series(rec))
-    rec = site_state_flags(rec)
+    rec = site_state_flags(pinned_series_flags(rec))
     agree = check_source_agreement(rec)
     agree.to_csv(out / "check_source_agreement.csv", index=False)
     pre = check_g02189(rec)
