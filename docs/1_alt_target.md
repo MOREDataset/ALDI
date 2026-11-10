@@ -80,7 +80,7 @@ The Janssonhaugen shallow borehole and the change of Frost SN99875 to `check_onl
 
 Site joining was corrected on 10 November 2026: when several sites pass the agreement rules, a series now joins the one it agrees with best, not the nearest that passes. Two series moved: Kytalyk Allaiha, a copy of CALM R31, had been joined to CALM R31A (1 km away from R31), which gave R31A five years that are not its own; and the Canada collection's KP313-T4 had been joined to the GSC cable KP313T2 instead of its copy KP313T4 (four cables share one coordinate). CALM R31A then has 5 valid years and drops out: 366 sites, 6,697 valid site-years, ALDI-eligible sites unchanged at 224.
 
-Known limitation, kept on purpose (decision of 10 November 2026): ALT pinned to a sensor depth. Seven temperature series have valid ALT that varies by less than 2 cm (SD) over 8 or more years: the GSC cables KP313T5 (99.5 ± 0.2 cm, 12 years), 12TC01 (99.0 ± 0.4), T6UPLAND (163.6 ± 0.7), CAL02 (98.3 ± 1.2), NCL02 (97.2 ± 1.3) and T5UPLAND (76.1 ± 1.8), and the GTN-P borehole 432 at Bolvansky (297.8 ± 0.2). In each, the sensor below the 0 °C crossing stays just under 0 °C (a maximum of -0.04 to -0.6 °C) while the sensor above is warm, so the interpolated crossing lands a few cm above the lower sensor every year, wherever the thaw front is in between. At 12TC01, CAL02 and KP313T5 the lower sensor sits in the zero curtain (-0.2 to 0 °C for most of July-October), so the thaw front reaches it or nearly does; at NCL02, T5UPLAND and T6UPLAND it stays at -0.3 to -0.6 °C, so the true thaw depth lies somewhere in the 50 cm gap and the value is probably too deep. Either way the year-to-year change is set by the sensor spacing, not by the thaw. The series stay in the data unflagged; four of them are ALDI-eligible (KP313T5, CAL02, NCL02, T5UPLAND), and their near-zero variance can pull ALDI trends toward zero. A rule that would flag them (SD below 2 cm and below 3 % of the median over at least 8 valid years) was written (branch `pinned-sensor`) but not adopted.
+ALT pinned to a sensor depth (rule adopted on 10 November 2026, after the test build). Eight temperature series have valid ALT that varies by less than 2 cm (SD) over 8 or more years: the GSC cables KP313T5 (99.5 ± 0.2 cm, 12 years), 12TC01 (99.0 ± 0.4), T6UPLAND (163.6 ± 0.7), CAL02 (98.3 ± 1.2), NCL02 (97.2 ± 1.3) and T5UPLAND (76.1 ± 1.8), the GTN-P borehole 432 at Bolvansky (297.8 ± 0.2) and the Alaska station `tsp_alaska:US_A10_116`. In each, the sensor below the 0 °C crossing stays just under 0 °C (a maximum of -0.04 to -0.6 °C) while the sensor above is warm, so the interpolated crossing lands a few cm above the lower sensor every year, wherever the thaw front is in between. At 12TC01, CAL02 and KP313T5 the lower sensor sits in the zero curtain (-0.2 to 0 °C for most of July-October), so the thaw front reaches it or nearly does; at NCL02, T5UPLAND and T6UPLAND it stays at -0.3 to -0.6 °C, so the true thaw depth lies somewhere in the 50 cm gap and the value is probably too deep. Either way the year-to-year change is set by the sensor spacing, not by the thaw. No other definition frees them: in the test build of 10 November 2026 the deepest daily 0 °C crossing varied by only 0.3-1.9 cm at the same series, and an extrapolation from the thawed sensors is not possible where only one sensor above the crossing thawed. They are therefore flagged `pinned_to_sensor` in every year and not used (SD below 2 cm and below 3 % of the median over at least 8 valid years; CONFIG `pinned_sd_cm`, `pinned_cv`; 87 site-years). Without the rule the build has 366 sites and 234 ALDI-eligible sites; with it, 359 and 231 (CAL02, KP313T5 and T5UPLAND drop out).
 
 One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 2007-2021). Isaksen (MET Norway) answered the Janssonhaugen request on 10 November 2026 with the shallow borehole P11 (`metno_janssonhaugen`); the data after the August 2025 logger upgrade are to follow.
 
@@ -145,8 +145,16 @@ Values with these flags stay in the files but are not used for the 8-year count 
 the ALDI input: `lower_bound`, `wide_sensor_spacing`, `no_refreeze`, `talik`,
 `possible_talik`, `sensor_cap`, `calm_footnote`, `early_measurement`, `treatment`,
 `borehole_equilibration`, `profile_inversion`, `disturbed_site`, `sensor_problem`,
-`sensor_moved` (NEON), `check_only` (G02189, Frost SN99875). A `check_only` series never
+`sensor_moved` (NEON), `check_only` (G02189, Frost SN99875), `pinned_to_sensor`. A `check_only` series never
 passes its flags to the other sources of its site.
+
+- `pinned_to_sensor`: a temperature series whose valid ALT varies by less than 2 cm (SD, and
+  less than 3 % of its median) over at least 8 years. The sensor below the 0 °C crossing
+  stays just under 0 °C while the one above is warm, so the interpolated crossing lands a
+  few cm above the lower sensor every year, wherever the thaw front is in between (GSC
+  cable KP313T5: 99.5 ± 0.2 cm over 12 years, sensors at 50 and 100 cm). The
+  year-to-year change is sensor spacing, not thaw, so every year of the series is flagged,
+  and copies of its values in other sources too.
 
 - `possible_talik`: Bonanza Creek LTER probing (interior Alaska). The probe, with
   extensions, is pushed to the first hard frozen ground. Once the winter frost no longer
