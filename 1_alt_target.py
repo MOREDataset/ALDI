@@ -71,7 +71,9 @@ import hashlib
 import io
 import json
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import time
 import zipfile
@@ -188,6 +190,18 @@ CONFIG = {
     # every year (a different way of placing the 0 C depth), so the agreement rules kept
     # the same borehole apart as two sites; CALM's values stay first (priority).
     "frost_calm_code": {"SN15270": "N2"},
+    # The UiO file of the same Juvvasshoe PACE borehole (juvP, 10 m from SN15270) joins
+    # CALM N2 the same way.
+    "uio_calm_code": {"juvP": "N2"},
+    # Same borehole served by two products (rule e of assign_physical_sites): the series on
+    # the left joins the site of the series on the right, which ranks first. The UiO file of
+    # Juvflye BH1 matches Frost SN15265 within 0-3 cm in 2009-2012 but reads 40-100 cm
+    # deeper from 2014, so the agreement rules made it a second site of one borehole. The
+    # other two pairs join by agreement anyway; listing them keeps that from depending on
+    # the tolerance.
+    "force_join": {"uio_boreholes:UIO_juv1": "metno_frost:METNO_SN15265",
+                   "uio_boreholes:UIO_juv3": "metno_frost:METNO_SN15290",
+                   "uio_boreholes:UIO_isk2": "metno_frost:METNO_SN97710"},
     # NEON re-surveys its sensors and writes a new position row each time, mostly with
     # the same depth. A sensor counts as moved (frost heave) when its depth changes by
     # more than this within the plot-year.
@@ -212,7 +226,10 @@ CONFIG = {
                  # (UAF site files and NEON rank after the sources they repeat, so site
                  # ids stay as they were)
                  "gtnp_platform_alt": 3, "gtnp_platform": 4, "tsp_alaska": 4, "uaf_sites": 5,
-                 "neon": 5, "syrdakh": 4, "metno": 4, "metno_frost": 4, "g02189": 8, "other": 7},
+                 "neon": 5, "syrdakh": 4, "metno": 4, "metno_frost": 4, "g02189": 8,
+                 # UiO Norway/Iceland boreholes rank after Frost, which serves the same
+                 # loggers of four of them up to 2025
+                 "tarfala_pace": 4, "uio_boreholes": 5, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -255,7 +272,13 @@ CONFIG = {
     #   20 cm sensor of BYLOTPB 50 m away stays at 9-13 C; ALT falls from 50-66 to 30-39 cm.
     #   The last two look like a change of the sensors' depth below the surface (burial,
     #   ponding) or of the sensors, not of the ground.
-    "sensor_problem_years": {"canada_gt": {"LECCT02": [(1900, 2005)],
+    # uio_boreholes: from August 2013 the UiO file of Juvflye BH1 (juv1.dat) carries the
+    #   depth labels one sensor too deep (two from May 2018): each column then equals the
+    #   Frost SN15265 sensor one label higher (0.00 C difference), and its 0.2 m column
+    #   holds a channel that matches no sensor. Its ALT reads 30-100 cm too deep, so
+    #   2013 onward is not used (the site keeps the Frost values).
+    "sensor_problem_years": {"uio_boreholes": {"UIO_juv1": [(2013, 2100)]},
+                             "canada_gt": {"LECCT02": [(1900, 2005)],
                                            "LECTOUR": [(1900, 2005), (2017, 2100)],
                                            "BYLOTPD": [(2013, 2100)]}},
 }
@@ -738,7 +761,8 @@ API = {
 API_FOLDERS = {"gtnp": "GTNP_platform", "tsp_alaska": "ADC_TSP_Alaska", "uaf_sites": "UAF_sites",
                "neon": "NEON_soil_temperature", "syrdakh": "Zenodo_Syrdakh",
                "g02189": "NSIDC_G02189", "metno": "METNO_permafrost", "metno_frost": "METNO_frost",
-               "calm_table": "CALM_GWU"}
+               "calm_table": "CALM_GWU", "tarfala_pace": "Tarfala_PACE",
+               "uio_boreholes": "UiO_Norway_Iceland"}
 TABLE_EXT = (".csv", ".txt", ".dat", ".xls", ".xlsx", ".tab")
 
 DOWNLOAD_REPORT: list[dict] = []
@@ -1222,6 +1246,29 @@ def download_frost(raw: Path) -> None:
                                     status="downloaded", note=f"{d.depth_m.nunique()} depths"))
 
 
+def download_uio_boreholes(raw: Path) -> None:
+    """Unpack 'Data Storage Paper.7z' (fetched from SOURCE_FILES) with py7zr, or with the
+    tar.exe of Windows 10/11 (bsdtar reads 7z), when it is not unpacked yet."""
+    base = raw / API_FOLDERS["uio_boreholes"]
+    arc = base / "Data Storage Paper.7z"
+    dest = base / "unpacked"
+    if not arc.exists() or any(dest.rglob("*.dat")):
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        import py7zr
+        with py7zr.SevenZipFile(arc) as z:
+            z.extractall(dest)
+    except ImportError:
+        tar = shutil.which("tar")
+        if not tar:
+            DOWNLOAD_REPORT.append(dict(source="uio_boreholes", file=str(arc), url="", status="get by hand",
+                                        note=f"unpack {arc.name} into {dest} (7-Zip, or pip install py7zr)"))
+            return
+        subprocess.run([tar, "-xf", str(arc), "-C", str(dest)], check=True)
+    log(f"  unpacked {arc.name}: {len(list(dest.rglob('*.dat')))} .dat files")
+
+
 DOWNLOADERS = {
     "calm_summary": download_calm_table,
     "gtnp_platform": download_gtnp_platform,
@@ -1232,6 +1279,7 @@ DOWNLOADERS = {
     "g02189": download_g02189,
     "metno": download_metno,
     "metno_frost": download_frost,
+    "uio_boreholes": download_uio_boreholes,
 }
 
 
@@ -3765,6 +3813,165 @@ def read_metno_frost(raw) -> pd.DataFrame:
     return finish(pd.concat(out, ignore_index=True), "metno_frost") if out else empty_records()
 
 
+# Tarfala PACE: position of the 100 m borehole Ta-1 and the 15 m borehole Ta-2 (GTN-P
+# database; the data files give no coordinates). Ridge at about 1550 m a.s.l.
+TARFALA_PACE = {
+    "100m": dict(file="PACE_100_m_thermistor_string.csv", lat=67.916791, lon=18.63382,
+                 depths_m=[0.2, 0.4, 0.8, 1.2, 1.6, 2, 2.5, 3, 3.5, 4, 5],
+                 name="Tarfala PACE borehole Ta-1 (100 m, Tarfalaryggen)"),
+    "15m": dict(file="PACE_15_m_thermistor_string.csv", lat=67.916678, lon=18.63352,
+                depths_m=[0.2, 0.4, 0.8, 1.2, 1.6, 2, 2.5, 3, 3.5, 4, 5, 7, 9, 10, 11, 13, 15],
+                name="Tarfala PACE borehole Ta-2 (15 m, Tarfalaryggen)"),
+}
+
+
+def read_tarfala_pace(raw) -> pd.DataFrame:
+    """
+    Tarfala PACE boreholes, Tarfalaryggen, northern Sweden (Stockholm University, figshare
+    doi:10.17045/sthlmuni.3171646, 2000-2014). Two boreholes about 18 m apart (100 m and
+    15 m deep), each with its own logger and thermistor string; 6-hourly readings, no
+    header: time, battery, logger temperature, two control channels, then one column per
+    thermistor (depths in TARFALA_PACE, from the data description). Logger error codes
+    (-273, -231, -113, -106 C) are removed (anything outside -60..40 C). Readings are
+    averaged per day (at least 2 of the 4 readings), then the 0 C rule gives ALT.
+    The two boreholes are one site, and two series of one source are never joined, so only
+    the borehole with more usable years is kept (the other is reported in the log).
+    """
+    out = []
+    for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        base = Path(root) / API_FOLDERS["tarfala_pace"]
+        for hole, info in TARFALA_PACE.items():
+            for f in sorted(base.rglob(info["file"])) if base.exists() else []:
+                d = pd.read_csv(f, header=None, na_values=["NaN", "nan", ""])
+                n = len(info["depths_m"])
+                if d.shape[1] != 5 + n:
+                    _unread("tarfala_pace", f.name, f"expected {5 + n} columns, found {d.shape[1]}")
+                    continue
+                d.columns = ["time", "batt", "tlogger", "c1", "c2"] + [f"t{i}" for i in range(n)]
+                d["time"] = pd.to_datetime(d.time, errors="coerce")
+                long = d.melt(id_vars="time", value_vars=[f"t{i}" for i in range(n)],
+                              var_name="col", value_name="temp_c")
+                long["temp_c"] = pd.to_numeric(long.temp_c, errors="coerce")
+                long.loc[~long.temp_c.between(-60, 40), "temp_c"] = np.nan
+                long["depth_cm"] = long.col.map({f"t{i}": round(z * 100, 1)
+                                                 for i, z in enumerate(info["depths_m"])})
+                long["day"] = long.time.dt.normalize()
+                daily = (long.dropna(subset=["temp_c", "day"])
+                             .groupby(["day", "depth_cm"]).temp_c.agg(["mean", "count"]).reset_index())
+                daily = daily[daily["count"] >= 2]
+                key = f"TARFALA_PACE_{hole}"
+                t = pd.DataFrame(dict(source_site_id=key, time=daily.day, depth_cm=daily.depth_cm,
+                                      temp_c=daily["mean"]))
+                site = pd.DataFrame([dict(source_site_id=key, site_name=info["name"], lat=info["lat"],
+                                          lon=info["lon"], country="Sweden",
+                                          site_note="mountain permafrost, about 1550 m a.s.l.; PACE borehole",
+                                          source_file=f"{f.parent.name}/{f.name}")])
+                r = records_from_profiles(t, site, "borehole_temp")
+                if len(r):
+                    out.append(r)
+    if not out:
+        return empty_records()
+    rec = finish(pd.concat(out, ignore_index=True), "tarfala_pace")
+    if rec.empty:
+        return rec
+    ok = rec.flag.eq("") & ~rec.censored
+    n_ok = ok.groupby(rec.source_site_id).sum().reindex(rec.source_site_id.unique(), fill_value=0)
+    keep = n_ok.idxmax()
+    log("  tarfala_pace: usable years per borehole " + ", ".join(f"{k} {int(v)}" for k, v in n_ok.items())
+        + f"; kept {keep}")
+    return rec[rec.source_site_id == keep].reset_index(drop=True)
+
+
+# University of Oslo mountain permafrost boreholes in Norway and Iceland (Etzelmüller et
+# al. 2023, NIRD doi:10.11582/2023.00128). The files give no coordinates: positions from
+# the GTN-P database (NORPERM for juvP and tr1), elevation from Table 1 of the paper.
+UIO_BOREHOLES = {
+    "isk1": ("Iskoras BH1", "Norway", 69.3023, 25.3364, 585),
+    "isk2": ("Iskoras BH2", "Norway", 69.3004, 25.3460, 591),
+    "gu1": ("Guolasjavri", "Norway", 69.3537, 21.2106, 780),
+    "jet1": ("Jetta", "Norway", 61.9008, 9.2847, 1560),
+    "juv1": ("Juvflye BH1", "Norway", 61.6761, 8.3650, 1851),
+    "juv3": ("Juvflye BH3 (Dugurdskampen)", "Norway", 61.6969, 8.3858, 1561),
+    "juv4": ("Juvflye BH4", "Norway", 61.6998, 8.3851, 1547),
+    "juv5": ("Juvflye BH5", "Norway", 61.7006, 8.3921, 1468),
+    "juvp": ("Juvvasshoe PACE borehole", "Norway", 61.6776, 8.3691, 1894),
+    "tr1": ("Tronfjell", "Norway", 62.1740, 10.7027, 1640),
+    "hag": ("Hagongur", "Iceland", 64.5563, -18.2416, 899),
+    "sau": ("Saudafell", "Iceland", 64.8836, -15.5022, 906),
+    "vop": ("Vopnafjordur", "Iceland", 65.6775, -14.5161, 892),
+    "gag": ("Gagnheidi", "Iceland", 65.2243, -14.2596, 931),
+}
+
+
+def _read_uio_dat(path: Path) -> pd.DataFrame:
+    """One UiO borehole file: a header line ('Date' or 'depth', then the sensor depths in m,
+    negative down), a line of '=', then one line per day. The date is always the first 11
+    characters (dd-Mon-yyyy); values follow in 14-character right-aligned columns and can
+    touch the date, so the rest of the line is split on blanks. Lines with the wrong
+    number of values are skipped."""
+    lines = path.read_text(encoding="latin-1").splitlines()
+    depths = [abs(float(x)) for x in lines[0].split()[1:]]
+    rows, bad = [], 0
+    for ln in lines[2:]:
+        if len(ln) < 12:
+            continue
+        vals = ln[11:].split()
+        if len(vals) != len(depths):
+            bad += 1
+            continue
+        rows.append([ln[:11]] + vals)
+    if bad:
+        log(f"    {path.name}: {bad} lines with a wrong number of values skipped")
+    d = pd.DataFrame(rows, columns=["date"] + [f"{z:g}" for z in depths])
+    d["date"] = pd.to_datetime(d.date, format="%d-%b-%Y", errors="coerce")
+    long = d.melt(id_vars="date", var_name="depth_m", value_name="temp_c")
+    long["temp_c"] = pd.to_numeric(long.temp_c, errors="coerce")
+    long["depth_cm"] = (long.depth_m.astype(float) * 100).round(1)
+    long.loc[~long.temp_c.between(-60, 40), "temp_c"] = np.nan
+    return long.dropna(subset=["date", "temp_c"]).rename(columns={"date": "time"})[["time", "depth_cm", "temp_c"]]
+
+
+def read_uio_boreholes(raw) -> pd.DataFrame:
+    """
+    UiO mountain permafrost boreholes in Norway and Iceland (Etzelmüller et al. 2023,
+    NIRD doi:10.11582/2023.00128; daily ground temperatures, 1999-2023). ALT by the 0 C
+    rule. Four of them are also served by Frost (isk2 = SN97710, juv1 = SN15265, juv3 =
+    SN15290, juvP = SN15270): the build joins them by position and agreement (rule c), and
+    juvP joins CALM N2 by its CALM code like SN15270 (CONFIG uio_calm_code). Ground and
+    air surface files (*_gst, *_sat) are not read.
+    """
+    temps, sites = [], []
+    for f in files(raw, "*.dat"):
+        if API_FOLDERS["uio_boreholes"] not in f.parts or re.search(r"_(gst|sat)$", f.stem, re.I):
+            continue
+        code = f.stem.lower()
+        if code not in UIO_BOREHOLES:
+            _unread("uio_boreholes", f.name, "not in UIO_BOREHOLES")
+            continue
+        name, country, lat, lon, elev = UIO_BOREHOLES[code]
+        key = f"UIO_{f.stem}"
+        t = _read_uio_dat(f)
+        if t.empty:
+            continue
+        temps.append(t.assign(source_site_id=key))
+        sites.append(dict(source_site_id=key, site_name=name, lat=lat, lon=lon, country=country,
+                          site_note=f"mountain permafrost borehole, {elev} m a.s.l. (University of Oslo)",
+                          calm_code=CONFIG["uio_calm_code"].get(f.stem, ""),
+                          source_file=f"{f.parent.name}/{f.name}"))
+    if not temps:
+        return empty_records()
+    rec = records_from_profiles(pd.concat(temps, ignore_index=True), pd.DataFrame(sites), "borehole_temp")
+    if rec.empty:
+        return empty_records()
+    rec = finish(rec, "uio_boreholes")
+    bad = pd.Series(False, index=rec.index)
+    for sid, periods in CONFIG["sensor_problem_years"]["uio_boreholes"].items():
+        for y0, y1 in periods:
+            bad |= (rec.source_site_id == sid) & rec.year.between(y0, y1)
+    rec["flag"] = add_flag(rec.flag, bad, "sensor_problem")
+    return rec
+
+
 def read_g02189(raw) -> pd.DataFrame:
     """
     NSIDC G02189 ('How permanent is permafrost'): soil temperatures at five Yakutian
@@ -3866,6 +4073,8 @@ ADAPTERS = {
     "metno": read_metno,
     "metno_frost": read_metno_frost,
     "g02189": read_g02189,
+    "tarfala_pace": read_tarfala_pace,
+    "uio_boreholes": read_uio_boreholes,
 }
 
 
@@ -3967,6 +4176,12 @@ SOURCES = {
                     "CC BY 4.0 (MET Norway; 'Data from The Norwegian Meteorological Institute')"),
     "g02189": ("NSIDC G02189 Russian station soil temperatures (check before 2000 only, never used as data)",
                "https://nsidc.org/data/g02189", "NSIDC (cite dataset)"),
+    "tarfala_pace": ("PACE-1-2 borehole temperature data 2000-2014, Tarfalaryggen, Sweden (Stockholm University, "
+                     "Tarfala Research Station)", "https://doi.org/10.17045/sthlmuni.3171646.v1", "CC BY 4.0"),
+    "uio_boreholes": ("Ground temperatures of the University of Oslo mountain permafrost boreholes in Norway and "
+                      "Iceland (Etzelmüller et al. 2023, The Cryosphere: 'Rapid warming and degradation of "
+                      "mountain permafrost in Norway and Iceland')", "https://doi.org/10.11582/2023.00128",
+                      "CC BY 4.0"),
 }
 
 # Reviewed but not used, with the reason (kept here so the inventory is complete).
@@ -4064,6 +4279,8 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
       (d) one is a copy of the other (within copy_km, >= 5 shared years, median
           |difference| <= copy_agree_cm and correlation >= copy_min_r), whatever the
           method names.
+      (e) CONFIG force_join names it as the same borehole as a series of a preferred
+          source (two products of one logger that disagree, so rules b-d keep them apart).
     Two different site keys are never joined, and neither are two series of the same
     source (the source itself lists them as different plots, e.g. the Eight Mile Lake
     thaw-gradient sites or the Kolyma water-balance plots, even when they share a
@@ -4088,6 +4305,12 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
         match = None
         if r.site_key:
             match = next((s for s in reps if s["site_key"] == r.site_key), None)
+        forced = CONFIG["force_join"].get(f"{r.source}:{r.source_site_id}")
+        if match is None and forced:                                         # rule (e)
+            sid = site_of.get(tuple(forced.split(":", 1)))
+            match = next((s for s in reps if s["site_id"] == sid), None)
+            if match is not None:
+                log(f"    {key[0]}:{key[1]} joined to {sid} (CONFIG force_join)")
         if match is None and reps:
             lat = np.array([s["lat"] for s in reps])
             lon = np.array([s["lon"] for s in reps])
@@ -4559,15 +4782,28 @@ def require(modules):
 
 def publish(work: Path, final: Path) -> None:
     """The build succeeded: the current output becomes data/previous/<name> (one copy is
-    kept), and the new one takes its place."""
+    kept), and the new one takes its place. Folders are renamed, not copied: on Windows a
+    folder open in Explorer, Excel or a terminal cannot be renamed, so each rename is
+    tried for 10 s and then the script stops with a message (nothing is half moved)."""
     import shutil
+
+    def rename(src: Path, dst: Path) -> None:
+        for _ in range(5):
+            try:
+                src.rename(dst)
+                return
+            except PermissionError:
+                time.sleep(2)
+        sys.exit(f"Could not rename {src} to {dst}: a program (Explorer, Excel, a terminal) is "
+                 f"using it. Close it and rename by hand. The new build is in {work}.")
+
     if final.exists():
         prev = final.parent / "previous" / final.name
         if prev.exists():
             shutil.rmtree(prev)
         prev.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(final), str(prev))
-    shutil.move(str(work), str(final))
+        rename(final, prev)
+    rename(work, final)
 
 
 def main() -> None:
@@ -4752,6 +4988,10 @@ samoylov_calm,Samoylov/PANGAEA_961875_Calm_lv1_2022.dat,https://download.pangaea
 samoylov_calm,Samoylov/PANGAEA_973715_Calm_lv1_2024.dat,https://download.pangaea.de/dataset/973715/files/Calm_lv1_2024.dat,97a5e1406d500d5962be9de85a60db3162d3001a673eb5078b56a2d98d8714be,1965,https://creativecommons.org/licenses/by/4.0/,open,Calm data at station Samoylov (2024)
 samoylov_calm,Samoylov/calm_lv1_V201908.zip,https://store.pangaea.de/Publications/Boike-etal_2019_V201908/calm_lv1_V201908.zip,53913c9834df033c7b594372627c1cd1fdb830fd0cf487859b9bf6d2bdc7ce83,25257,CC-BY-4.0,open,"Calm data at station Samoylov (2002-2018, level 1, version 201908)"
 stordalen,Abisko_Tornetrask/Stordalen_Active_Layer_Water_Table_03-17.xlsx,https://zenodo.org/api/records/10420396/files/Active_Layer_Water_Table_03-17.xlsx/content,4be42209334dc2821d99af67f7460bcc1c403626af805ed3b4cc87dec56229c1,194902,CC-BY-4.0,open,Manual active layer and water table depth measurements from the autochamber sites at Stordalen Mire (2003-2017)
+tarfala_pace,Tarfala_PACE/figshare_3171646_v1/PACE_100_m_thermistor_string.csv,https://ndownloader.figshare.com/files/4938394,76b2ec24ac4d1b75de5a889f1b4dc5c975260c1f330a0feabf17fbeae2b50941,1856934,CC BY 4.0,open,"PACE-1-2 bore hole temperature data 2000-2014, Tarfalaryggen (Stockholm University, figshare 3171646 v1)"
+tarfala_pace,Tarfala_PACE/figshare_3171646_v1/PACE_15_m_thermistor_string.csv,https://ndownloader.figshare.com/files/4938421,0291992987294206f765a53464ff248a4e334e6b7878f6c0e9e0eefa39f29def,2509822,CC BY 4.0,open,"PACE-1-2 bore hole temperature data 2000-2014, Tarfalaryggen (Stockholm University, figshare 3171646 v1)"
+tarfala_pace,Tarfala_PACE/figshare_3171646_v1/PACE_Daily_data_2001-2014.csv,https://ndownloader.figshare.com/files/4938409,25d0934cebed2642fac59f6cdfbc843fc093cbc866e84f63d3d5e22225f6b3ea,1147817,CC BY 4.0,open,"PACE-1-2 bore hole temperature data 2000-2014, Tarfalaryggen (Stockholm University, figshare 3171646 v1)"
+tarfala_pace,Tarfala_PACE/figshare_3171646_v1/TRS-PACE 2000-2014 data description.pdf,https://ndownloader.figshare.com/files/4938403,7e620078ef0bdb7dae48d389096cfed7d56ab7cf9acebf00e89771d5537b4759,710097,CC BY 4.0,open,"PACE-1-2 bore hole temperature data 2000-2014, Tarfalaryggen (Stockholm University, figshare 3171646 v1)"
 uaf_stations,UAF_PermafrostLab/DH1_07.xls,http://web.archive.org/web/2026id_/http://permafrost.gi.alaska.edu/sites/default/files/site_data/DH1_07.xls,f739b0b85812a1df71142ae90e93caf51460cd44fe65b882bf8b51b72da8c177,118784,UAF Permafrost Lab public data (cite Romanovsky et al.),open,UAF Permafrost Lab site DH1: Deadhorse
 uaf_stations,UAF_PermafrostLab/DH1_08.xls,http://web.archive.org/web/2026id_/http://permafrost.gi.alaska.edu/sites/default/files/site_data/DH1_08.xls,63a5f3070fef7eb494030f4b7563eb4fed362767426df2fbdc4d4842111cedc7,128000,UAF Permafrost Lab public data (cite Romanovsky et al.),open,UAF Permafrost Lab site DH1: Deadhorse
 uaf_stations,UAF_PermafrostLab/DH1_daily_2010.xls,http://web.archive.org/web/2026id_/http://permafrost.gi.alaska.edu/sites/default/files/site_data/DH1_daily_2010.xls,04a60e8621ca26cb01320cac505d3564cdcf162d6af1ea50153e6093bc430c93,117760,UAF Permafrost Lab public data (cite Romanovsky et al.),open,UAF Permafrost Lab site DH1: Deadhorse
@@ -4797,6 +5037,7 @@ uaf_stations,UAF_PermafrostLab/dh2_daily_2012.xls,http://web.archive.org/web/202
 uaf_stations,UAF_PermafrostLab/fb1_daily_2009.xls,http://web.archive.org/web/2026id_/http://permafrost.gi.alaska.edu/sites/default/files/site_data/fb1_daily_2009.xls,48fb8ba69d7544216779dcb43005df4885d732538b995887d5f1129311e12bc8,128512,UAF Permafrost Lab public data (cite Romanovsky et al.),open,UAF Permafrost Lab site FB1: Franklin Bluffs (borehole)
 uaf_stations,UAF_PermafrostLab/fb1_daily_2012.xls,http://web.archive.org/web/2026id_/http://permafrost.gi.alaska.edu/sites/default/files/site_data/fb1_daily_2012.xls,61e7d811577497a427bb3f3249c1997e7463ba35e5b0e2399b094c4c994bbad6,134656,UAF Permafrost Lab public data (cite Romanovsky et al.),open,UAF Permafrost Lab site FB1: Franklin Bluffs (borehole)
 uaf_stations,UAF_PermafrostLab/sagmat_daily_2012.xls,http://web.archive.org/web/2026id_/http://permafrost.gi.alaska.edu/sites/default/files/site_data/sagmat_daily_2012.xls,68c9293c47261b69c5201ea7a90e07ba0f673390b8a9c7ac27e08af1134fefcf,154112,UAF Permafrost Lab public data (cite Romanovsky et al.),open,UAF Permafrost Lab site SG2: SagMAT (Moist Acidic Tundra)
+uio_boreholes,UiO_Norway_Iceland/Data Storage Paper.7z,https://ns9999k.webs.sigma2.no/10.11582_2023.00128/Data%20Storage%20Paper.7z,1871a77238184feabb44ce7e9f2979e786b984e17cd70ba84e628387d2a5255b,1577811,CC BY 4.0,open,"Permafrost data Norway Iceland (Etzelmüller, University of Oslo, NIRD 10.11582/2023.00128); unpacked by download_uio_boreholes"
 umiujaq_cable,NordicanaD_Borealis/SP3_QSRW0I/data_ta1_0114_post_cleaning.xlsx,https://borealisdata.ca/api/access/datafile/885133?format=original,52dbd5042a5134e13ad346dc21602fa96ad06bbddbfb228919ebd93028a5ff18,237668,CC-BY 4.0 http://creativecommons.org/licenses/by/4.0,open,"Subsurface ground temperature data from an instrumented permafrost mound, Tasiapik Valley, Umiujaq, Nunavik, Québec, Canada (2001-2024)"
 umiujaq_cable,NordicanaD_Borealis/SP3_QSRW0I/data_ta1_1424_post_cleaning.xlsx,https://borealisdata.ca/api/access/datafile/885142?format=original,feb8c1dac8890a5faa4ea3a33dc4bff5d8f6b3c408b79d2c1f2c9c55f8b0f4ff,537357,CC-BY 4.0 http://creativecommons.org/licenses/by/4.0,open,"Subsurface ground temperature data from an instrumented permafrost mound, Tasiapik Valley, Umiujaq, Nunavik, Québec, Canada (2001-2024)"
 umiujaq_cable,NordicanaD_Borealis/SP3_QSRW0I/data_ta2_1424_post_cleaning.xlsx,https://borealisdata.ca/api/access/datafile/885134?format=original,02f0345873874a3823808d93710039f98b7e9dca8a50b50258d5b80bf0db6ab3,437002,CC-BY 4.0 http://creativecommons.org/licenses/by/4.0,open,"Subsurface ground temperature data from an instrumented permafrost mound, Tasiapik Valley, Umiujaq, Nunavik, Québec, Canada (2001-2024)"
