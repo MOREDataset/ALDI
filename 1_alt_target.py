@@ -10,7 +10,9 @@ Writes  data/1_alt_target/      alt_multisource_annual.csv is the input of step 
 A new build goes to data/1_alt_target_building and replaces data/1_alt_target only when
 it finished without error; the build before is kept in data/previous/1_alt_target.
 NEON needs your own token for the session (PowerShell: $env:NEON_TOKEN="..."); without it
-NEON is skipped. The token is never written to a file.
+NEON is skipped. MET Norway's Frost API likewise needs your free client ID
+($env:FROST_CLIENT_ID="..."; the client secret is not needed). Neither is ever written to a
+file.
 
 This one script makes the ALT target used by ALDI and the causal analysis, from every
 source and every measuring method (probing grids, thaw tubes, ground-temperature
@@ -19,7 +21,7 @@ profiles). It has three stages, run in this order:
   1. DOWNLOAD  Every source file is fetched into the raw folder. Files whose link is known
                are listed in SOURCE_FILES (end of this script, with checksums); the
                sources served through an API (GTN-P data platform, Arctic Data Center,
-               NEON, Zenodo, NSIDC, MET Norway, CALM website) are queried here. Files
+               NEON, Zenodo, NSIDC, MET Norway THREDDS and Frost, CALM website) are queried here. Files
                already in the raw folder are not downloaded again. Sources that need a
                personal login or a data request are listed at the end of the run, with
                where to get them; put those files in the raw folder by hand.
@@ -205,7 +207,7 @@ CONFIG = {
                  # (UAF site files and NEON rank after the sources they repeat, so site
                  # ids stay as they were)
                  "gtnp_platform_alt": 3, "gtnp_platform": 4, "tsp_alaska": 4, "uaf_sites": 5,
-                 "neon": 5, "syrdakh": 4, "metno": 4, "g02189": 8, "other": 7},
+                 "neon": 5, "syrdakh": 4, "metno": 4, "metno_frost": 4, "g02189": 8, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -722,6 +724,7 @@ API = {
     "g02189": "https://noaadata.apps.nsidc.org/NOAA/G02189/",
     "metno_thredds": "https://thredds.met.no/thredds",
     "metno_catalog": "arcticdata/frost2netcdf-permafrost",
+    "frost": "https://frost.met.no",                      # MET Norway Frost API (client ID)
     "calm_page": "https://www2.gwu.edu/~calm/data/north.htm",
     # A download never exceeds this size (MB); larger files are listed, not fetched.
     "max_file_mb": 300,
@@ -729,7 +732,8 @@ API = {
 # Folder of each API source inside the raw folder (the readers look there).
 API_FOLDERS = {"gtnp": "GTNP_platform", "tsp_alaska": "ADC_TSP_Alaska", "uaf_sites": "UAF_sites",
                "neon": "NEON_soil_temperature", "syrdakh": "Zenodo_Syrdakh",
-               "g02189": "NSIDC_G02189", "metno": "METNO_permafrost", "calm_table": "CALM_GWU"}
+               "g02189": "NSIDC_G02189", "metno": "METNO_permafrost", "metno_frost": "METNO_frost",
+               "calm_table": "CALM_GWU"}
 TABLE_EXT = (".csv", ".txt", ".dat", ".xls", ".xlsx", ".tab")
 
 DOWNLOAD_REPORT: list[dict] = []
@@ -1095,6 +1099,124 @@ def download_metno(raw: Path) -> None:
                                         note=f"{type(e).__name__}: {e}"[:300]))
 
 
+def download_frost(raw: Path) -> None:
+    """
+    MET Norway Frost API (frost.met.no): every soil and ground temperature series of the
+    MET stations on permafrost, as a daily mean per depth (as the other temperature
+    sources), with the station position and name. "On permafrost": in Svalbard (north of
+    74 N) or with a sensor deeper than 2 m (the permafrost boreholes; weather stations
+    measure soil temperature to 1-2 m and on the mainland stand on seasonal frost only).
+    The MET permafrost stations on THREDDS (download_metno) come from the same database;
+    the reader keeps one copy of a station.
+    Needs a free Frost client ID (frost.met.no/auth/requestCredentials.html) for the
+    session, never stored:  PowerShell  $env:FROST_CLIENT_ID="<client ID>"
+    """
+    import base64
+    import os
+    folder = raw / API_FOLDERS["metno_frost"]
+    folder.mkdir(parents=True, exist_ok=True)
+    cid = os.environ.get("FROST_CLIENT_ID", "")
+    if not cid:
+        DOWNLOAD_REPORT.append(dict(source="metno_frost", file=str(folder), url=API["frost"],
+                                    status="get by hand",
+                                    note="Frost needs your client ID (free, frost.met.no/auth/"
+                                         "requestCredentials.html): set FROST_CLIENT_ID before the run"))
+        return
+    auth = {"Authorization": "Basic " + base64.b64encode(f"{cid}:".encode()).decode()}
+
+    def frost(path, **params):
+        """One Frost request; None when Frost has no data for it (404 / 412)."""
+        r = _http().get(f"{API['frost']}/{path}", params=params, headers=auth, timeout=300)
+        for k in range(4):
+            if r.status_code not in (429, 500, 502, 503, 504):
+                break
+            time.sleep(2 ** (k + 1))
+            r = _http().get(f"{API['frost']}/{path}", params=params, headers=auth, timeout=300)
+        if r.status_code in (404, 412):
+            return None
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+    # 1. every soil / ground temperature series Frost holds, and where its station is
+    elements = frost("elements/v0.jsonld", fields="id,name,unit", lang="en-US") or []
+    wanted = sorted(e["id"] for e in elements
+                    if re.search(r"(soil|ground)_temperature", e["id"]) and "P1M" not in e["id"]
+                    and not re.match(r"(min|max)\(", e["id"]))
+    series = []
+    for el in wanted:
+        for s in frost("observations/availableTimeSeries/v0.jsonld", elements=el) or []:
+            lev = s.get("level") or {}
+            series.append(dict(source_id=s["sourceId"].split(":")[0], element=s["elementId"],
+                               resolution=s.get("timeResolution", ""), valid_from=s.get("validFrom", ""),
+                               valid_to=s.get("validTo", ""), level_type=lev.get("levelType", ""),
+                               level=lev.get("value", np.nan), level_unit=lev.get("unit", "")))
+    series = pd.DataFrame(series)
+    if series.empty:
+        DOWNLOAD_REPORT.append(dict(source="metno_frost", file=str(folder), url=API["frost"],
+                                    status="failed", note=f"no soil temperature series (elements {wanted})"))
+        return
+    to_m = {"m": 1.0, "cm": 0.01, "mm": 0.001}
+    series["depth_m"] = series.level.astype(float).abs() * series.level_unit.map(to_m)
+    ids = sorted(series.source_id.unique())
+    st = []
+    for i in range(0, len(ids), 50):
+        for s in frost("sources/v0.jsonld", ids=",".join(ids[i:i + 50]), fields="id,name,geometry,masl") or []:
+            lon, lat = (s.get("geometry") or {}).get("coordinates", [np.nan, np.nan])[:2]
+            st.append(dict(source_id=s["id"], name=s.get("name", ""), lat=lat, lon=lon, masl=s.get("masl", np.nan)))
+    st = pd.DataFrame(st)
+    series = series.merge(st, on="source_id", how="left")
+    series.to_csv(folder / "available_series.csv", index=False)       # what Frost holds (all stations)
+    deep = series.groupby("source_id").depth_m.max()
+    keep = st[(st.lat >= 74) | st.source_id.map(deep).gt(2.0)].source_id
+    log(f"  Frost: {series.source_id.nunique()} stations with soil temperature, {len(keep)} on permafrost")
+
+    # 2. per station: daily mean per depth, one request per series and year (Frost serves
+    #    at most 100,000 values per request; a year of 10-minute values is 52,560)
+    for sid in keep:
+        cache = folder / f"{sid}_daily_mean.csv"
+        if cache.exists():
+            DOWNLOAD_REPORT.append(dict(source="metno_frost", file=str(cache), url=API["frost"],
+                                        status="already there", note=""))
+            continue
+        ss = series[(series.source_id == sid) & series.depth_m.notna()]
+        # per depth: a daily-mean element where Frost has one, else the sub-daily values
+        ss = ss.assign(daily=ss.element.str.contains("P1D"))
+        ss = ss[ss.daily == ss.groupby("depth_m").daily.transform("max")]
+        rows = []
+        try:
+            for s in ss.drop_duplicates(["element", "level", "level_unit"]).itertuples():
+                y0 = pd.Timestamp(s.valid_from).year if s.valid_from else 1950
+                y1 = pd.Timestamp(s.valid_to).year if s.valid_to else pd.Timestamp.now().year
+                lev = f"{float(s.level):g}"                  # 10.0 -> "10"
+                for y in range(y0, y1 + 1):
+                    obs = frost("observations/v0.jsonld", sources=sid, elements=s.element,
+                                levels=lev, referencetime=f"{y}-01-01/{y + 1}-01-01",
+                                fields="referenceTime,value,level,qualityCode") or []
+                    for o in obs:
+                        for v in o.get("observations", []):
+                            rows.append((o["referenceTime"][:10], s.depth_m, v.get("value"),
+                                         v.get("qualityCode", np.nan)))
+                    time.sleep(0.2)                      # be kind to the server
+        except Exception as e:
+            DOWNLOAD_REPORT.append(dict(source="metno_frost", file=str(cache), url=API["frost"],
+                                        status="failed", note=f"{type(e).__name__}: {e}"[:300]))
+            continue
+        if not rows:
+            DOWNLOAD_REPORT.append(dict(source="metno_frost", file=str(cache), url=API["frost"],
+                                        status="failed", note="no observations"))
+            continue
+        d = pd.DataFrame(rows, columns=["date", "depth_m", "temp_c", "quality"])
+        d["temp_c"] = pd.to_numeric(d.temp_c, errors="coerce")
+        info = st.set_index("source_id").loc[sid]
+        (d.groupby(["depth_m", "date"]).agg(temp_c=("temp_c", "mean"), n=("temp_c", "size"),
+                                           quality_max=("quality", "max")).reset_index()
+         .assign(lat=info.lat, lon=info.lon, title=f"{info['name']} ({sid})", station_id=sid,
+                 element=",".join(sorted(ss.element.unique())))
+         .to_csv(cache, index=False))
+        DOWNLOAD_REPORT.append(dict(source="metno_frost", file=str(cache), url=API["frost"],
+                                    status="downloaded", note=f"{d.depth_m.nunique()} depths"))
+
+
 DOWNLOADERS = {
     "calm_summary": download_calm_table,
     "gtnp_platform": download_gtnp_platform,
@@ -1104,6 +1226,7 @@ DOWNLOADERS = {
     "syrdakh": download_syrdakh,
     "g02189": download_g02189,
     "metno": download_metno,
+    "metno_frost": download_frost,
 }
 
 
@@ -3575,14 +3698,25 @@ def read_syrdakh(raw) -> pd.DataFrame:
     return finish(pd.concat(out, ignore_index=True), "syrdakh") if out else empty_records()
 
 
+def _frost_stations(raw) -> set[str]:
+    """Station numbers (SNxxxxx) downloaded from Frost (download_frost)."""
+    return {f.stem.replace("_daily_mean", "") for root in (raw if isinstance(raw, (list, tuple)) else [raw])
+            for f in (Path(root) / API_FOLDERS["metno_frost"]).glob("*_daily_mean.csv")}
+
+
 def read_metno(raw) -> pd.DataFrame:
     """MET Norway permafrost stations (files from download_metno): daily mean per
     depth; ALT by the 0 C crossing rule. Most stations start in 2019 (Janssonhaugen Vest
-    SN99874), so they reach the year threshold only from about 2027."""
+    SN99874), so they reach the year threshold only from about 2027. A station also
+    downloaded from Frost is read there (read_metno_frost), not here."""
     temps, sites = [], []
+    frost = _frost_stations(raw)
     for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
         for f in sorted((Path(root) / API_FOLDERS["metno"]).glob("*_daily_mean.csv")):
             d = pd.read_csv(f, parse_dates=["date"])
+            sn = re.search(r"SN\d+", f"{f.stem} {d.title.iloc[0] if len(d) else ''}")
+            if sn and sn.group(0) in frost:
+                continue
             key = f"METNO_{f.stem.replace('_daily_mean', '')}"
             temps.append(pd.DataFrame(dict(source_site_id=key, time=d.date,
                                            depth_cm=d.depth_m.abs() * 100, temp_c=d.temp_c)))
@@ -3592,6 +3726,37 @@ def read_metno(raw) -> pd.DataFrame:
         return empty_records()
     return finish(records_from_profiles(pd.concat(temps, ignore_index=True), pd.DataFrame(sites),
                                         "soil_temp"), "metno")
+
+
+def read_metno_frost(raw) -> pd.DataFrame:
+    """MET Norway stations on permafrost from the Frost API (files from download_frost):
+    daily mean per depth; ALT by the 0 C crossing rule. Method 'borehole_temp' when the
+    station has a sensor deeper than 2 m (a permafrost borehole), else 'soil_temp'."""
+    temps, sites = [], []
+    for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        for f in sorted((Path(root) / API_FOLDERS["metno_frost"]).glob("*_daily_mean.csv")):
+            d = pd.read_csv(f, parse_dates=["date"])
+            if d.empty:
+                continue
+            key = f"METNO_{f.stem.replace('_daily_mean', '')}"
+            temps.append(pd.DataFrame(dict(source_site_id=key, time=d.date,
+                                           depth_cm=d.depth_m.abs() * 100, temp_c=d.temp_c)))
+            country = "Norway (Svalbard)" if 74 <= d.lat.iloc[0] <= 81.5 else "Norway"
+            sites.append(dict(source_site_id=key, site_name=str(d.title.iloc[0]), lat=d.lat.iloc[0],
+                              lon=d.lon.iloc[0], country=country, source_file=f.name,
+                              deep=d.depth_m.abs().max() > 2.0))
+    if not temps:
+        return empty_records()
+    sites = pd.DataFrame(sites)
+    out = []
+    for deep, method in [(True, "borehole_temp"), (False, "soil_temp")]:
+        s = sites[sites.deep == deep].drop(columns="deep")
+        t = pd.concat(temps, ignore_index=True)
+        t = t[t.source_site_id.isin(s.source_site_id)]
+        if len(t):
+            out.append(records_from_profiles(t, s, method))
+    out = [o for o in out if len(o)]
+    return finish(pd.concat(out, ignore_index=True), "metno_frost") if out else empty_records()
 
 
 def read_g02189(raw) -> pd.DataFrame:
@@ -3693,6 +3858,7 @@ ADAPTERS = {
     "neon": read_neon,
     "syrdakh": read_syrdakh,
     "metno": read_metno,
+    "metno_frost": read_metno_frost,
     "g02189": read_g02189,
 }
 
@@ -3790,6 +3956,9 @@ SOURCES = {
     "metno": ("MET Norway permafrost stations (Svalbard and mainland Norway), THREDDS frost2netcdf-permafrost",
               "https://thredds.met.no/thredds/catalog/arcticdata/frost2netcdf-permafrost/catalog.html",
               "CC BY 4.0 (MET Norway)"),
+    "metno_frost": ("MET Norway Frost API: soil and ground temperatures of the MET stations in Svalbard and "
+                    "the permafrost boreholes (sensors deeper than 2 m)", "https://frost.met.no",
+                    "CC BY 4.0 (MET Norway; 'Data from The Norwegian Meteorological Institute')"),
     "g02189": ("NSIDC G02189 Russian station soil temperatures (check before 2000 only, never used as data)",
                "https://nsidc.org/data/g02189", "NSIDC (cite dataset)"),
 }

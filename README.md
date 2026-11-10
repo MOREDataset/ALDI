@@ -39,7 +39,8 @@ step, with its settings at the top.
 
 - **Step 1** rebuilds the ALT target from the raw files on the computer. `--download` first
   fetches new or missing source files (NEON then needs your token for that terminal:
-  `$env:NEON_TOKEN="..."`; it is never saved).
+  `$env:NEON_TOKEN="..."`, and MET Norway's Frost API your client ID:
+  `$env:FROST_CLIENT_ID="..."`; neither is ever saved).
 - **Step 2**, one-time setup: `py -3.12 -m pip install earthengine-api geopandas scikit-learn`,
   then `earthengine authenticate` (browser sign-in), then the first run with
   `--project YOUR-EE-PROJECT-ID` (remembered in `data/ee_project.txt`). `--test` checks 3
