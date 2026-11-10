@@ -272,7 +272,13 @@ CONFIG = {
     #   20 cm sensor of BYLOTPB 50 m away stays at 9-13 C; ALT falls from 50-66 to 30-39 cm.
     #   The last two look like a change of the sensors' depth below the surface (burial,
     #   ponding) or of the sensors, not of the ground.
-    "sensor_problem_years": {"canada_gt": {"LECCT02": [(1900, 2005)],
+    # uio_boreholes: from August 2013 the UiO file of Juvflye BH1 (juv1.dat) carries the
+    #   depth labels one sensor too deep (two from May 2018): each column then equals the
+    #   Frost SN15265 sensor one label higher (0.00 C difference), and its 0.2 m column
+    #   holds a channel that matches no sensor. Its ALT reads 30-100 cm too deep, so
+    #   2013 onward is not used (the site keeps the Frost values).
+    "sensor_problem_years": {"uio_boreholes": {"UIO_juv1": [(2013, 2100)]},
+                             "canada_gt": {"LECCT02": [(1900, 2005)],
                                            "LECTOUR": [(1900, 2005), (2017, 2100)],
                                            "BYLOTPD": [(2013, 2100)]}},
 }
@@ -3955,7 +3961,15 @@ def read_uio_boreholes(raw) -> pd.DataFrame:
     if not temps:
         return empty_records()
     rec = records_from_profiles(pd.concat(temps, ignore_index=True), pd.DataFrame(sites), "borehole_temp")
-    return finish(rec, "uio_boreholes") if len(rec) else empty_records()
+    if rec.empty:
+        return empty_records()
+    rec = finish(rec, "uio_boreholes")
+    bad = pd.Series(False, index=rec.index)
+    for sid, periods in CONFIG["sensor_problem_years"]["uio_boreholes"].items():
+        for y0, y1 in periods:
+            bad |= (rec.source_site_id == sid) & rec.year.between(y0, y1)
+    rec["flag"] = add_flag(rec.flag, bad, "sensor_problem")
+    return rec
 
 
 def read_g02189(raw) -> pd.DataFrame:
