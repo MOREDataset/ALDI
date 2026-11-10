@@ -190,6 +190,12 @@ CONFIG = {
     # every year (a different way of placing the 0 C depth), so the agreement rules kept
     # the same borehole apart as two sites; CALM's values stay first (priority).
     "frost_calm_code": {"SN15270": "N2"},
+    # Series read for comparison only (flag check_only, never used and never passing
+    # flags to other sources). Frost SN99875 is the 100 m Janssonhaugen borehole under a
+    # concrete lid: its upper metres read a damped annual cycle and ALT 17 cm (median)
+    # shallower than the 15 m borehole P11 next to it, which CALM N1 reports (within 0-4 cm
+    # in 1999-2024) and which metno_janssonhaugen reads.
+    "check_only_series": {"metno_frost": ["METNO_SN99875"]},
     # The UiO file of the same Juvvasshoe PACE borehole (juvP, 10 m from SN15270) joins
     # CALM N2 the same way.
     "uio_calm_code": {"juvP": "N2"},
@@ -239,7 +245,9 @@ CONFIG = {
                  "tarfala_pace": 4, "uio_boreholes": 5,
                  # Roshydromet daily soil temperatures rank before the monthly-based
                  # 1930-1990 ALT product of the same stations (it reads shallow)
-                 "roshydromet_soil": 2, "other": 7},
+                 "roshydromet_soil": 2,
+                 # Janssonhaugen P11 is the borehole behind CALM N1, so CALM stays first
+                 "metno_janssonhaugen": 4, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -773,7 +781,8 @@ API_FOLDERS = {"gtnp": "GTNP_platform", "tsp_alaska": "ADC_TSP_Alaska", "uaf_sit
                "g02189": "NSIDC_G02189", "metno": "METNO_permafrost", "metno_frost": "METNO_frost",
                "calm_table": "CALM_GWU", "tarfala_pace": "Tarfala_PACE",
                "uio_boreholes": "UiO_Norway_Iceland",
-               "roshydromet_soil": "Roshydromet_soil"}
+               "roshydromet_soil": "Roshydromet_soil",
+               "metno_janssonhaugen": "METNO_Janssonhaugen_shallow"}
 TABLE_EXT = (".csv", ".txt", ".dat", ".xls", ".xlsx", ".tab")
 
 DOWNLOAD_REPORT: list[dict] = []
@@ -3821,7 +3830,65 @@ def read_metno_frost(raw) -> pd.DataFrame:
         if len(t):
             out.append(records_from_profiles(t, s, method))
     out = [o for o in out if len(o)]
-    return finish(pd.concat(out, ignore_index=True), "metno_frost") if out else empty_records()
+    if not out:
+        return empty_records()
+    rec = finish(pd.concat(out, ignore_index=True), "metno_frost")
+    chk = rec.source_site_id.isin(CONFIG["check_only_series"].get("metno_frost", []))
+    rec["flag"] = add_flag(rec.flag, chk, "check_only")
+    return rec
+
+
+def read_metno_janssonhaugen(raw) -> pd.DataFrame:
+    """
+    Janssonhaugen, Adventdalen, Svalbard: the shallow (15 m) borehole P11 next to the 100 m
+    PACE borehole, sensors at 20-500 cm, 6-hourly, April 1999 to 18 August 2025 (logger and
+    thermistor string upgraded in August 2025). Sent to the user by K. Isaksen (MET Norway)
+    by email on 10 November 2026; cite Isaksen et al. 2000, 2001 and 2022. He notes that
+    this borehole is not affected by the concrete lid on top of the deep borehole (Frost
+    SN99875, kept as check_only), so it suits near-surface temperatures better.
+    File P11_Janssonhaugen-*.txt: ';'-separated, header YEAR;MONTH;DAY;TIME;X1TJ<depth cm>,
+    TIME = hour (0, 6, 12, 18). Values outside -60..40 C are removed, readings averaged per
+    day (at least 2 of 4), then the 0 C rule gives ALT. Joins CALM N1 by its CALM code;
+    CALM N1 is this borehole's ALT, and CALM's values stay first. A later file (data after
+    the upgrade) can be added to the same folder: a day found in two files counts once,
+    the newer file's value kept.
+    """
+    parts = []
+    for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        base = Path(root) / API_FOLDERS["metno_janssonhaugen"]
+        for f in sorted(base.rglob("P11_Janssonhaugen*.txt")) if base.exists() else []:
+            d = pd.read_csv(f, sep=";")
+            d.columns = [str(c).strip().upper() for c in d.columns]
+            tcols = [c for c in d.columns if re.fullmatch(r"X1TJ\d+", c)]
+            if not {"YEAR", "MONTH", "DAY", "TIME"} <= set(d.columns) or not tcols:
+                _unread("metno_janssonhaugen", f.name, "expected YEAR;MONTH;DAY;TIME;X1TJ<cm> columns")
+                continue
+            d["time"] = (pd.to_datetime(dict(year=d.YEAR, month=d.MONTH, day=d.DAY), errors="coerce")
+                         + pd.to_timedelta(pd.to_numeric(d.TIME, errors="coerce"), unit="h"))
+            long = d.melt(id_vars="time", value_vars=tcols, var_name="col", value_name="temp_c")
+            long["temp_c"] = pd.to_numeric(long.temp_c, errors="coerce")
+            long.loc[~long.temp_c.between(-60, 40), "temp_c"] = np.nan
+            long["depth_cm"] = long.col.str[4:].astype(float)
+            long["file"] = f.name
+            parts.append(long.dropna(subset=["time", "temp_c"]))
+    if not parts:
+        return empty_records()
+    t = (pd.concat(parts, ignore_index=True).sort_values("file")
+           .drop_duplicates(["time", "depth_cm"], keep="last"))
+    t["day"] = t.time.dt.normalize()
+    daily = t.groupby(["day", "depth_cm"]).temp_c.agg(["mean", "count"]).reset_index()
+    daily = daily[daily["count"] >= 2]
+    key = "METNO_JANSSONHAUGEN_P11"
+    temps = pd.DataFrame(dict(source_site_id=key, time=daily.day, depth_cm=daily.depth_cm,
+                              temp_c=daily["mean"]))
+    site = pd.DataFrame([dict(source_site_id=key, site_name="Janssonhaugen shallow borehole P11 (15 m), "
+                              "Adventdalen, Svalbard", lat=78.1792, lon=16.4708, country="Norway (Svalbard)",
+                              calm_code="N1", site_note="15 m borehole next to the 100 m PACE borehole, "
+                              "about 275 m a.s.l.; the borehole behind CALM N1",
+                              source_file=f"{API_FOLDERS['metno_janssonhaugen']}/"
+                                          + ", ".join(sorted(t.file.unique())))])
+    rec = records_from_profiles(temps, site, "borehole_temp")
+    return finish(rec, "metno_janssonhaugen") if len(rec) else empty_records()
 
 
 # Tarfala PACE: position of the 100 m borehole Ta-1 and the 15 m borehole Ta-2 (GTN-P
@@ -4427,6 +4494,7 @@ ADAPTERS = {
     "tarfala_pace": read_tarfala_pace,
     "uio_boreholes": read_uio_boreholes,
     "roshydromet_soil": read_roshydromet_soil,
+    "metno_janssonhaugen": read_metno_janssonhaugen,
 }
 
 
@@ -4526,6 +4594,10 @@ SOURCES = {
     "metno_frost": ("MET Norway Frost API: soil and ground temperatures of the MET stations in Svalbard and "
                     "the permafrost boreholes (sensors deeper than 2 m)", "https://frost.met.no",
                     "CC BY 4.0 (MET Norway; 'Data from The Norwegian Meteorological Institute')"),
+    "metno_janssonhaugen": ("Janssonhaugen, Svalbard: shallow borehole P11, ground temperature 0.2-5 m, "
+                            "1999-2025 (MET Norway, K. Isaksen; sent by email 10 November 2026; "
+                            "Isaksen et al. 2000, 2001, 2022)", "https://cryo.met.no/en/permafrost/janssonhaugen",
+                            "shared by the data owner for this analysis; cite Isaksen et al. 2000, 2001, 2022"),
     "g02189": ("NSIDC G02189 Russian station soil temperatures (check before 2000 only, never used as data)",
                "https://nsidc.org/data/g02189", "NSIDC (cite dataset)"),
     "tarfala_pace": ("PACE-1-2 borehole temperature data 2000-2014, Tarfalaryggen, Sweden (Stockholm University, "
@@ -4739,9 +4811,12 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
          censoring: records of the same site and year whose value is a copy of the flagged
          one (within dup_agree_cm or dup_agree_frac); a lower bound also covers smaller
          values. A different, deeper measurement in another source stays usable.
+    Steps 3-5 never start from a 'check_only' record (G02189 July thaw depths, Frost
+    SN99875 under the concrete lid): a series kept only for comparison passes nothing on.
     """
     rec = rec.copy()
     rec["flag"] = rec.flag.fillna("")
+    chk = _has_flag(rec.flag, "check_only")
     before = (~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)).sum()
 
     # 1. talik onset in the listed probing sources
@@ -4767,7 +4842,7 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
     # 3. talik state from the first flagged year on
     for f in STATE_FLAGS:
         has = _has_flag(rec.flag, f)
-        onset = rec[has].groupby("site_id").year.min()
+        onset = rec[has & ~chk].groupby("site_id").year.min()
         hit = (rec.year >= rec.site_id.map(onset).fillna(9999)) & ~has
         rec["flag"] = add_flag(rec.flag, hit, f)
         if hit.any():
@@ -4777,7 +4852,7 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
     # 4. no refreeze: the whole site-year
     for f in YEAR_STATE_FLAGS:
         has = _has_flag(rec.flag, f)
-        sy = set(zip(rec.site_id[has], rec.year[has]))
+        sy = set(zip(rec.site_id[has & ~chk], rec.year[has & ~chk]))
         hit = pd.Series([k in sy for k in zip(rec.site_id, rec.year)], index=rec.index) & ~has
         rec["flag"] = add_flag(rec.flag, hit, f)
         if hit.any():
@@ -4785,8 +4860,8 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
 
     # 5. copies of a flagged or censored value
     src_cols = ["site_id", "year", "alt_cm", "censored", "flag"]
-    flagged = rec[rec.censored | rec.flag.str.contains(
-        r"(?:^|;)(?:" + "|".join(COPY_FLAGS) + r")(?:;|$)")][src_cols]
+    flagged = rec[~chk & (rec.censored | rec.flag.str.contains(
+        r"(?:^|;)(?:" + "|".join(COPY_FLAGS) + r")(?:;|$)"))][src_cols]
     if len(flagged):
         pair = rec.reset_index().merge(flagged, on=["site_id", "year"], suffixes=("", "_f"))
         tol = np.maximum(CONFIG["dup_agree_cm"], CONFIG["dup_agree_frac"] * pair.alt_cm_f)
@@ -5286,6 +5361,7 @@ itex,ADC_sweep/ITEX_Utqiagvik_Atqasuk_thaw/2024_Barrow_Atqasuk_ITEX_Thaw_v1.csv,
 kwbs,Kolyma_WBS/PANGAEA_881754.tab,https://doi.pangaea.de/10.1594/PANGAEA.881754?format=textfile,a805f0fb21b80b109d4e72ccbfb0f3de6213d5960bf8e373f5404208b5106301,1361993,https://creativecommons.org/licenses/by/3.0/,open,"Thaw depth and snow height time series at different sites within Kolyma Water-Balance Station (KWBS), 1954-1997"
 kwbs,Kolyma_WBS/PANGAEA_881792.tab,https://doi.pangaea.de/10.1594/PANGAEA.881792?format=textfile,ad1823503574d0e9806756b9e931163efb5b586737b5d1ffc0dadb32532be3e6,156384,https://creativecommons.org/licenses/by/3.0/,open,"Soil temperature time series at the Nizhnyaya meteorological station within Kolyma Water-Balance Station (KWBS), 1974-1981"
 kytalyk,Russia_PANGAEA/PANGAEA_961879.tab,https://doi.pangaea.de/10.1594/PANGAEA.961879?format=textfile,0a87a4c504c7161d64b25d47abecf3d8e3b55e634b68dffc6d8b3b0f072cf34d,20820,https://creativecommons.org/licenses/by/4.0/,open,Thaw depth of the landscape in northeastern Siberia (S5)
+metno_janssonhaugen,METNO_Janssonhaugen_shallow/P11_Janssonhaugen-1999-2025.txt,https://cryo.met.no/en/permafrost/janssonhaugen,,3475025,"shared by the data owner; cite Isaksen et al. 2000, 2001, 2022",email,"Sent by K. Isaksen (MET Norway) by email on 10 November 2026 as a ZIP with this file and four papers; unpack it into METNO_Janssonhaugen_shallow/. Data after the August 2025 upgrade follow later; he plans to add the series to the GTN-P platform."
 ngee_barrow,NGEE_Arctic/NGEE-BRW-ABCD-sensor-locations_w-o_figs_20170720.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-6011010b2ddffef-20221216T183635146238,714281556a67871aba6ad0d1432bd57b6fc857240a985d932a95bcefd19c2a66,3774,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
 ngee_barrow,NGEE_Arctic/NGEE_BRW_A_2012-09-01_2013-09-30_Thermal_Transect.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-24858052ca470a0-20221216T183550503153,8fe94e1b6714530ff026164ea2c7ee9219245a492ad13811adaff3732e7756cb,5163348,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
 ngee_barrow,NGEE_Arctic/NGEE_BRW_A_2013-10-01_2014-09-30_Thermal_Transect.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-de711f9f19ced31-20221216T183552434371,80b66968f3b28ada62a29117accc837b44fdb370a880a2dca3bc2f5f9b25bb99,4867385,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
