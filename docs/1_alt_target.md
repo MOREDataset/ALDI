@@ -16,7 +16,7 @@ On the same raw files, the combined script gives the same four data outputs as t
 
 See the top of `1_alt_target.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-Raw files: `data/raw/alt_sources/` (downloads land there). Outputs: `data/1_alt_target/`. NEON needs your own token for the session (PowerShell `$env:NEON_TOKEN="..."`); it is never written to a file.
+Raw files: `data/raw/alt_sources/` (downloads land there). Outputs: `data/1_alt_target/`. NEON needs your own token for the session (PowerShell `$env:NEON_TOKEN="..."`) and MET Norway's Frost API your client ID (`$env:FROST_CLIENT_ID="..."`, free at frost.met.no; the client secret is not needed); neither is ever written to a file.
 
 
 ## The three stages
@@ -32,7 +32,7 @@ Raw files: `data/raw/alt_sources/` (downloads land there). Outputs: `data/1_alt_
   - NEON
   - Syrdakh (Zenodo)
   - NSIDC G02189
-  - MET Norway
+  - MET Norway (THREDDS and the Frost API)
 - **By hand.** Two sources need a personal login: GEM Greenland (8 zips) and ABoVE (NASA Earthdata). The script never asks for or stores a login. The run lists where to get these files, and you put them in the raw folder yourself.
 - **Report.** `download_report.csv` lists every file as downloaded, already there, failed, or by hand.
 
@@ -52,7 +52,8 @@ These sources were in `fetch_new_sources.py` before. They now go through the sam
 | `uaf_sites` | UAF Galbraith Lake, West Dock, Happy Valley and Chandalar Shelf | The position comes from the file's own `Location:` line, else from the station code in the Arctic Data Center station lists, else from the site page. When a file's header position is more than 5 km from the station lists, or from the median header of the same station's other files in its folder, that position wins (WD1_06.xls gives N 70.166, the latitude of Deadhorse, for West Dock at 70.38 N). Single-date borehole logs (CADIS, ArcDC, NSIDC files) cannot give ALT and are listed as such. Two series of one station in these files are joined under the same strict rules as in `tsp_alaska`. Most of these stations are also in the Arctic Data Center packages and the GTN-P platform; the build joins the copies, and ranks this source after them so the site ids stay as they were. |
 | `neon` | NEON soil temperature at BARR, TOOL and HEAL | A plot-year runs from 1 January to 1 July of the next year. It is flagged `sensor_moved` and not used when a sensor of the plot changed depth by more than 2 cm (NEON writes a new position row at every re-survey, mostly with the same depth; that is not a move), or when a heave entry in the product's change log covers it. A sensor heaved above the ground surface (zOffset ≥ 0) is left out. |
 | `syrdakh` | Syrdakh, Yakutia (Zenodo 14619854) | Logger temperatures (good-quality values only) give ALT by the 0 °C rule; the late-September thaw-depth surveys are used as probe or tube values, and a depth beyond the tool is a lower bound. The files give no coordinates, so every series gets the centre of the study area (62.56 N, 130.9 E, from the data paper) with a note in `site_note`. |
-| `metno` | MET Norway permafrost stations | Most stations start in 2019, so they reach 8 years only from about 2027. |
+| `metno` | MET Norway permafrost stations (THREDDS) | Most stations start in 2019, so they reach 8 years only from about 2027. A station that the Frost API also gives is read from Frost only. |
+| `metno_frost` | MET Norway Frost API (frost.met.no, added 10 November 2026) | Frost holds soil temperature at 235 stations (`METNO_frost/available_series.csv`); only the 30 on permafrost are downloaded: every station in Svalbard (north of 74 N) and the mainland boreholes with a sensor deeper than 2 m (Juvvasshøe, Juvflye, Dugurdskampen, Snøheim, Dovrefjell DB1, Iskoras). The other mainland stations stand on seasonal frost. Daily mean per depth, the daily-mean element where Frost has one; ALT by the 0 °C rule, method `borehole_temp` for the boreholes and `soil_temp` for the shallow stations. Frost Juvvasshøe (SN15270) is the CALM N2 borehole about 10 m away but reads 25-30 cm deeper every year, so `CONFIG["frost_calm_code"]` joins it to N2 by its CALM code; CALM's values stay first. |
 | `g02189` | NSIDC G02189 (Russian soil temperatures to 2000) | The files have only January and July monthly means, so the value is the July thaw depth: a lower limit of that year's ALT. Used only as a check: every value is flagged `check_only` and never used. `check_pre2000_g02189.csv` compares it with the Russian ALT series of the same station (ALT should be at least the July thaw depth). |
 
 If a reader cannot read a table, or cannot place it on the map, the table goes into `unread_tables.csv` with the reason, and never enters the data.
@@ -65,7 +66,9 @@ The fourth run gave 359 sites and 6,565 valid site-years. NEON and the UAF site 
 
 All temperature sources are reduced to daily means before the 0 °C rule, so every source is treated the same way.
 
-Two data requests are still open, by email: the Kilpisjärvi palsas (Verdonen, 2007-2021) and Janssonhaugen 1998-2019 (Isaksen, met.no).
+The Frost API (10 November 2026) gave 361 sites and 6,585 valid site-years (pre-Frost build: 359 and 6,567). New sites: Juvflye BH1 (14 valid years 2009-2025) and Dovrefjell DB1 (10, 2002-2018). Frost Janssonhaugen (SN99875, 1998-2025) and Snøheim (SN9380) join CALM N1 and N5, Bayelva (SN99917) the AWI Bayelva site. Most Svalbard stations start in 2019-2025, and four measure only 5-10 cm (every year a lower bound). Snøheim (CALM N5) loses 2015-2025: the Frost profile shows the deepest thawed sensor not refreezing in those winters, and that flag covers every source of the site in the year, as for the talik years at Pearl Creek and Bonanza Creek (decision of 10 November 2026). It drops from 18 to 9 valid years.
+
+One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 2007-2021). Janssonhaugen 1998-2019 (Isaksen, met.no) is no longer needed: the Frost API serves it.
 
 ## How a measurement becomes one annual value
 
