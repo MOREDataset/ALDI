@@ -122,17 +122,22 @@ One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 200
     date;
   - `alt_daily_cm`, `alt_daily_date`: the deepest 0 °C crossing of the daily profiles (the
     same rule, day by day, so maxima of different dates are not mixed; as at PERMOS and
-    the PACE boreholes);
-  - `alt_extrap_cm`: the deepest daily extrapolation of the gradient of the two lowest
-    thawed sensors down to 0 °C, kept between the two sensors around the crossing (the
-    method with the smallest error in Riseborough 2008, after Brown & Gruber 2026).
+    the PACE boreholes).
 
   Why: below the thaw front the ground stays just under 0 °C, so the maximum of the
   sensor below the front is close to 0 °C wherever the front is, and linear
-  interpolation puts ALT right above that sensor. In about half of the temperature
-  years the value lies in the deepest 10 % of its bracket. The review of 10 November
-  2026 (https://claude.ai/artifact/3SM1Fvx65xwGZKDSERNtQT) recommends choosing the
-  definition after a sensor-dropout test on the densest profiles.
+  interpolation puts ALT right above that sensor (review of 10 November 2026,
+  https://claude.ai/artifact/3SM1Fvx65xwGZKDSERNtQT). Test build of 10 November 2026,
+  1,079 used temperature site-years with a sensor on each side of the crossing: 31 % lie
+  in the deepest 10 % of their bracket and 19 % are `front_indeterminate`; moving the
+  threshold from +0.1 to -0.1 °C deepens ALT by a median 5.6 cm (IQR 3.3-10.4); the daily
+  crossing is a median 1.1 cm shallower than the value (IQR 0.4-3.0) and changes
+  per-site trends by a median +0.3 %/decade. The thaw-season year changed 157 of 2,422
+  temperature site-years (median -0.8 cm; 4 by more than 20 cm, at deep-thaw mountain
+  boreholes in Norway). An extrapolation from the two lowest thawed sensors (Riseborough
+  2008) was tried and dropped: it needs two thawed sensors, which most GSC cables do not
+  have, and elsewhere it ran to the sensor below and gave flat series. The pinned series
+  stay pinned under every definition (daily crossing SD 0.3-1.9 cm).
 
 ## Flags
 

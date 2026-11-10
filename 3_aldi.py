@@ -84,7 +84,8 @@ sample:
   # Lower-bound years are used as censored values only when their other flags are
   # informational (a talik, sensor or equilibration flag still removes them).
   use_censored: true
-  censored_ok_flags: [lower_bound, burned_site, unusual_year_isolated, unusual_year_regional, nonmonotonic_profile]
+  censored_ok_flags: [lower_bound, burned_site, unusual_year_isolated, unusual_year_regional, nonmonotonic_profile,
+                      edge_max, autumn_gap, front_indeterminate]
   # One method family per series. Probe, thaw tube and temperature ALT differ in level
   # (processing_notes.md), so a family switch inside a series creates a step that a
   # trend test reads as change. Years of the minority family are dropped (20 sites).

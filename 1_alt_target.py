@@ -351,7 +351,7 @@ RECORD_COLUMNS = [
     "censored", "bracket_cm", "flag", "site_note", "source_file",
     # temperature profiles only (see alt_from_temperature_profile)
     "sensor_above_cm", "sensor_below_cm", "alt_thr_plus_cm", "alt_thr_minus_cm",
-    "below_max_c", "below_max_date", "alt_daily_cm", "alt_daily_date", "alt_extrap_cm",
+    "below_max_c", "below_max_date", "alt_daily_cm", "alt_daily_date",
 ]
 
 LOG_LINES: list[str] = []
@@ -458,7 +458,7 @@ def finish(df: pd.DataFrame, source: str, source_file: str = "") -> pd.DataFrame
     df["censored"] = df["censored"].fillna(False).astype(bool)
     for c in ("year", "alt_cm", "alt_sd_cm", "n_points", "lat", "lon", "bracket_cm",
               "sensor_above_cm", "sensor_below_cm", "alt_thr_plus_cm", "alt_thr_minus_cm",
-              "below_max_c", "alt_daily_cm", "alt_extrap_cm"):
+              "below_max_c", "alt_daily_cm"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     lo, hi = CONFIG["valid_alt_cm"]
     hi_b = CONFIG["valid_alt_cm_borehole"][1]
@@ -556,7 +556,7 @@ def end_of_season(surveys: pd.DataFrame, key: str = "source_site_id",
 PROFILE_COLUMNS = ["year", "alt_cm", "censored", "n_sensors", "deepest_cm", "bracket_cm",
                    "nonmonotonic", "no_refreeze", "inversion", "sensor_above_cm",
                    "sensor_below_cm", "alt_thr_plus_cm", "alt_thr_minus_cm", "below_max_c",
-                   "below_max_date", "alt_daily_cm", "alt_daily_date", "alt_extrap_cm",
+                   "below_max_date", "alt_daily_cm", "alt_daily_date",
                    "front_indeterminate", "autumn_gap", "edge_max"]
 
 
@@ -583,17 +583,19 @@ def deepest_daily_crossing(m: np.ndarray, d: np.ndarray, zero_c: float = 0.0):
     """
     m: daily mean temperatures, one row per day, one column per sensor (depths d,
     increasing; no missing values). For each day: the 0 C crossing as in profile_crossing
-    (linear between the last thawed sensor and the next one), and the extrapolation of the
-    gradient of the two lowest thawed sensors down to 0 C, kept inside the same two
-    sensors (Riseborough 2008; Brown & Gruber 2026). Returns (deepest linear crossing,
-    row of that day, deepest extrapolated crossing); NaN where no day has one.
+    (linear between the last thawed sensor and the next one). Returns (deepest crossing,
+    row of that day); (NaN, -1) when no day has one.
+    (An extrapolation of the gradient of the two lowest thawed sensors, Riseborough 2008,
+    was tried in the test build of 10 November 2026 and dropped: most GSC cables have
+    only one thawed sensor above the crossing, and elsewhere the near-isothermal autumn
+    profile sent it to the sensor below, so its trends were flat.)
     """
     if m.size == 0:
-        return np.nan, -1, np.nan
+        return np.nan, -1
     above = m > zero_c
     has = above.any(axis=1) & ~above[:, -1]          # a crossing inside the profile
     if not has.any():
-        return np.nan, -1, np.nan
+        return np.nan, -1
     first = np.argmax(above, axis=1)
     col = np.arange(m.shape[1])
     j = np.argmax(~above & (col[None, :] > first[:, None]), axis=1)   # first sensor <= 0 C
@@ -603,13 +605,7 @@ def deepest_daily_crossing(m: np.ndarray, d: np.ndarray, zero_c: float = 0.0):
     vi, vj = m[r, i], m[r, j]
     z = d[i] + (d[j] - d[i]) * (vi - zero_c) / (vi - vj)
     k = np.argmax(z)
-    two = i > first[r]                               # a second thawed sensor above
-    ih = np.maximum(i - 1, 0)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        g = (m[r, ih] - vi) / (d[i] - d[ih])         # gradient of the thawed layer, C per cm
-        ze = np.where(two & (g > 0), d[i] + (vi - zero_c) / g, np.nan)
-    ze = np.clip(ze, d[i], d[j])
-    return float(z[k]), int(r[k]), (float(np.nanmax(ze)) if np.isfinite(ze).any() else np.nan)
+    return float(z[k]), int(r[k])
 
 
 def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | None = None,
@@ -652,9 +648,7 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
       edge_max: a maximum of the two sensors falls within edge_days of the start or end
         of the season, so it may belong to the season next to it;
       alt_daily_cm, alt_daily_date: the deepest 0 C crossing of the daily mean profiles
-        (the same rule applied day by day, no mixing of dates; daily data only);
-      alt_extrap_cm: the deepest daily extrapolation of the gradient of the two lowest
-        thawed sensors down to 0 C, kept between the two sensors around the crossing.
+        (the same rule applied day by day, no mixing of dates; daily data only).
     """
     if min_season_cover is None:
         min_season_cover = CONFIG["min_summer_cover"]
@@ -756,8 +750,8 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
             # daily profiles of the same sensors, down to the sensor below the crossing
             # (it is at or below 0 C on every day, since its maximum is)
             dd = daily.loc[yr].reindex(columns=d[:i + 2]).dropna()
-            zd, k, ze = deepest_daily_crossing(dd.to_numpy(float), d[:i + 2], zero_c)
-            row["alt_daily_cm"], row["alt_extrap_cm"] = zd, ze
+            zd, k = deepest_daily_crossing(dd.to_numpy(float), d[:i + 2], zero_c)
+            row["alt_daily_cm"] = zd
             row["alt_daily_date"] = dd.index[k].strftime("%Y-%m-%d") if k >= 0 else ""
         out.append(row)
     return pd.DataFrame(out, columns=PROFILE_COLUMNS)
@@ -5065,8 +5059,6 @@ def temperature_summary(used: pd.DataFrame) -> None:
     log(f"  threshold -0.1 minus +0.1 C: {q(t.alt_thr_minus_cm - t.alt_thr_plus_cm)}")
     log(f"  daily crossing minus value: {q(t.alt_daily_cm - t.alt_cm)} "
         f"({t.alt_daily_cm.notna().sum()} site-years)")
-    log(f"  daily extrapolation minus value: {q(t.alt_extrap_cm - t.alt_cm)} "
-        f"({t.alt_extrap_cm.notna().sum()} site-years)")
 
 
 def outlier_flags(an: pd.DataFrame) -> pd.Series:
