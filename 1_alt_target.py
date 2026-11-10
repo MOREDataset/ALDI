@@ -661,12 +661,14 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
     acc = CONFIG["sensor_accuracy_c"]
     start = CONFIG["season_start_month"]
     t = temps.dropna(subset=["temp_c", "depth_cm"]).copy()
-    t = t[t.depth_cm > 0].reset_index(drop=True)
+    t["time"] = pd.to_datetime(t["time"], errors="coerce")
+    if t.time.dt.tz is not None:                          # local clock time, as before
+        t["time"] = t.time.dt.tz_localize(None)
+    t = t[(t.depth_cm > 0) & t.time.notna()].reset_index(drop=True)    # some files have bad dates
     if t.empty:
         return pd.DataFrame(columns=PROFILE_COLUMNS)
-    t["time"] = pd.to_datetime(t["time"])
     month = t.time.dt.month
-    t["year"] = np.where(month >= start, t.time.dt.year, t.time.dt.year - 1)   # season
+    t["year"] = np.where(month >= start, t.time.dt.year, t.time.dt.year - 1).astype(int)   # season
     late = t[month.between(8, 9)]                           # 1 Aug - 30 Sep, 61 days
     autumn = t[month.between(10, 12)]                       # 1 Oct - 31 Dec, 92 days
     if monthly:
@@ -704,7 +706,7 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
         dt = tdate.get((yr, depth))
         if dt is None or pd.isna(dt):
             return False
-        s0, s1 = pd.Timestamp(yr, start, 1), pd.Timestamp(yr + 1, start, 1)
+        s0, s1 = pd.Timestamp(int(yr), start, 1), pd.Timestamp(int(yr) + 1, start, 1)
         return bool((dt - s0).days < CONFIG["edge_days"] or (s1 - dt).days <= CONFIG["edge_days"])
 
     out = []
