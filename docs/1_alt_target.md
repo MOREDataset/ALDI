@@ -114,16 +114,8 @@ Values with these flags stay in the files but are not used for the 8-year count 
 the ALDI input: `lower_bound`, `wide_sensor_spacing`, `no_refreeze`, `talik`,
 `possible_talik`, `sensor_cap`, `calm_footnote`, `early_measurement`, `treatment`,
 `borehole_equilibration`, `profile_inversion`, `disturbed_site`, `sensor_problem`,
-`sensor_moved` (NEON), `check_only` (G02189, Frost SN99875), `pinned_to_sensor`. A `check_only` series never
+`sensor_moved` (NEON), `check_only` (G02189, Frost SN99875). A `check_only` series never
 passes its flags to the other sources of its site.
-
-- `pinned_to_sensor`: a temperature series whose valid ALT varies by less than 2 cm (SD, and
-  less than 3 % of its median) over at least 8 years. The sensor below the 0 °C crossing
-  stays just under 0 °C while the one above is warm, so the interpolated crossing lands a
-  few cm above the lower sensor every year, wherever the thaw front is in between (GSC
-  cable KP313T5: 99.5 ± 0.2 cm over 12 years, sensors at 50 and 100 cm). The
-  year-to-year change is sensor spacing, not thaw, so every year of the series is flagged,
-  and copies of its values in other sources too.
 
 - `possible_talik`: Bonanza Creek LTER probing (interior Alaska). The probe, with
   extensions, is pushed to the first hard frozen ground. Once the winter frost no longer
