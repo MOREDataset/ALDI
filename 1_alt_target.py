@@ -190,9 +190,22 @@ CONFIG = {
     # every year (a different way of placing the 0 C depth), so the agreement rules kept
     # the same borehole apart as two sites; CALM's values stay first (priority).
     "frost_calm_code": {"SN15270": "N2"},
+    # Series read for comparison only (flag check_only, never used and never passing
+    # flags to other sources). Frost SN99875 is the 100 m Janssonhaugen borehole under a
+    # concrete lid: its upper metres read a damped annual cycle and ALT 17 cm (median)
+    # shallower than the 15 m borehole P11 next to it, which CALM N1 reports (within 0-4 cm
+    # in 1999-2024) and which metno_janssonhaugen reads.
+    "check_only_series": {"metno_frost": ["METNO_SN99875"]},
     # The UiO file of the same Juvvasshoe PACE borehole (juvP, 10 m from SN15270) joins
     # CALM N2 the same way.
     "uio_calm_code": {"juvP": "N2"},
+    # Roshydromet soil-temperature stations that are a station of the 1930-1990 Russian ALT
+    # product (ru_hms_alt): WMO index -> its site key, so the two are one site (rule a).
+    # Matched by name and position (within 3 km).
+    "rusoil_ruhms": {24959: "RUHMS_003", 24266: "RUHMS_011", 25206: "RUHMS_012",
+                     24688: "RUHMS_013", 24790: "RUHMS_133", 25428: "RUHMS_165",
+                     24143: "RUHMS_237", 24951: "RUHMS_239", 24136: "RUHMS_246",
+                     24382: "RUHMS_249"},
     # Same borehole served by two products (rule e of assign_physical_sites): the series on
     # the left joins the site of the series on the right, which ranks first. The UiO file of
     # Juvflye BH1 matches Frost SN15265 within 0-3 cm in 2009-2012 but reads 40-100 cm
@@ -229,7 +242,12 @@ CONFIG = {
                  "neon": 5, "syrdakh": 4, "metno": 4, "metno_frost": 4, "g02189": 8,
                  # UiO Norway/Iceland boreholes rank after Frost, which serves the same
                  # loggers of four of them up to 2025
-                 "tarfala_pace": 4, "uio_boreholes": 5, "other": 7},
+                 "tarfala_pace": 4, "uio_boreholes": 5,
+                 # Roshydromet daily soil temperatures rank before the monthly-based
+                 # 1930-1990 ALT product of the same stations (it reads shallow)
+                 "roshydromet_soil": 2,
+                 # Janssonhaugen P11 is the borehole behind CALM N1, so CALM stays first
+                 "metno_janssonhaugen": 4, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -762,7 +780,9 @@ API_FOLDERS = {"gtnp": "GTNP_platform", "tsp_alaska": "ADC_TSP_Alaska", "uaf_sit
                "neon": "NEON_soil_temperature", "syrdakh": "Zenodo_Syrdakh",
                "g02189": "NSIDC_G02189", "metno": "METNO_permafrost", "metno_frost": "METNO_frost",
                "calm_table": "CALM_GWU", "tarfala_pace": "Tarfala_PACE",
-               "uio_boreholes": "UiO_Norway_Iceland"}
+               "uio_boreholes": "UiO_Norway_Iceland",
+               "roshydromet_soil": "Roshydromet_soil",
+               "metno_janssonhaugen": "METNO_Janssonhaugen_shallow"}
 TABLE_EXT = (".csv", ".txt", ".dat", ".xls", ".xlsx", ".tab")
 
 DOWNLOAD_REPORT: list[dict] = []
@@ -3810,7 +3830,65 @@ def read_metno_frost(raw) -> pd.DataFrame:
         if len(t):
             out.append(records_from_profiles(t, s, method))
     out = [o for o in out if len(o)]
-    return finish(pd.concat(out, ignore_index=True), "metno_frost") if out else empty_records()
+    if not out:
+        return empty_records()
+    rec = finish(pd.concat(out, ignore_index=True), "metno_frost")
+    chk = rec.source_site_id.isin(CONFIG["check_only_series"].get("metno_frost", []))
+    rec["flag"] = add_flag(rec.flag, chk, "check_only")
+    return rec
+
+
+def read_metno_janssonhaugen(raw) -> pd.DataFrame:
+    """
+    Janssonhaugen, Adventdalen, Svalbard: the shallow (15 m) borehole P11 next to the 100 m
+    PACE borehole, sensors at 20-500 cm, 6-hourly, April 1999 to 18 August 2025 (logger and
+    thermistor string upgraded in August 2025). Sent to the user by K. Isaksen (MET Norway)
+    by email on 10 November 2026; cite Isaksen et al. 2000, 2001 and 2022. He notes that
+    this borehole is not affected by the concrete lid on top of the deep borehole (Frost
+    SN99875, kept as check_only), so it suits near-surface temperatures better.
+    File P11_Janssonhaugen-*.txt: ';'-separated, header YEAR;MONTH;DAY;TIME;X1TJ<depth cm>,
+    TIME = hour (0, 6, 12, 18). Values outside -60..40 C are removed, readings averaged per
+    day (at least 2 of 4), then the 0 C rule gives ALT. Joins CALM N1 by its CALM code;
+    CALM N1 is this borehole's ALT, and CALM's values stay first. A later file (data after
+    the upgrade) can be added to the same folder: a day found in two files counts once,
+    the newer file's value kept.
+    """
+    parts = []
+    for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        base = Path(root) / API_FOLDERS["metno_janssonhaugen"]
+        for f in sorted(base.rglob("P11_Janssonhaugen*.txt")) if base.exists() else []:
+            d = pd.read_csv(f, sep=";")
+            d.columns = [str(c).strip().upper() for c in d.columns]
+            tcols = [c for c in d.columns if re.fullmatch(r"X1TJ\d+", c)]
+            if not {"YEAR", "MONTH", "DAY", "TIME"} <= set(d.columns) or not tcols:
+                _unread("metno_janssonhaugen", f.name, "expected YEAR;MONTH;DAY;TIME;X1TJ<cm> columns")
+                continue
+            d["time"] = (pd.to_datetime(dict(year=d.YEAR, month=d.MONTH, day=d.DAY), errors="coerce")
+                         + pd.to_timedelta(pd.to_numeric(d.TIME, errors="coerce"), unit="h"))
+            long = d.melt(id_vars="time", value_vars=tcols, var_name="col", value_name="temp_c")
+            long["temp_c"] = pd.to_numeric(long.temp_c, errors="coerce")
+            long.loc[~long.temp_c.between(-60, 40), "temp_c"] = np.nan
+            long["depth_cm"] = long.col.str[4:].astype(float)
+            long["file"] = f.name
+            parts.append(long.dropna(subset=["time", "temp_c"]))
+    if not parts:
+        return empty_records()
+    t = (pd.concat(parts, ignore_index=True).sort_values("file")
+           .drop_duplicates(["time", "depth_cm"], keep="last"))
+    t["day"] = t.time.dt.normalize()
+    daily = t.groupby(["day", "depth_cm"]).temp_c.agg(["mean", "count"]).reset_index()
+    daily = daily[daily["count"] >= 2]
+    key = "METNO_JANSSONHAUGEN_P11"
+    temps = pd.DataFrame(dict(source_site_id=key, time=daily.day, depth_cm=daily.depth_cm,
+                              temp_c=daily["mean"]))
+    site = pd.DataFrame([dict(source_site_id=key, site_name="Janssonhaugen shallow borehole P11 (15 m), "
+                              "Adventdalen, Svalbard", lat=78.1792, lon=16.4708, country="Norway (Svalbard)",
+                              calm_code="N1", site_note="15 m borehole next to the 100 m PACE borehole, "
+                              "about 275 m a.s.l.; the borehole behind CALM N1",
+                              source_file=f"{API_FOLDERS['metno_janssonhaugen']}/"
+                                          + ", ".join(sorted(t.file.unique())))])
+    rec = records_from_profiles(temps, site, "borehole_temp")
+    return finish(rec, "metno_janssonhaugen") if len(rec) else empty_records()
 
 
 # Tarfala PACE: position of the 100 m borehole Ta-1 and the 15 m borehole Ta-2 (GTN-P
@@ -3972,6 +4050,346 @@ def read_uio_boreholes(raw) -> pd.DataFrame:
     return rec
 
 
+# Roshydromet daily soil temperature to 320 cm: station catalogue of the dataset
+# (Каталог_Температура_почвы_до_320м.pdf, public on meteo.ru). The data export gives only
+# the WMO index, so positions come from here.
+RUSOIL_STATIONS = """\
+wmo,name_ru,name,lat,lon,elev_m,first_year,last_year
+20069,О.Визе,O.Vize,79.49,76.98,10,1989,2019
+20087,О.Голомянный,O.Golomyannyy,79.55,90.61,8,1989,2021
+20292,Им.Е.К.Федорова,Im.E.K.Fedorova,77.71,104.29,15,1977,2021
+20674,О.Диксон,O.Dikson,73.51,80.41,46,1977,2022
+21921,Кюсюр,Kyusyur,70.68,127.40,33,1977,2000
+22217,Кандалакша,Kandalaksha,67.17,32.35,25,1963,2022
+22235,Краснощелье,Krasnoshchele,67.35,37.05,157,1965,2022
+22249,Каневка,Kanevka,67.13,39.66,151,1977,2022
+22292,Индига,Indiga,67.68,48.68,4,1976,2022
+22408,Калевала,Kalevala,65.21,31.15,120,1976,2022
+22438,"Жижгин,остров",Zhizhgin ostrov,65.20,36.81,17,1965,2022
+22471,Мезень,Mezen,65.86,44.21,19,1964,2022
+22550,Архангельск,Arkhangelsk,64.50,40.73,8,1965,2022
+22583,Койнас,Koynas,64.75,47.65,64,1963,2022
+22602,Реболы,Reboly,63.83,30.81,182,1963,2022
+22641,Онега,Onega,63.90,38.11,13,1963,2022
+22676,Сура,Sura,63.58,45.63,62,1976,2022
+22768,Шенкурск,Shenkursk,62.10,42.90,45,1976,2022
+22802,Сортавала,Sortavala,61.71,30.71,19,1963,2022
+22820,Петрозаводск,Petrozavodsk,61.82,34.27,111,1963,2022
+22837,Вытегра,Vytegra,61.01,36.45,56,1963,2022
+22845,Каргополь,Kargopol,61.51,38.93,126,1976,2022
+22981,Великий Устюг,Velikiy Ustyug,60.76,46.30,99,1976,2004
+23205,Нарьян-Мар,Naryan-Mar,67.63,53.02,12,1986,2022
+23219,Хоседа-Хард,Khoseda-Khard,67.08,59.38,84,1963,1997
+23274,Игарка,Igarka,67.46,86.56,31,1977,2022
+23324,Петрунь,Petrun,66.43,60.76,62,1976,2022
+23383,Агата,Agata,66.88,93.46,278,1977,1993
+23405,Усть-Цильма,Ust-Tsilma,65.43,52.26,68,1963,2022
+23412,Усть-Уса,Ust-Usa,65.96,56.91,78,1976,2022
+23418,Печора,Pechora,65.13,57.14,59,1963,2022
+23463,Янов Стан,Yanov Stan,65.98,84.26,40,1977,1993
+23472,"Туруханск,ГМО",Turukhansk GMO,65.79,87.99,38,1963,2022
+23527,Саранпауль,Saranpaul,64.28,60.88,29,1978,2022
+23552,Тарко-Сале,Tarko-Sale,64.91,77.81,27,1978,2022
+23631,Березово,Berezovo,63.93,65.05,32,1963,2022
+23656,Халесовая,Khalesovaya,63.38,78.32,67,1978,1993
+23662,Толька,Tolka,63.98,82.08,33,1978,2022
+23678,Верхнеимбатск,Verkhneimbatsk,63.15,87.95,46,1977,1997
+23711,Троицко-Печорское,Troitsko-Pechorskoe,62.70,56.20,139,1963,2022
+23724,Няксимволь,Nyaksimvol,62.43,60.86,51,1963,2022
+23734,Октябрьское,Oktyabrskoe,62.45,66.05,72,1978,2022
+23804,Сыктывкар,Syktyvkar,61.68,50.78,119,1967,2022
+23849,"Сургут,АМСГ",Surgut AMSG,61.25,73.50,56,1963,1978
+23867,Ларьяк,Laryak,61.10,80.25,57,1978,2022
+23884,Бор,Bor,61.58,90.03,58,1977,2022
+23891,Байкит,Baykit,61.66,96.36,262,1963,1994
+23921,Ивдель,Ivdel,60.68,60.45,94,1963,2022
+23933,Ханты-Мансийск,Khanty-Mansiysk,61.03,69.12,44,1963,2022
+23955,Александровское,Aleksandrovskoe,60.43,77.87,49,1963,2022
+23986,Северо-Енисейский,Severo-Eniseyskiy,60.38,93.33,519,1977,2019
+24125,Оленек,Olenek,68.50,112.43,220,1966,2017
+24136,Сухана,Sukhana,68.61,118.33,77,1977,2002
+24143,Джарджан,Dzhardzhan,68.73,124.00,39,1977,2022
+24266,Верхоянск,Verkhoyansk,67.57,133.40,136,1964,2022
+24343,Жиганск,Zhigansk,66.77,123.40,92,1964,2017
+24382,Усть-Мома,Ust-Moma,66.45,143.23,196,1977,2022
+24507,Тура,Tura,64.27,100.22,191,1963,1997
+24606,Кислокан,Kislokan,63.58,103.96,211,1977,1999
+24641,Вилюйск,Vilyuysk,63.78,121.62,111,1964,2022
+24688,Оймякон,Oymyakon,63.25,143.15,740,1963,2022
+24738,Сунтар,Suntar,62.15,117.65,133,1964,2022
+24790,Сусуман,Susuman,62.78,148.16,655,1977,2022
+24802,Стрелка Чуня,Strelka Chunya,61.75,102.80,358,1977,1999
+24817,Ербогачен,Erbogachen,61.26,108.01,291,1963,2022
+24908,Ванавара,Vanavara,60.34,102.29,260,1963,2022
+24923,Ленск,Lensk,60.71,114.88,234,1985,2022
+24944,Олекминск,Olekminsk,60.40,120.42,230,1964,2022
+24951,Исить,Isit,60.81,125.31,118,1964,2022
+24959,Якутск,Yakutsk,62.02,129.72,101,1964,2022
+24966,Усть-Мая,Ust-Maya,60.38,134.45,170,1964,2022
+25138,Островное,Ostrovnoe,68.11,164.16,94,1977,2022
+25206,Среднеколымск,Srednekolymsk,67.45,153.71,21,1977,2009
+25400,Зырянка,Zyryanka,65.73,150.90,43,1977,2022
+25428,Омолон,Omolon,65.23,160.53,260,1988,2022
+25551,Марково,Markovo,64.68,170.41,26,1963,2022
+25705,Среднекан,Srednekan,62.45,152.31,260,1977,2005
+25913,"Магадан,Нагаева бухта",Magadan Nagaeva bukhta,59.55,150.78,116,1963,2022
+26063,Санкт-Петербург,Sankt-Peterburg,59.97,30.30,6,1963,2022
+26069,Белогорка,Belogorka,59.35,30.13,90,1976,2022
+26094,Тихвин,Tikhvin,59.65,33.55,61,1976,2022
+26258,Псков,Pskov,57.81,28.41,45,1993,2022
+26298,Бологое,Bologoe,57.88,34.03,187,1976,2022
+26359,Пушкинские Горы,Pushkinskie Gory,57.01,28.90,108,1976,2022
+26477,Великие Луки,Velikie Luki,56.35,30.62,103,1963,2022
+26479,Торопец,Toropets,56.48,31.63,186,1976,2022
+26781,Смоленск,Smolensk,54.75,32.07,238,1963,2022
+26898,"Брянск,АМСГ",Bryansk AMSG,53.25,34.31,216,1963,2022
+27037,"Вологда,Прилуки",Vologda Priluki,59.32,39.93,130,1971,2022
+27051,Тотьма,Totma,59.88,42.75,134,1976,2022
+27066,Никольск,Nikolsk,59.53,45.46,143,1976,2022
+27164,Кологрив,Kologriv,58.82,44.32,151,1963,2022
+27296,Кумены,Kumeny,58.10,49.92,177,1984,2022
+27333,Кострома,Kostroma,57.73,40.78,126,1963,2022
+27485,Йошкар-Ола,Yoshkar-Ola,56.70,47.91,106,1963,2022
+27509,Можайск,Mozhaysk,55.51,36.00,185,1976,2022
+27625,Коломна,Kolomna,55.13,38.73,114,1976,2022
+27648,Елатьма,Elatma,54.95,41.76,136,1963,2022
+27675,Порецкое,Poretskoe,55.18,46.33,136,1967,2022
+27707,Сухиничи,Sukhinichi,54.10,35.35,238,1964,2022
+27823,Павелец,Pavelets,53.78,39.25,209,1963,2022
+27857,Земетчино,Zemetchino,53.48,42.63,131,1977,2022
+27947,Тамбов,Tambov,52.80,41.33,128,1963,2022
+27962,"Пенза,ГМО",Penza GMO,53.12,45.02,172,1977,2022
+27995,Безенчук,Bezenchuk,52.98,49.43,45,1977,2022
+28064,Леуши,Leushi,59.61,65.71,72,1963,2022
+28138,Бисер,Biser,58.51,58.85,463,1963,2022
+28224,Пермь,Perm,58.01,56.30,171,1963,2022
+28255,Туринск,Turinsk,58.05,63.68,103,1978,2013
+28275,Тобольск,Tobolsk,58.15,68.25,47,1963,2022
+28367,Тюмень,Tyumen,57.11,65.43,102,1978,2022
+28411,Ижевск,Izhevsk,56.83,53.45,159,1963,1989
+28418,Сарапул,Sarapul,56.46,53.73,133,1963,2022
+28434,Красноуфимск,Krasnoufimsk,56.65,57.78,206,1963,2022
+28445,Верхнее дуброво,Verkhnee dubrovo,56.73,61.07,288,1965,2022
+28493,Тара,Tara,56.90,74.38,73,1963,2022
+28537,Дуван,Duvan,55.70,57.90,338,1967,2022
+28552,Шадринск,Shadrinsk,56.06,63.65,89,1966,2022
+28573,Ишим,Ishim,56.10,69.43,82,1978,2022
+28630,Златоуст,Zlatoust,55.20,59.66,538,1963,2022
+28661,"Курган,Вороновка",Kurgan Voronovka,55.47,65.42,74,1963,2022
+28666,Макушино,Makushino,55.25,67.30,140,1965,2022
+28698,"Омск,степная",Omsk stepnaya,55.01,73.38,122,1963,2022
+28704,Чулпаново,Chulpanovo,54.50,50.41,78,1977,2022
+28825,Стерлитамак,Sterlitamak,53.58,56.00,137,1963,2022
+28833,Верхнеуральск,Verkhneuralsk,53.88,59.20,403,1963,2013
+29023,Напас,Napas,59.85,81.95,76,1963,2022
+29111,Средний Васюган,Sredniy Vasyugan,59.21,78.23,69,1963,2022
+29231,Колпашево,Kolpashevo,58.32,82.95,75,1963,2022
+29263,Енисейск,Eniseysk,58.45,92.20,79,1963,2022
+29282,Богучаны,Boguchany,58.38,97.45,134,1963,2022
+29313,Пудино,Pudino,57.53,79.36,97,1963,2022
+29328,Бакчар,Bakchar,57.08,81.91,110,1963,2022
+29348,Первомайское,Pervomayskoe,57.06,86.21,114,1977,2022
+29393,Червянка,Chervyanka,57.65,99.53,220,1963,2022
+29418,Северное,Severnoe,56.35,78.35,126,1963,2022
+29430,Томск,Tomsk,56.50,84.91,139,1963,2022
+29467,"Ачинск,ж.д.ст.",Achinsk zh.d.st.,56.28,90.52,266,1977,1992
+29541,Тайга,Tayga,56.06,85.61,251,1982,2022
+29570,"Красноярск,оп.п.",Krasnoyarsk op.p.,56.03,92.75,276,1963,2022
+29580,Солянка,Solyanka,56.17,95.27,343,1977,2022
+29594,Тайшет,Tayshet,55.95,98.00,307,1963,2022
+29605,Татарск,Tatarsk,55.20,75.96,112,1977,2022
+29612,Барабинск,Barabinsk,55.35,78.31,120,1963,2022
+29638,Огурцово,Ogurtsovo,54.90,82.95,133,1977,2022
+29645,"Кемерово,АГРО",Kemerovo AGRO,55.25,86.21,148,1966,2022
+29664,Светлолобово,Svetlolobovo,55.10,90.83,325,1977,2022
+29698,Нижнеудинск,Nizhneudinsk,54.88,99.03,411,1963,2022
+29822,Камень-на-Оби,Kamen-na-Obi,53.81,81.26,129,1977,2022
+29838,Барнаул,Barnaul,53.43,83.51,184,1963,2022
+29849,Кузедеево,Kuzedeevo,53.33,87.16,293,1977,2022
+29862,Абакан (Хак. ЦГМС),Abakan (Khak. TsGMS),53.77,91.32,256,1977,2022
+29866,Минусинск,Minusinsk,53.70,91.70,254,1963,2022
+29915,Славгород,Slavgorod,52.96,78.65,126,1963,2022
+29923,Ребриха,Rebrikha,53.06,82.30,219,1984,2013
+29939,Бийск-Зональная,Biysk-Zonalnaya,52.68,84.95,228,1977,2022
+30054,Витим,Vitim,59.45,112.58,190,1963,2022
+30230,Киренск,Kirensk,57.77,108.07,259,1963,2022
+30252,Мамакан,Mamakan,57.81,114.16,249,1967,2022
+30309,"Братск,обс.",Bratsk obs.,56.28,101.75,416,1963,2022
+30328,Орлинга,Orlinga,56.05,105.83,338,1964,2022
+30337,"Казачинское,АМСГ",Kazachinskoe AMSG,56.31,107.61,362,1970,2008
+30372,Чара,Chara,56.90,118.27,711,1977,2017
+30385,Усть-Нюкжа,Ust-Nyukzha,56.58,121.48,426,1977,2022
+30433,Нижнеангарск,Nizhneangarsk,55.78,109.55,487,1977,2022
+30469,Калакан,Kalakan,55.11,116.76,613,1977,2013
+30493,Нагорный,Nagornyy,55.96,124.88,861,1977,2002
+30504,Тулун,Tulun,54.60,100.63,522,1964,2022
+30521,Жигалово,Zhigalovo,54.80,105.21,426,1963,2013
+30555,Троицкий прииск,Troitskiy priisk,54.61,113.13,1314,1963,2022
+30612,"Балаганск,раб.пос.",Balagansk rab.pos.,54.00,103.06,427,1967,2022
+30627,Баяндай,Bayanday,53.10,105.53,762,1965,2022
+30636,Баргузин,Barguzin,53.61,109.63,489,1963,2022
+30673,Могоча,Mogocha,53.75,119.73,625,1963,2022
+30692,Сковородино,Skovorodino,54.00,123.96,398,1963,2022
+30710,"Иркутск,обс.",Irkutsk obs.,52.26,104.31,469,1963,2022
+30745,Сосново-Озерское,Sosnovo-Ozerskoe,52.53,111.55,952,1977,2022
+30758,Чита,Chita,52.08,113.48,671,1963,2022
+30777,Сретенск,Sretensk,52.23,117.70,525,1963,2022
+30811,Тунка,Tunka,51.73,102.53,721,1963,2022
+30822,Бабушкин,Babushkin,51.71,105.85,467,1963,2022
+30823,"Улан-Удэ,город",Ulan-Ude gorod,51.83,107.60,515,1963,2022
+30859,Агинское,Aginskoe,51.10,114.51,681,1977,2022
+30879,Нерчинский з-д,Nerchinskiy z-d,51.31,119.61,619,1977,2022
+30925,Кяхта,Kyakhta,50.36,106.45,797,1963,2022
+30935,Красный Чикой,Krasnyy Chikoy,50.37,108.75,771,1977,2022
+30949,Кыра,Kyra,49.56,111.96,908,1963,2022
+30965,Борзя,Borzya,50.40,116.52,676,1963,2022
+31088,Охотск,Okhotsk,59.37,143.20,6,1963,1989
+31168,Аян,Ayan,56.45,138.15,8,1963,2022
+31174,Большой Шантар,Bolshoy Shantar,54.83,137.53,21,1977,2022
+31253,Бомнак,Bomnak,54.71,128.93,357,1963,2022
+31371,Черняево,Chernyaevo,52.78,126.00,210,1977,2022
+31388,Норск,Norsk,52.35,129.91,208,1963,2019
+31416,Им.П.Осипенко,Im.P.Osipenko,52.41,136.50,73,1963,2022
+31439,Богородское,Bogorodskoe,52.38,140.46,35,1977,2022
+31443,Мазаново,Mazanovo,51.63,128.81,161,1990,2022
+31510,Благовещенск,Blagoveshchensk,50.28,127.48,169,1963,2014
+31532,Чекунда,Chekunda,50.86,132.25,272,1963,2003
+31594,Архара,Arkhara,49.41,130.08,135,1963,2022
+31707,Екатерино-Никольское,Ekaterino-Nikolskoe,47.73,130.96,73,1963,2022
+31725,Смидович,Smidovich,48.61,133.83,52,1977,2022
+31733,Елабуга,Elabuga,48.81,135.88,58,1989,2022
+31770,Советская Гавань,Sovetskaya Gavan,49.00,140.30,24,1977,2022
+31788,Лермонтовка,Lermontovka,47.15,134.33,76,1977,2022
+31829,Золотой,Zolotoy,47.31,138.98,26,1963,2010
+31845,Красный Яр,Krasnyy Yar,46.53,135.31,130,1977,1998
+31873,Дальнереченск,Dalnerechensk,45.87,133.73,105,1963,2022
+31915,Пограничный,Pogranichnyy,44.40,131.38,211,1963,1996
+31931,Свиягино,Sviyagino,44.80,133.08,99,1977,1997
+31960,"Владивосток,порт",Vladivostok port,43.11,131.93,183,1963,2022
+31961,Тимирязевский,Timiryazevskiy,43.88,131.96,37,1977,2022
+31969,Посьет,Poset,42.65,130.80,35,1977,1998
+32061,Александровск-Сахал.,Aleksandrovsk-Sakhal.,50.90,142.17,31,1963,2022
+32071,Тымовское,Tymovskoe,50.73,142.71,95,1977,2022
+32088,Углегорск,Uglegorsk,49.06,142.03,43,1977,2022
+32099,Мыс Терпения,Mys Terpeniya,48.65,144.73,6,1977,2018
+32150,Южно-Сахалинск,Yuzhno-Sakhalinsk,46.95,142.72,24,1977,2022
+32165,Южно-Курильск,Yuzhno-Kurilsk,44.01,145.86,49,1963,2003
+32213,Мыс Лопатка,Mys Lopatka,50.86,156.68,47,1988,2006
+32287,Усть-Хайрюзово,Ust-Khayryuzovo,57.08,156.70,8,1987,2022
+32389,Ключи,Klyuchi,56.32,160.83,29,1963,2022
+32618,Никольское(О.Беринга),Nikolskoe(O.Beringa),55.20,165.98,18,1988,2016
+34003,Поныри,Ponyri,52.31,36.30,251,1972,2022
+34009,"Курск,АЭ",Kursk AE,51.77,36.17,247,1963,2022
+34110,Богородицкое-Фенино,Bogoroditskoe-Fenino,51.16,37.35,226,1965,2022
+34123,"Воронеж,АГРО",Voronezh AGRO,51.70,39.21,149,1963,2022
+34139,Каменная степь,Kamennaya step,51.05,40.70,194,1963,2022
+34163,Октябрьский Городок,Oktyabrskiy Gorodok,51.63,45.45,201,1963,2022
+34172,"Саратов,цгмс",Saratov tsgms,51.56,46.03,156,1981,2022
+34186,Ершов,Ershov,51.36,48.30,111,1977,2022
+34240,Урюпинск,Uryupinsk,50.80,42.00,110,1977,2022
+34321,Валуйки,Valuyki,50.21,38.10,112,1965,2022
+34356,Фролово,Frolovo,49.80,43.66,119,1986,2022
+34391,Александров Гай,Aleksandrov Gay,50.15,48.55,25,1964,2022
+34432,Чертково,Chertkovo,49.38,40.16,145,1963,2022
+34476,Эльтон,Elton,49.13,46.85,6,1977,2022
+34579,Верхний Баскунчак,Verkhniy Baskunchak,48.21,46.73,34,1989,2022
+34646,Цимлянск,Tsimlyansk,47.63,42.11,65,1966,2022
+34720,Таганрог,Taganrog,47.20,38.90,32,1977,2022
+34740,Гигант,Gigant,46.51,41.35,79,1977,2022
+34824,Приморско-Ахтарск,Primorsko-Akhtarsk,46.03,38.15,5,1966,2022
+34861,"Элиста,АМСГ",Elista AMSG,46.36,44.33,155,1963,2022
+34866,Яшкуль,Yashkul,46.18,45.35,-7,1965,1988
+34880,"Астрахань,ГМО",Astrakhan GMO,46.28,48.05,-23,1963,2022
+34949,"Ставрополь,АМСГ",Stavropol AMSG,45.11,42.08,452,1977,2022
+35026,Зилаир,Zilair,52.21,57.40,521,1963,2022
+35041,Бреды,Bredy,52.43,60.35,310,1966,2022
+35121,"Оренбург,ЗГМО",Orenburg ZGMO,51.68,55.10,118,1963,2022
+36034,Рубцовск,Rubtsovsk,51.50,81.21,219,1963,2022
+36038,Змеиногорск,Zmeinogorsk,51.15,82.20,355,1963,2022
+36064,Яйлю,Yaylyu,51.76,87.60,480,1963,2022
+36096,Кызыл (Тув. ЦГМС),Kyzyl (Tuv. TsGMS),51.71,94.49,632,1977,1995
+36103,Тоора-Хем,Toora-Khem,52.46,96.10,920,1977,1992
+36229,Усть-Кокса,Ust-Koksa,50.28,85.61,978,1980,2022
+36259,Кош-Агач,Kosh-Agach,50.01,88.68,1759,1963,2022
+36307,Эрзин,Erzin,50.26,95.11,1101,1977,1992
+37061,Буденновск,Budennovsk,44.78,44.13,136,1977,2022
+37099,"Сочи,ГМО",Sochi GMO,43.58,39.76,34,1963,2022
+37126,Шаджатмаз,Shadzhatmaz,43.73,42.66,2056,1977,2022
+37235,"Грозный,АМСГ",Groznyy AMSG,43.35,45.68,163,1963,1994
+37470,Дербент,Derbent,42.06,48.30,-18,1988,2022
+37472,Махачкала,Makhachkala,43.01,47.48,9,1963,2022
+37663,Ахты,Akhty,41.46,47.75,1015,1977,2022
+"""
+RUSOIL_DEPTHS_CM = (2, 5, 10, 15, 20, 40, 60, 80, 120, 160, 240, 320)
+
+
+def read_roshydromet_soil(raw) -> pd.DataFrame:
+    """
+    Roshydromet daily soil temperature at depths to 320 cm, version 3 (RIHMI-WDC,
+    Sherstiukov; http://meteo.ru/data/soil-temperature/), 1963-2024. Served only after a
+    personal AISORI-M login, so the user saves the export ZIPs (wr*.txt data, statlist*.txt,
+    fld*.txt) unchanged in Roshydromet_soil/; every ZIP there is read, and a station-day
+    found in two ZIPs counts once.
+    wr*.txt: ';'-separated, no header: WMO index, year, month, day, then value and quality
+    flag at 2, 5, 10, 15, 20, 40, 60, 80, 120, 160, 240 and 320 cm. Missing = 999.9 (flag
+    9); every month has 31 rows and the impossible dates are empty.
+      - Only quality flag 0 (reliable) is used. The RIHMI-WDC description defines 1-4 and
+        8 as erroneous, 5-7 as doubtful (5 = test not possible) and 9 as missing.
+      - 2-15 cm are not used: bare-soil thermometers read in the warm season only. 20-320
+        cm are the exhaust thermometers under the natural surface, read once a day.
+      - Position from RUSOIL_STATIONS; stations south of CONFIG min_lat are not read.
+      - The stations of the 1930-1990 Russian ALT product (ru_hms_alt) carry its site key
+        (CONFIG rusoil_ruhms), so the two are one site; the daily values rank first (monthly
+        means smooth the late-summer peak, so ALT from them reads shallow).
+    ALT by the 0 C rule (method soil_temp). Most station-years are lower bounds: the
+    cleared, snow-covered station plot thaws below the deepest sensor in use, or there
+    is no permafrost (first build: 157 valid of 5,264 site-years). Stations that read
+    only 80 and 160 cm (Verkhoyansk) get 'wide_sensor_spacing'.
+    """
+    cat = pd.read_csv(io.StringIO(RUSOIL_STATIONS), dtype={"wmo": int}).set_index("wmo")
+    use = [d for d in RUSOIL_DEPTHS_CM if d >= 20]
+    names = ["wmo", "year", "month", "day"] + [f"{k}{d}" for d in RUSOIL_DEPTHS_CM for k in ("t", "q")]
+    cols = ["wmo", "year", "month", "day"] + [f"{k}{d}" for d in use for k in ("t", "q")]
+    parts, seen = [], set()
+    for z in files(raw, "*.zip"):
+        if API_FOLDERS["roshydromet_soil"] not in z.parts:
+            continue
+        with zipfile.ZipFile(z) as zf:
+            for n in zf.namelist():
+                if not re.match(r"wr.*\.txt$", Path(n).name, re.I):
+                    continue
+                d = pd.read_csv(zf.open(n), sep=";", header=None, names=names, usecols=cols,
+                                skipinitialspace=True, dtype="float64")
+                d = d[d.wmo.isin(cat.index[cat.lat >= CONFIG["min_lat"]])]
+                d["time"] = pd.to_datetime(dict(year=d.year, month=d.month, day=d.day), errors="coerce")
+                d = d.dropna(subset=["time"])
+                for dep in use:
+                    ok = (d[f"q{dep}"] == 0) & (d[f"t{dep}"] < 900)
+                    parts.append(pd.DataFrame(dict(wmo=d.wmo[ok].astype(int).to_numpy(), time=d.time[ok].to_numpy(),
+                                                   depth_cm=float(dep), temp_c=d[f"t{dep}"][ok].to_numpy())))
+                seen.add(f"{z.name}/{n}")
+    if not parts:
+        return empty_records()
+    t = pd.concat(parts, ignore_index=True).drop_duplicates(["wmo", "time", "depth_cm"])
+    del parts
+    log(f"  roshydromet_soil: {t.wmo.nunique()} stations at or north of {CONFIG['min_lat']:g} N from "
+        f"{', '.join(sorted(seen))}")
+    out = []
+    for wmo, g in t.groupby("wmo"):
+        r = cat.loc[wmo]
+        key = f"RUSOIL_{wmo}"
+        site = pd.DataFrame([dict(source_site_id=key, site_name=f"{r['name']} ({r.name_ru}), WMO {wmo}",
+                                  lat=r.lat, lon=r.lon, country="Russia",
+                                  site_key=CONFIG["rusoil_ruhms"].get(int(wmo), ""),
+                                  site_note=f"Roshydromet weather station, exhaust soil thermometers 20-320 cm, "
+                                            f"{r.elev_m:g} m a.s.l.",
+                                  source_file=f"{API_FOLDERS['roshydromet_soil']}/wr*.txt: {wmo}")])
+        rec = records_from_profiles(g.drop(columns="wmo").assign(source_site_id=key), site, "soil_temp")
+        if len(rec):
+            out.append(rec)
+    return finish(pd.concat(out, ignore_index=True), "roshydromet_soil") if out else empty_records()
+
+
 def read_g02189(raw) -> pd.DataFrame:
     """
     NSIDC G02189 ('How permanent is permafrost'): soil temperatures at five Yakutian
@@ -4075,6 +4493,8 @@ ADAPTERS = {
     "g02189": read_g02189,
     "tarfala_pace": read_tarfala_pace,
     "uio_boreholes": read_uio_boreholes,
+    "roshydromet_soil": read_roshydromet_soil,
+    "metno_janssonhaugen": read_metno_janssonhaugen,
 }
 
 
@@ -4174,6 +4594,10 @@ SOURCES = {
     "metno_frost": ("MET Norway Frost API: soil and ground temperatures of the MET stations in Svalbard and "
                     "the permafrost boreholes (sensors deeper than 2 m)", "https://frost.met.no",
                     "CC BY 4.0 (MET Norway; 'Data from The Norwegian Meteorological Institute')"),
+    "metno_janssonhaugen": ("Janssonhaugen, Svalbard: shallow borehole P11, ground temperature 0.2-5 m, "
+                            "1999-2025 (MET Norway, K. Isaksen; sent by email 10 November 2026; "
+                            "Isaksen et al. 2000, 2001, 2022)", "https://cryo.met.no/en/permafrost/janssonhaugen",
+                            "shared by the data owner for this analysis; cite Isaksen et al. 2000, 2001, 2022"),
     "g02189": ("NSIDC G02189 Russian station soil temperatures (check before 2000 only, never used as data)",
                "https://nsidc.org/data/g02189", "NSIDC (cite dataset)"),
     "tarfala_pace": ("PACE-1-2 borehole temperature data 2000-2014, Tarfalaryggen, Sweden (Stockholm University, "
@@ -4182,6 +4606,10 @@ SOURCES = {
                       "Iceland (Etzelmüller et al. 2023, The Cryosphere: 'Rapid warming and degradation of "
                       "mountain permafrost in Norway and Iceland')", "https://doi.org/10.11582/2023.00128",
                       "CC BY 4.0"),
+    "roshydromet_soil": ("Roshydromet daily soil temperature at depths to 320 cm, version 3, 1963-2024 "
+                         "(RIHMI-WDC, Sherstiukov 2012; downloaded by the user through AISORI-M)",
+                         "http://meteo.ru/data/soil-temperature/",
+                         "RIHMI-WDC terms for registered users; cite the dataset"),
 }
 
 # Reviewed but not used, with the reason (kept here so the inventory is complete).
@@ -4383,9 +4811,12 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
          censoring: records of the same site and year whose value is a copy of the flagged
          one (within dup_agree_cm or dup_agree_frac); a lower bound also covers smaller
          values. A different, deeper measurement in another source stays usable.
+    Steps 3-5 never start from a 'check_only' record (G02189 July thaw depths, Frost
+    SN99875 under the concrete lid): a series kept only for comparison passes nothing on.
     """
     rec = rec.copy()
     rec["flag"] = rec.flag.fillna("")
+    chk = _has_flag(rec.flag, "check_only")
     before = (~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)).sum()
 
     # 1. talik onset in the listed probing sources
@@ -4411,7 +4842,7 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
     # 3. talik state from the first flagged year on
     for f in STATE_FLAGS:
         has = _has_flag(rec.flag, f)
-        onset = rec[has].groupby("site_id").year.min()
+        onset = rec[has & ~chk].groupby("site_id").year.min()
         hit = (rec.year >= rec.site_id.map(onset).fillna(9999)) & ~has
         rec["flag"] = add_flag(rec.flag, hit, f)
         if hit.any():
@@ -4421,7 +4852,7 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
     # 4. no refreeze: the whole site-year
     for f in YEAR_STATE_FLAGS:
         has = _has_flag(rec.flag, f)
-        sy = set(zip(rec.site_id[has], rec.year[has]))
+        sy = set(zip(rec.site_id[has & ~chk], rec.year[has & ~chk]))
         hit = pd.Series([k in sy for k in zip(rec.site_id, rec.year)], index=rec.index) & ~has
         rec["flag"] = add_flag(rec.flag, hit, f)
         if hit.any():
@@ -4429,8 +4860,8 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
 
     # 5. copies of a flagged or censored value
     src_cols = ["site_id", "year", "alt_cm", "censored", "flag"]
-    flagged = rec[rec.censored | rec.flag.str.contains(
-        r"(?:^|;)(?:" + "|".join(COPY_FLAGS) + r")(?:;|$)")][src_cols]
+    flagged = rec[~chk & (rec.censored | rec.flag.str.contains(
+        r"(?:^|;)(?:" + "|".join(COPY_FLAGS) + r")(?:;|$)"))][src_cols]
     if len(flagged):
         pair = rec.reset_index().merge(flagged, on=["site_id", "year"], suffixes=("", "_f"))
         tol = np.maximum(CONFIG["dup_agree_cm"], CONFIG["dup_agree_frac"] * pair.alt_cm_f)
@@ -4930,6 +5361,7 @@ itex,ADC_sweep/ITEX_Utqiagvik_Atqasuk_thaw/2024_Barrow_Atqasuk_ITEX_Thaw_v1.csv,
 kwbs,Kolyma_WBS/PANGAEA_881754.tab,https://doi.pangaea.de/10.1594/PANGAEA.881754?format=textfile,a805f0fb21b80b109d4e72ccbfb0f3de6213d5960bf8e373f5404208b5106301,1361993,https://creativecommons.org/licenses/by/3.0/,open,"Thaw depth and snow height time series at different sites within Kolyma Water-Balance Station (KWBS), 1954-1997"
 kwbs,Kolyma_WBS/PANGAEA_881792.tab,https://doi.pangaea.de/10.1594/PANGAEA.881792?format=textfile,ad1823503574d0e9806756b9e931163efb5b586737b5d1ffc0dadb32532be3e6,156384,https://creativecommons.org/licenses/by/3.0/,open,"Soil temperature time series at the Nizhnyaya meteorological station within Kolyma Water-Balance Station (KWBS), 1974-1981"
 kytalyk,Russia_PANGAEA/PANGAEA_961879.tab,https://doi.pangaea.de/10.1594/PANGAEA.961879?format=textfile,0a87a4c504c7161d64b25d47abecf3d8e3b55e634b68dffc6d8b3b0f072cf34d,20820,https://creativecommons.org/licenses/by/4.0/,open,Thaw depth of the landscape in northeastern Siberia (S5)
+metno_janssonhaugen,METNO_Janssonhaugen_shallow/P11_Janssonhaugen-1999-2025.txt,https://cryo.met.no/en/permafrost/janssonhaugen,,3475025,"shared by the data owner; cite Isaksen et al. 2000, 2001, 2022",email,"Sent by K. Isaksen (MET Norway) by email on 10 November 2026 as a ZIP with this file and four papers; unpack it into METNO_Janssonhaugen_shallow/. Data after the August 2025 upgrade follow later; he plans to add the series to the GTN-P platform."
 ngee_barrow,NGEE_Arctic/NGEE-BRW-ABCD-sensor-locations_w-o_figs_20170720.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-6011010b2ddffef-20221216T183635146238,714281556a67871aba6ad0d1432bd57b6fc857240a985d932a95bcefd19c2a66,3774,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
 ngee_barrow,NGEE_Arctic/NGEE_BRW_A_2012-09-01_2013-09-30_Thermal_Transect.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-24858052ca470a0-20221216T183550503153,8fe94e1b6714530ff026164ea2c7ee9219245a492ad13811adaff3732e7756cb,5163348,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
 ngee_barrow,NGEE_Arctic/NGEE_BRW_A_2013-10-01_2014-09-30_Thermal_Transect.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-de711f9f19ced31-20221216T183552434371,80b66968f3b28ada62a29117accc837b44fdb370a880a2dca3bc2f5f9b25bb99,4867385,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
@@ -4980,6 +5412,7 @@ parks_canada,ParksCanada/quttinirpaaq_np_tundra_active_layer_1999-2025_data_1_ca
 parks_canada,ParksCanada/sirmilik_np_tundra_active_layer_2008-2025_data_1_calm-grid.csv,https://open.canada.ca/data/dataset/a29dba8f-a791-4012-8c27-084ae7b76da9/resource/7ba2529b-a617-4e92-a3e5-04e2774e6fd8/download/sirmilik_np_tundra_active_layer_2008-2025_data_1_calm-grid.csv,d3fc41b6b9f4fac096f3b3d51569e524c6c6fd48914cbb37895a734af72b9ff5,131528,Open Government Licence - Canada,open,Active Layer - Sirmilik
 parks_canada,ParksCanada/sirmilik_np_tundra_active_layer_2012-2025_data_2_temperature2.csv,https://open.canada.ca/data/dataset/a29dba8f-a791-4012-8c27-084ae7b76da9/resource/e7f34a0c-d726-47de-ac0a-4442866d36fe/download/sirmilik_np_tundra_active_layer_2012-2025_data_2_temperature2.csv,18a398e0f983e3cbdaa8560ad3884d9c99793cac0d8bbc05a635f213899c30f5,7627835,Open Government Licence - Canada,open,Active Layer - Sirmilik
 parks_canada,ParksCanada/ukkusiksalik_np_tundra_active-layer_2014-2024_data_1_calm-grid.csv,https://open.canada.ca/data/dataset/0a827e84-278c-4150-aeef-77eb9c9612ce/resource/dc7e21b5-017e-488f-834a-ed622bb4ec03/download/ukkusiksalik_np_tundra_active-layer_2014-2024_data_1_calm-grid.csv,35e597eeff215cbfea44dbe2ae5881c2975043b5c34ffd832043a6433ad0adbe,25342,Open Government Licence - Canada,open,Active Layer - Ukkusiksalik
+roshydromet_soil,Roshydromet_soil,http://aisori-m.meteo.ru/waisori/index.xhtml?idata=4,,,RIHMI-WDC (registered users),login,"Personal AISORI-M login (http only): dataset 'Температура почвы на глубинах до 320 см', stations by WMO index, semicolon delimiter, all years and parameters; save each export ZIP unchanged in Roshydromet_soil/"
 ru_hms_alt,ADC_sweep/Russian_Arctic_ALT_1930_1990_arcss160/arcss160.zip,https://arcticdata.io/metacat/d1/mn/v2/object/urn%3Auuid%3A450f1a1e-d80c-4db6-ae21-6e291c8a4a99,857d198db1dd469cc3a96f36e3cad28caa9c1b78c505c89b979c894c78b8e3e2,49684,CC-BY-4.0 / CC0 (Arctic Data Center),open,"Time Series of Active Layer Thickness in the Russian Arctic, 1930-1990"
 samoylov_calm,Samoylov/PANGAEA_947069_Calm_lv1_2019.zip,https://download.pangaea.de/dataset/947069/files/Calm_lv1_2019.zip,dc37e9b382e8f2c508bbef4ad9914643ac08af5b21cf0cb79a0e3451e3f6189d,1368,https://creativecommons.org/licenses/by/4.0/,open,Calm data at station Samoylov (2019)
 samoylov_calm,Samoylov/PANGAEA_949381_Calm_lv1_2020.dat,https://download.pangaea.de/dataset/949381/files/Calm_lv1_2020.dat,6b98562cdee9f83c7f4eea2404a44794562183687031deef0315974dbbbabebd,4267,https://creativecommons.org/licenses/by/4.0/,open,Calm data at station Samoylov (2020)
