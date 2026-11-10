@@ -160,6 +160,24 @@ CONFIG = {
     # used. Other sensors are not checked: a cool moss-layer sensor near the surface
     # (Parks Canada 2.5 cm) or a faulty deep one does not enter the interpolation.
     "inversion_tol_c": 1.0,
+    # Temperature profiles: the year of a value is the thaw season, from the first day of
+    # this month to the day before it in the next year, labelled by the summer's calendar
+    # year. The sensor just below the thaw front often reaches its maximum in
+    # November-January (49 % of temperature site-years, 23 % in January), so a calendar
+    # year would carry the heat of one summer into the next year's value.
+    "season_start_month": 6,
+    # Temperature profiles, information flags (the value is still used):
+    #   'autumn_gap': the sensor below the crossing has data on fewer than min_autumn_cover
+    #   of the days of October-December, when it often peaks (the value may be too shallow);
+    #   'edge_max': a maximum of the two sensors around the crossing falls within edge_days
+    #   of the start or end of the season (it may belong to the season next to it);
+    #   'front_indeterminate': the maximum of the sensor below the crossing is within
+    #   sensor_accuracy_c of 0 C, so that sensor may sit in the zero curtain and the thaw
+    #   front can be anywhere between the two sensors. ALT is also computed with the
+    #   threshold at 0 C +/- sensor_accuracy_c (alt_thr_plus_cm, alt_thr_minus_cm).
+    "min_autumn_cover": 0.8,
+    "edge_days": 15,
+    "sensor_accuracy_c": 0.1,
     # Two records are the same physical site when they share a site key (CALM code or
     # station id), or lie within this distance and use the same method family.
     "dup_distance_km": 1.0,
@@ -331,6 +349,9 @@ RECORD_COLUMNS = [
     "source", "source_site_id", "site_name", "calm_code", "site_key", "lat", "lon",
     "country", "method", "year", "alt_cm", "alt_sd_cm", "n_points", "obs_date",
     "censored", "bracket_cm", "flag", "site_note", "source_file",
+    # temperature profiles only (see alt_from_temperature_profile)
+    "sensor_above_cm", "sensor_below_cm", "alt_thr_plus_cm", "alt_thr_minus_cm",
+    "below_max_c", "below_max_date", "alt_daily_cm", "alt_daily_date", "alt_extrap_cm",
 ]
 
 LOG_LINES: list[str] = []
@@ -414,11 +435,13 @@ def finish(df: pd.DataFrame, source: str, source_file: str = "") -> pd.DataFrame
     for c in RECORD_COLUMNS:
         if c not in df:
             df[c] = "" if c in ("flag", "calm_code", "country", "site_name", "site_key",
-                                "site_note", "source_file") else np.nan
+                                "site_note", "source_file", "below_max_date",
+                                "alt_daily_date") else np.nan
     df["source"] = source
     if source_file:
         df["source_file"] = df["source_file"].fillna("").replace("", source_file)
-    for c in ("flag", "site_name", "site_key", "site_note", "source_file", "country"):
+    for c in ("flag", "site_name", "site_key", "site_note", "source_file", "country",
+              "below_max_date", "alt_daily_date"):
         df[c] = df[c].fillna("").astype(str)
     df["calm_code"] = df["calm_code"].fillna("").map(norm_calm_code)
     df["site_key"] = np.where((df.site_key == "") & (df.calm_code != ""),
@@ -433,7 +456,9 @@ def finish(df: pd.DataFrame, source: str, source_file: str = "") -> pd.DataFrame
     df.loc[svalbard, "country"] = "Norway (Svalbard)"
     df.loc[two & ~svalbard, "country"] = df.loc[two & ~svalbard, "country"].str.split("/").str[0]
     df["censored"] = df["censored"].fillna(False).astype(bool)
-    for c in ("year", "alt_cm", "alt_sd_cm", "n_points", "lat", "lon", "bracket_cm"):
+    for c in ("year", "alt_cm", "alt_sd_cm", "n_points", "lat", "lon", "bracket_cm",
+              "sensor_above_cm", "sensor_below_cm", "alt_thr_plus_cm", "alt_thr_minus_cm",
+              "below_max_c", "alt_daily_cm", "alt_extrap_cm"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
     lo, hi = CONFIG["valid_alt_cm"]
     hi_b = CONFIG["valid_alt_cm_borehole"][1]
@@ -528,19 +553,81 @@ def end_of_season(surveys: pd.DataFrame, key: str = "source_site_id",
 # =============================================================================
 # ALT from ground temperatures
 # =============================================================================
+PROFILE_COLUMNS = ["year", "alt_cm", "censored", "n_sensors", "deepest_cm", "bracket_cm",
+                   "nonmonotonic", "no_refreeze", "inversion", "sensor_above_cm",
+                   "sensor_below_cm", "alt_thr_plus_cm", "alt_thr_minus_cm", "below_max_c",
+                   "below_max_date", "alt_daily_cm", "alt_daily_date", "alt_extrap_cm",
+                   "front_indeterminate", "autumn_gap", "edge_max"]
+
+
+def profile_crossing(d: np.ndarray, v: np.ndarray, thr: float):
+    """
+    Where a temperature profile (depths d, increasing; temperatures v) crosses thr going
+    down: start at the shallowest sensor above thr, go down to the first sensor at or below
+    thr, and interpolate linearly between the two. Returns (depth, i, censored), i = the
+    last sensor above thr; censored=True when every sensor below the start is above thr
+    (depth = deepest sensor, a lower bound). None when no sensor is above thr.
+    """
+    above = v > thr
+    if not above.any():
+        return None
+    i = int(np.argmax(above))
+    while i + 1 < len(v) and above[i + 1]:
+        i += 1
+    if i == len(v) - 1:
+        return d[i], i, True
+    return d[i] + (d[i + 1] - d[i]) * (v[i] - thr) / (v[i] - v[i + 1]), i, False
+
+
+def deepest_daily_crossing(m: np.ndarray, d: np.ndarray, zero_c: float = 0.0):
+    """
+    m: daily mean temperatures, one row per day, one column per sensor (depths d,
+    increasing; no missing values). For each day: the 0 C crossing as in profile_crossing
+    (linear between the last thawed sensor and the next one), and the extrapolation of the
+    gradient of the two lowest thawed sensors down to 0 C, kept inside the same two
+    sensors (Riseborough 2008; Brown & Gruber 2026). Returns (deepest linear crossing,
+    row of that day, deepest extrapolated crossing); NaN where no day has one.
+    """
+    if m.size == 0:
+        return np.nan, -1, np.nan
+    above = m > zero_c
+    has = above.any(axis=1) & ~above[:, -1]          # a crossing inside the profile
+    if not has.any():
+        return np.nan, -1, np.nan
+    first = np.argmax(above, axis=1)
+    col = np.arange(m.shape[1])
+    j = np.argmax(~above & (col[None, :] > first[:, None]), axis=1)   # first sensor <= 0 C
+    r = np.nonzero(has)[0]
+    j = j[r]
+    i = j - 1
+    vi, vj = m[r, i], m[r, j]
+    z = d[i] + (d[j] - d[i]) * (vi - zero_c) / (vi - vj)
+    k = np.argmax(z)
+    two = i > first[r]                               # a second thawed sensor above
+    ih = np.maximum(i - 1, 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        g = (m[r, ih] - vi) / (d[i] - d[ih])         # gradient of the thawed layer, C per cm
+        ze = np.where(two & (g > 0), d[i] + (vi - zero_c) / g, np.nan)
+    ze = np.clip(ze, d[i], d[j])
+    return float(z[k]), int(r[k]), (float(np.nanmax(ze)) if np.isfinite(ze).any() else np.nan)
+
+
 def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | None = None,
                                  zero_c: float = 0.0, monthly: bool = False) -> pd.DataFrame:
     """
     Annual ALT from ground temperatures at several depths (boreholes, soil stations).
 
     temps: columns 'time' (datetime), 'depth_cm' (positive down), 'temp_c'.
-    For each calendar year: take each sensor's maximum temperature of the year; ALT is the
+    Year = thaw season, 1 June to 31 May, labelled by the summer's calendar year
+    (CONFIG season_start_month): the sensor just below the thaw front often reaches its
+    maximum in November-January, and that heat belongs to the summer before.
+    For each season: take each sensor's maximum temperature of the season; ALT is the
     depth where that maximum-temperature profile first crosses 0 C going down, by linear
     interpolation between the last thawed sensor and the next sensor below it.
 
-    In a given year a sensor is used only when it has data on >= min_season_cover of the
-    days from 1 August to 30 September (the end of the thaw season, when the thaw is
-    deepest); a year needs at least two such sensors. With monthly=True (monthly mean
+    In a given season a sensor is used only when it has data on >= min_season_cover of
+    the days from 1 August to 30 September (the end of the thaw season, when the thaw is
+    deepest); a season needs at least two such sensors. With monthly=True (monthly mean
     temperatures) a sensor needs August and September values instead. Monthly means are smoother than daily values, so ALT
     from monthly data is biased shallow; those records carry method 'soil_temp_monthly'.
     Censored (ALT deeper than the deepest sensor): all sensors above 0 C -> value is the
@@ -552,31 +639,55 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
     skipped (no_refreeze=False).
     Profile check: inversion=True when the last thawed sensor reads more than
     inversion_tol_c warmer than the sensor above it (mislabelled depth or faulty sensor).
-    Returns one row per year: year, alt_cm, censored, n_sensors, deepest_cm, bracket_cm,
-    nonmonotonic (a deeper sensor is above 0 C again below the crossing), no_refreeze,
-    inversion.
+
+    Also returned, for the uncertainty of the value (not used to choose it):
+      sensor_above_cm, sensor_below_cm: the two sensors around the crossing;
+      alt_thr_plus_cm, alt_thr_minus_cm: ALT with the threshold at 0 C + and -
+        sensor_accuracy_c (shallower, deeper; deepest sensor if all are above it);
+      below_max_c, below_max_date: maximum of the sensor below the crossing and its date;
+      front_indeterminate: that maximum is within sensor_accuracy_c of 0 C, so the
+        sensor may be in the zero curtain and the front anywhere between the two sensors;
+      autumn_gap: the sensor below has less than min_autumn_cover of the days of
+        October-December, when it often peaks, so the value may be too shallow;
+      edge_max: a maximum of the two sensors falls within edge_days of the start or end
+        of the season, so it may belong to the season next to it;
+      alt_daily_cm, alt_daily_date: the deepest 0 C crossing of the daily mean profiles
+        (the same rule applied day by day, no mixing of dates; daily data only);
+      alt_extrap_cm: the deepest daily extrapolation of the gradient of the two lowest
+        thawed sensors down to 0 C, kept between the two sensors around the crossing.
     """
     if min_season_cover is None:
         min_season_cover = CONFIG["min_summer_cover"]
+    acc = CONFIG["sensor_accuracy_c"]
+    start = CONFIG["season_start_month"]
     t = temps.dropna(subset=["temp_c", "depth_cm"]).copy()
-    t = t[t.depth_cm > 0]
+    t = t[t.depth_cm > 0].reset_index(drop=True)
     if t.empty:
-        return pd.DataFrame(columns=["year", "alt_cm", "censored", "n_sensors", "deepest_cm",
-                                     "bracket_cm", "nonmonotonic", "no_refreeze", "inversion"])
+        return pd.DataFrame(columns=PROFILE_COLUMNS)
     t["time"] = pd.to_datetime(t["time"])
-    t["year"] = t.time.dt.year
-    late = t[t.time.dt.month.between(8, 9)]                 # 1 Aug - 30 Sep, 61 days
+    month = t.time.dt.month
+    t["year"] = np.where(month >= start, t.time.dt.year, t.time.dt.year - 1)   # season
+    late = t[month.between(8, 9)]                           # 1 Aug - 30 Sep, 61 days
+    autumn = t[month.between(10, 12)]                       # 1 Oct - 31 Dec, 92 days
     if monthly:
         cover = late.assign(m=late.time.dt.month).groupby(["year", "depth_cm"]).m.nunique() / 2.0
+        acover = autumn.assign(m=autumn.time.dt.month).groupby(["year", "depth_cm"]).m.nunique() / 3.0
         need = 1.0
     else:
         cover = late.assign(d=late.time.dt.normalize()).groupby(["year", "depth_cm"]).d.nunique() / 61.0
+        acover = autumn.assign(d=autumn.time.dt.normalize()).groupby(["year", "depth_cm"]).d.nunique() / 92.0
         need = min_season_cover
-    tmax = t.groupby(["year", "depth_cm"]).temp_c.max()
+    imax = t.groupby(["year", "depth_cm"]).temp_c.idxmax()
+    tmax = pd.Series(t.temp_c.to_numpy()[imax.to_numpy()], index=imax.index)
+    tdate = pd.Series(t.time.to_numpy()[imax.to_numpy()], index=imax.index)
+    daily = None
+    if not monthly:
+        daily = (t.assign(day=t.time.dt.normalize())
+                 .groupby(["year", "day", "depth_cm"]).temp_c.mean().unstack("depth_cm"))
+        dyears = set(daily.index.get_level_values(0))
     # following winter: Oct-Dec of the year and Jan-Jun of the next year
-    m = t.time.dt.month
-    w = t[(m >= 10) | (m <= 6)].copy()
-    w["wyear"] = np.where(w.time.dt.month >= 10, w.year, w.year - 1)
+    w = t[(month >= 10) | (month <= 6)].copy()
+    w["wyear"] = np.where(w.time.dt.month >= 10, w.time.dt.year, w.time.dt.year - 1)
     wmin = w.groupby(["wyear", "depth_cm"]).temp_c.min()
     jfm = w[w.time.dt.month <= 3]
     if monthly:
@@ -589,6 +700,13 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
         v = wmin.get((yr, depth), np.nan)
         return bool(np.isfinite(v) and v >= zero_c - CONFIG["refreeze_margin_c"])
 
+    def near_edge(yr, depth):
+        dt = tdate.get((yr, depth))
+        if dt is None or pd.isna(dt):
+            return False
+        s0, s1 = pd.Timestamp(yr, start, 1), pd.Timestamp(yr + 1, start, 1)
+        return bool((dt - s0).days < CONFIG["edge_days"] or (s1 - dt).days <= CONFIG["edge_days"])
+
     out = []
     for yr, prof in tmax.groupby(level=0):
         prof = prof.droplevel(0).sort_index()
@@ -597,32 +715,50 @@ def alt_from_temperature_profile(temps: pd.DataFrame, min_season_cover: float | 
         if len(prof) < 2:
             continue
         d, v = prof.index.to_numpy(float), prof.to_numpy(float)
-        above = v > zero_c
-        if not above.any():
-            continue
         # Go down from the shallowest thawed sensor to the first sensor at or below 0 C.
         # Deeper sensors slightly above 0 C after that (common in permafrost close to
         # 0 C, from sensor offsets of a few tenths of a degree) do not move the value;
         # the year is flagged 'nonmonotonic_profile' instead.
-        i = int(np.argmax(above))
-        while i + 1 < len(v) and above[i + 1]:
-            i += 1
-        if i == len(v) - 1:
-            out.append(dict(year=yr, alt_cm=d[i], censored=True, n_sensors=len(v),
-                            deepest_cm=d[-1], bracket_cm=np.nan, nonmonotonic=False,
-                            no_refreeze=no_refreeze(yr, d[i]), inversion=False))
+        hit = profile_crossing(d, v, zero_c)
+        if hit is None:
             continue
+        z, i, cens = hit
+        row = dict.fromkeys(PROFILE_COLUMNS, np.nan)
+        row.update(year=yr, alt_cm=z, censored=cens, n_sensors=len(v), deepest_cm=d[-1],
+                   nonmonotonic=False, no_refreeze=no_refreeze(yr, d[i]), inversion=False,
+                   sensor_above_cm=d[i], below_max_date="", alt_daily_date="",
+                   front_indeterminate=False, autumn_gap=False,
+                   edge_max=near_edge(yr, d[i]))
+        if cens:
+            out.append(row)
+            continue
+        first = int(np.argmax(v > zero_c))
         # last thawed sensor warmer than the thawed sensor above it
-        inversion = bool(i > int(np.argmax(above)) and v[i] > v[i - 1] + CONFIG["inversion_tol_c"])
-        # the crossing lies between sensor i (above 0) and i+1 (at or below 0)
-        z = d[i] + (d[i + 1] - d[i]) * (v[i] - zero_c) / (v[i] - v[i + 1])
+        row["inversion"] = bool(i > first and v[i] > v[i - 1] + CONFIG["inversion_tol_c"])
+        row["nonmonotonic"] = bool((v[i + 1:] > zero_c).any())
         # bracket_cm: spacing of the two sensors around the crossing = interpolation
         # uncertainty (the true profile is not linear between sensors)
-        out.append(dict(year=yr, alt_cm=z, censored=False, n_sensors=len(v),
-                        deepest_cm=d[-1], bracket_cm=d[i + 1] - d[i],
-                        nonmonotonic=bool(above[i + 1:].any()), no_refreeze=no_refreeze(yr, d[i]),
-                        inversion=inversion))
-    return pd.DataFrame(out)
+        row["bracket_cm"] = d[i + 1] - d[i]
+        row["sensor_below_cm"] = d[i + 1]
+        row["below_max_c"] = v[i + 1]
+        dt = tdate.get((yr, d[i + 1]))
+        row["below_max_date"] = "" if dt is None or pd.isna(dt) else pd.Timestamp(dt).strftime("%Y-%m-%d")
+        row["front_indeterminate"] = bool(v[i + 1] > zero_c - acc)
+        row["autumn_gap"] = bool(acover.get((yr, d[i + 1]), 0.0) < CONFIG["min_autumn_cover"] - 1e-9)
+        row["edge_max"] = bool(row["edge_max"] or near_edge(yr, d[i + 1]))
+        warm = profile_crossing(d, v, zero_c + acc)
+        cold = profile_crossing(d, v, zero_c - acc)
+        row["alt_thr_plus_cm"] = warm[0] if warm else np.nan
+        row["alt_thr_minus_cm"] = cold[0] if cold else np.nan
+        if daily is not None and yr in daily.index.get_level_values(0):
+            # daily profiles of the same sensors, down to the sensor below the crossing
+            # (it is at or below 0 C on every day, since its maximum is)
+            dd = daily.loc[yr].reindex(columns=d[:i + 2]).dropna()
+            zd, k, ze = deepest_daily_crossing(dd.to_numpy(float), d[:i + 2], zero_c)
+            row["alt_daily_cm"], row["alt_extrap_cm"] = zd, ze
+            row["alt_daily_date"] = dd.index[k].strftime("%Y-%m-%d") if k >= 0 else ""
+        out.append(row)
+    return pd.DataFrame(out, columns=PROFILE_COLUMNS)
 
 
 def records_from_profiles(temps: pd.DataFrame, sites: pd.DataFrame, method: str,
@@ -632,8 +768,9 @@ def records_from_profiles(temps: pd.DataFrame, sites: pd.DataFrame, method: str,
     sites: one row per key with site_name, lat, lon, country (and optional site_key,
     calm_code, site_note, source_file).
     Runs alt_from_temperature_profile per site, flags wide sensor spacing, lower bounds,
-    non-monotonic profiles and missing winter refreeze, and returns
-    records (not yet finished).
+    non-monotonic profiles and missing winter refreeze (not used), and the information
+    flags front_indeterminate, autumn_gap and edge_max (used), and returns records (not
+    yet finished).
     """
     rows = []
     for k, g in temps.groupby(key):
@@ -653,12 +790,10 @@ def records_from_profiles(temps: pd.DataFrame, sites: pd.DataFrame, method: str,
     wide = a.bracket_cm > allowed
     a["flag"] = add_flag(a.get("flag", pd.Series("", index=a.index)), wide, "wide_sensor_spacing")
     a["flag"] = add_flag(a["flag"], a.censored, "lower_bound")
-    a["flag"] = add_flag(a["flag"], a.pop("nonmonotonic").fillna(False).astype(bool),
-                         "nonmonotonic_profile")
-    a["flag"] = add_flag(a["flag"], a.pop("no_refreeze").fillna(False).astype(bool),
-                         "no_refreeze")
-    a["flag"] = add_flag(a["flag"], a.pop("inversion").fillna(False).astype(bool),
-                         "profile_inversion")
+    for col, name in (("nonmonotonic", "nonmonotonic_profile"), ("no_refreeze", "no_refreeze"),
+                      ("inversion", "profile_inversion"), ("front_indeterminate", "front_indeterminate"),
+                      ("autumn_gap", "autumn_gap"), ("edge_max", "edge_max")):
+        a["flag"] = add_flag(a["flag"], a.pop(col).fillna(False).astype(bool), name)
     return a.drop(columns=["deepest_cm"])
 
 
@@ -4913,6 +5048,25 @@ def merge_site_years(rec: pd.DataFrame) -> pd.DataFrame:
     return top.drop(columns=["prio"])
 
 
+def temperature_summary(used: pd.DataFrame) -> None:
+    """Logs how certain the used temperature values are (see alt_from_temperature_profile)."""
+    t = used[is_temperature_method(used.method) & used.sensor_below_cm.notna()]
+    if t.empty:
+        return
+    pos = (t.alt_cm - t.sensor_above_cm) / (t.sensor_below_cm - t.sensor_above_cm)
+    has = lambda f: t.flag.str.contains(rf"(?:^|;){f}(?:;|$)").mean() * 100
+    q = lambda x: f"median {x.median():+.1f} cm (IQR {x.quantile(.25):+.1f} to {x.quantile(.75):+.1f})"
+    log(f"\n[temperature values] {len(t)} used site-years with two sensors around the crossing")
+    log(f"  in the deepest 10 % of the bracket: {(pos >= 0.9).mean() * 100:.0f} %; "
+        f"front_indeterminate {has('front_indeterminate'):.0f} %, autumn_gap "
+        f"{has('autumn_gap'):.0f} %, edge_max {has('edge_max'):.0f} %")
+    log(f"  threshold -0.1 minus +0.1 C: {q(t.alt_thr_minus_cm - t.alt_thr_plus_cm)}")
+    log(f"  daily crossing minus value: {q(t.alt_daily_cm - t.alt_cm)} "
+        f"({t.alt_daily_cm.notna().sum()} site-years)")
+    log(f"  daily extrapolation minus value: {q(t.alt_extrap_cm - t.alt_cm)} "
+        f"({t.alt_extrap_cm.notna().sum()} site-years)")
+
+
 def outlier_flags(an: pd.DataFrame) -> pd.Series:
     """
     Flags isolated spikes for review; nothing is removed.
@@ -5134,6 +5288,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> lis
     keep = nval[nval >= CONFIG["min_years"]].index
     an_keep = an[an.site_id.isin(keep)].sort_values(["site_id", "year"])
     an_keep.to_csv(out / "alt_multisource_annual.csv", index=False)
+    temperature_summary(an_keep[an_keep.use])
 
     valid = an_keep[an_keep.use]
     # name, country and CALM code from the preferred source of each site

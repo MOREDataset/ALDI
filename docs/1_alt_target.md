@@ -93,9 +93,13 @@ One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 200
   the season's fullest survey).
 - **Thaw tubes** (GSC Mackenzie Valley): the maximum thaw depth read from the tube.
 - **Ground temperatures** (boreholes, soil stations, temperature cables): each sensor's
-  maximum temperature of the year, then the depth where that profile first crosses 0 °C
-  going down, by linear interpolation between the two sensors around it. A sensor is used
-  in a year only if it has data on at least 80 % of the days from 1 August to 30 September.
+  maximum temperature of the thaw season, then the depth where that profile first crosses
+  0 °C going down, by linear interpolation between the two sensors around it. The thaw
+  season runs from 1 June to 31 May and carries the summer's year (CONFIG
+  `season_start_month`): the sensor just below the thaw front often peaks in
+  November-January (49 % of temperature site-years, 23 % in January), and with a
+  calendar year that heat counted toward the next year's value. A sensor is used
+  in a season only if it has data on at least 80 % of the days from 1 August to 30 September.
   The value is not used when:
   - every sensor thawed (the thaw went deeper than the deepest sensor; flag `lower_bound`),
   - the two sensors around the crossing are more than 50 cm apart (or 50 % of the ALT
@@ -107,6 +111,28 @@ One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 200
   - the last thawed sensor, the one the crossing is interpolated from, reads more than
     1 °C warmer than the sensor above it. The annual maximum falls with depth, so its
     depth label or the sensor is wrong (flag `profile_inversion`).
+
+  Each temperature value also carries, for its uncertainty and for testing other
+  definitions (none of these changes the value used):
+  - `sensor_above_cm`, `sensor_below_cm`: the two sensors around the crossing;
+  - `alt_thr_plus_cm`, `alt_thr_minus_cm`: ALT with the threshold at +0.1 and -0.1 °C,
+    the usual sensor accuracy (CONFIG `sensor_accuracy_c`); the deepest sensor when every
+    sensor is above -0.1 °C;
+  - `below_max_c`, `below_max_date`: the maximum of the sensor below the crossing and its
+    date;
+  - `alt_daily_cm`, `alt_daily_date`: the deepest 0 °C crossing of the daily profiles (the
+    same rule, day by day, so maxima of different dates are not mixed; as at PERMOS and
+    the PACE boreholes);
+  - `alt_extrap_cm`: the deepest daily extrapolation of the gradient of the two lowest
+    thawed sensors down to 0 °C, kept between the two sensors around the crossing (the
+    method with the smallest error in Riseborough 2008, after Brown & Gruber 2026).
+
+  Why: below the thaw front the ground stays just under 0 °C, so the maximum of the
+  sensor below the front is close to 0 °C wherever the front is, and linear
+  interpolation puts ALT right above that sensor. In about half of the temperature
+  years the value lies in the deepest 10 % of its bracket. The review of 10 November
+  2026 (https://claude.ai/artifact/3SM1Fvx65xwGZKDSERNtQT) recommends choosing the
+  definition after a sensor-dropout test on the densest profiles.
 
 ## Flags
 
@@ -143,7 +169,17 @@ GTN-P or BNZ LTER (Bonanza Creek U18 2011-2025, Pearl Creek U19 2015-2018, and 1
 early surveys at Russian and Canadian sites).
 
 Informational only: `nonmonotonic_profile`, `burned` and `burned_site`, `small_sample`,
-`unusual_year_regional`, `unusual_year_isolated`, `deep_thaw_check_talik`.
+`unusual_year_regional`, `unusual_year_isolated`, `deep_thaw_check_talik`, and three
+temperature flags:
+
+- `front_indeterminate`: the maximum of the sensor below the crossing is within 0.1 °C of
+  0 °C. That sensor may sit in the zero curtain, so the thaw front can be anywhere
+  between the two sensors, and a 0.1 °C sensor error moves the value by a whole bracket.
+- `autumn_gap`: the sensor below the crossing has data on fewer than 80 % of the days of
+  October-December, when it often peaks (CONFIG `min_autumn_cover`), so the value may be
+  too shallow. Typical for the last season of a record.
+- `edge_max`: a maximum of the two sensors around the crossing falls within 15 days of
+  1 June (CONFIG `edge_days`), so it may belong to the season next to it.
 
 ## Canada ground temperature collection
 
