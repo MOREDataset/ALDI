@@ -193,6 +193,15 @@ CONFIG = {
     # The UiO file of the same Juvvasshoe PACE borehole (juvP, 10 m from SN15270) joins
     # CALM N2 the same way.
     "uio_calm_code": {"juvP": "N2"},
+    # Same borehole served by two products (rule e of assign_physical_sites): the series on
+    # the left joins the site of the series on the right, which ranks first. The UiO file of
+    # Juvflye BH1 matches Frost SN15265 within 0-3 cm in 2009-2012 but reads 40-100 cm
+    # deeper from 2014, so the agreement rules made it a second site of one borehole. The
+    # other two pairs join by agreement anyway; listing them keeps that from depending on
+    # the tolerance.
+    "force_join": {"uio_boreholes:UIO_juv1": "metno_frost:METNO_SN15265",
+                   "uio_boreholes:UIO_juv3": "metno_frost:METNO_SN15290",
+                   "uio_boreholes:UIO_isk2": "metno_frost:METNO_SN97710"},
     # NEON re-surveys its sensors and writes a new position row each time, mostly with
     # the same depth. A sensor counts as moved (frost heave) when its depth changes by
     # more than this within the plot-year.
@@ -4256,6 +4265,8 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
       (d) one is a copy of the other (within copy_km, >= 5 shared years, median
           |difference| <= copy_agree_cm and correlation >= copy_min_r), whatever the
           method names.
+      (e) CONFIG force_join names it as the same borehole as a series of a preferred
+          source (two products of one logger that disagree, so rules b-d keep them apart).
     Two different site keys are never joined, and neither are two series of the same
     source (the source itself lists them as different plots, e.g. the Eight Mile Lake
     thaw-gradient sites or the Kolyma water-balance plots, even when they share a
@@ -4280,6 +4291,12 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
         match = None
         if r.site_key:
             match = next((s for s in reps if s["site_key"] == r.site_key), None)
+        forced = CONFIG["force_join"].get(f"{r.source}:{r.source_site_id}")
+        if match is None and forced:                                         # rule (e)
+            sid = site_of.get(tuple(forced.split(":", 1)))
+            match = next((s for s in reps if s["site_id"] == sid), None)
+            if match is not None:
+                log(f"    {key[0]}:{key[1]} joined to {sid} (CONFIG force_join)")
         if match is None and reps:
             lat = np.array([s["lat"] for s in reps])
             lon = np.array([s["lon"] for s in reps])
