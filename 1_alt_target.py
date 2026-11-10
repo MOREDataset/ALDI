@@ -183,6 +183,11 @@ CONFIG = {
     # There, only rules (c) and (d) of assign_physical_sites join them: same position
     # and close agreement on >= 5 shared years.
     "join_within_source": ("tsp_alaska", "uaf_sites"),
+    # Frost stations that are a CALM borehole read by MET Norway: the CALM code joins them
+    # (rule a). Juvvasshoe SN15270 lies about 10 m from CALM N2 but reads 25-30 cm deeper
+    # every year (a different way of placing the 0 C depth), so the agreement rules kept
+    # the same borehole apart as two sites; CALM's values stay first (priority).
+    "frost_calm_code": {"SN15270": "N2"},
     # NEON re-surveys its sensors and writes a new position row each time, mostly with
     # the same depth. A sensor counts as moved (frost heave) when its depth changes by
     # more than this within the plot-year.
@@ -3744,6 +3749,7 @@ def read_metno_frost(raw) -> pd.DataFrame:
             country = "Norway (Svalbard)" if 74 <= d.lat.iloc[0] <= 81.5 else "Norway"
             sites.append(dict(source_site_id=key, site_name=str(d.title.iloc[0]), lat=d.lat.iloc[0],
                               lon=d.lon.iloc[0], country=country, source_file=f.name,
+                              calm_code=CONFIG["frost_calm_code"].get(f.stem.replace("_daily_mean", ""), ""),
                               deep=d.depth_m.abs().max() > 2.0))
     if not temps:
         return empty_records()
