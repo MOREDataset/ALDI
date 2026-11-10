@@ -3912,8 +3912,12 @@ def read_tarfala_pace(raw) -> pd.DataFrame:
     thermistor (depths in TARFALA_PACE, from the data description). Logger error codes
     (-273, -231, -113, -106 C) are removed (anything outside -60..40 C). Readings are
     averaged per day (at least 2 of the 4 readings), then the 0 C rule gives ALT.
-    The two boreholes are one site, and two series of one source are never joined, so only
-    the borehole with more usable years is kept (the other is reported in the log).
+    The two boreholes are one site, and two series of one source are never joined, so one
+    is kept: the 15 m control hole. The 100 m main borehole reads ALT 5-19 cm shallower in
+    the same years, the pattern of the main borehole at Janssonhaugen, whose concrete lid
+    damps the near-surface temperatures (the PACE sites have the shallow control hole for
+    this; Isaksen et al. 2001). The 100 m hole is kept only if the 15 m one gives nothing;
+    the log gives the usable years of both.
     """
     out = []
     for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
@@ -3954,7 +3958,7 @@ def read_tarfala_pace(raw) -> pd.DataFrame:
         return rec
     ok = ~rec.flag.str.contains(INVALID_FLAGS) & ~rec.censored     # as counted in the build
     n_ok = ok.groupby(rec.source_site_id).sum().reindex(rec.source_site_id.unique(), fill_value=0)
-    keep = n_ok.idxmax()
+    keep = "TARFALA_PACE_15m" if n_ok.get("TARFALA_PACE_15m", 0) > 0 else n_ok.idxmax()
     log("  tarfala_pace: usable years per borehole " + ", ".join(f"{k} {int(v)}" for k, v in n_ok.items())
         + f"; kept {keep}")
     return rec[rec.source_site_id == keep].reset_index(drop=True)
