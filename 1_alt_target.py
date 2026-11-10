@@ -160,6 +160,15 @@ CONFIG = {
     # used. Other sensors are not checked: a cool moss-layer sensor near the surface
     # (Parks Canada 2.5 cm) or a faulty deep one does not enter the interpolation.
     "inversion_tol_c": 1.0,
+    # Temperature series pinned to a sensor depth: when the sensor below the 0 C crossing
+    # stays just under 0 C while the one above is warm, the linear crossing lands a few cm
+    # above the lower sensor every year, wherever the thaw front is in between (GSC cable
+    # KP313T5: 99.5 +/- 0.2 cm over 12 years, sensors at 50 and 100 cm, the 100 cm sensor
+    # -0.08 to -0.15 C at most). The year-to-year change is then sensor spacing, not thaw.
+    # A series whose valid ALT has SD < pinned_sd_cm and < pinned_cv of its median over at
+    # least min_years years is flagged 'pinned_to_sensor' in every year and not used.
+    "pinned_sd_cm": 2.0,
+    "pinned_cv": 0.03,
     # Two records are the same physical site when they share a site key (CALM code or
     # station id), or lie within this distance and use the same method family.
     "dup_distance_km": 1.0,
@@ -307,7 +316,8 @@ CONFIG = {
 INVALID_FLAG_NAMES = ("calm_footnote", "talik", "possible_talik", "sensor_cap",
                       "wide_sensor_spacing", "lower_bound", "treatment", "early_measurement",
                       "no_refreeze", "borehole_equilibration", "disturbed_site",
-                      "profile_inversion", "sensor_problem", "sensor_moved", "check_only")
+                      "profile_inversion", "sensor_problem", "sensor_moved", "check_only",
+                      "pinned_to_sensor")
 INVALID_FLAGS = r"(?:^|;)(?:" + "|".join(INVALID_FLAG_NAMES) + r")(?:;|$)"
 
 # Flags that belong to the physical site, not to one source's copy of a value (applied
@@ -320,7 +330,7 @@ INVALID_FLAGS = r"(?:^|;)(?:" + "|".join(INVALID_FLAG_NAMES) + r")(?:;|$)"
 STATE_FLAGS = ("talik", "possible_talik")
 YEAR_STATE_FLAGS = ("no_refreeze",)
 COPY_FLAGS = ("calm_footnote", "sensor_cap", "lower_bound", "treatment", "early_measurement",
-              "borehole_equilibration", "disturbed_site")
+              "borehole_equilibration", "disturbed_site", "pinned_to_sensor")
 
 COUNTRY_ALIASES = {"United States": "USA", "United States of America": "USA", "US": "USA",
                    "United States (Alaska)": "USA", "Alaska": "USA",
@@ -3912,8 +3922,12 @@ def read_tarfala_pace(raw) -> pd.DataFrame:
     thermistor (depths in TARFALA_PACE, from the data description). Logger error codes
     (-273, -231, -113, -106 C) are removed (anything outside -60..40 C). Readings are
     averaged per day (at least 2 of the 4 readings), then the 0 C rule gives ALT.
-    The two boreholes are one site, and two series of one source are never joined, so only
-    the borehole with more usable years is kept (the other is reported in the log).
+    The two boreholes are one site, and two series of one source are never joined, so one
+    is kept: the 15 m control hole. The 100 m main borehole reads ALT 5-19 cm shallower in
+    the same years, the pattern of the main borehole at Janssonhaugen, whose concrete lid
+    damps the near-surface temperatures (the PACE sites have the shallow control hole for
+    this; Isaksen et al. 2001). The 100 m hole is kept only if the 15 m one gives nothing;
+    the log gives the usable years of both.
     """
     out = []
     for root in (raw if isinstance(raw, (list, tuple)) else [raw]):
@@ -3952,9 +3966,9 @@ def read_tarfala_pace(raw) -> pd.DataFrame:
     rec = finish(pd.concat(out, ignore_index=True), "tarfala_pace")
     if rec.empty:
         return rec
-    ok = rec.flag.eq("") & ~rec.censored
+    ok = ~rec.flag.str.contains(INVALID_FLAGS) & ~rec.censored     # as counted in the build
     n_ok = ok.groupby(rec.source_site_id).sum().reindex(rec.source_site_id.unique(), fill_value=0)
-    keep = n_ok.idxmax()
+    keep = "TARFALA_PACE_15m" if n_ok.get("TARFALA_PACE_15m", 0) > 0 else n_ok.idxmax()
     log("  tarfala_pace: usable years per borehole " + ", ".join(f"{k} {int(v)}" for k, v in n_ok.items())
         + f"; kept {keep}")
     return rec[rec.source_site_id == keep].reset_index(drop=True)
@@ -4709,6 +4723,8 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
           method names.
       (e) CONFIG force_join names it as the same borehole as a series of a preferred
           source (two products of one logger that disagree, so rules b-d keep them apart).
+    When rules b-d pass for several sites, the series joins the one that agrees best
+    (smallest median difference), then the nearest.
     Two different site keys are never joined, and neither are two series of the same
     source (the source itself lists them as different plots, e.g. the Eight Mile Lake
     thaw-gradient sites or the Kolyma water-balance plots, even when they share a
@@ -4744,6 +4760,7 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
             lon = np.array([s["lon"] for s in reps])
             dist = haversine_km(r.lat, r.lon, lat, lon)
             near = np.where(dist <= max(CONFIG["dup_distance_km"], CONFIG["copy_km"]))[0]
+            best = None                       # (median difference, distance, i, shared years)
             for i in near[np.argsort(dist[near])]:
                 s = reps[i]
                 if r.site_key and s["site_key"]:
@@ -4754,25 +4771,30 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
                 a, b = by_key[key], by_key[s["key"]]
                 common = a.index.intersection(b.index)
                 same_fam = s["fam"] == r.fam
+                ok = False
                 if len(common) >= 2:
                     diff = (a[common] - b[common]).abs().median()
                     tol = max(CONFIG["dup_agree_cm"], CONFIG["dup_agree_frac"] * b.mean())
-                    if same_fam and dist[i] <= CONFIG["dup_distance_km"] and diff <= tol and not same_src:
-                        match = s                                            # rule (b)
-                    elif (same_fam and r.fam == "temperature" and len(common) >= 5
-                          and dist[i] <= CONFIG["same_borehole_km"]
-                          and diff <= max(CONFIG["same_borehole_agree_cm"],
-                                          CONFIG["same_borehole_agree_frac"] * b.mean())):
-                        match = s                                            # rule (c)
-                    elif (len(common) >= 5 and diff <= CONFIG["copy_agree_cm"]
-                          and a[common].corr(b[common]) >= CONFIG["copy_min_r"]):
-                        match = s                                            # rule (d)
-                    if match is not None:
-                        log(f"    {key[0]}:{key[1]} joined to {s['site_id']} ({dist[i]:.2f} km, "
-                            f"{len(common)} shared years, median difference {diff:.1f} cm)")
-                        break
-                if same_fam and dist[i] <= CONFIG["dup_distance_km"]:
+                    ok = ((same_fam and dist[i] <= CONFIG["dup_distance_km"] and diff <= tol
+                           and not same_src)                                 # rule (b)
+                          or (same_fam and r.fam == "temperature" and len(common) >= 5
+                              and dist[i] <= CONFIG["same_borehole_km"]
+                              and diff <= max(CONFIG["same_borehole_agree_cm"],
+                                              CONFIG["same_borehole_agree_frac"] * b.mean()))  # (c)
+                          or (len(common) >= 5 and diff <= CONFIG["copy_agree_cm"]
+                              and a[common].corr(b[common]) >= CONFIG["copy_min_r"]))      # (d)
+                    if ok and (best is None or (diff, dist[i]) < best[:2]):
+                        best = (diff, dist[i], i, len(common))
+                if not ok and same_fam and dist[i] <= CONFIG["dup_distance_km"]:
                     n_close += 1
+            # Of all candidates that pass, the one that agrees best (then the nearest): several
+            # series can sit at one coordinate (the KP313 cables), or a copy can lie beyond a
+            # nearer plot that also passes (Kytalyk Allaiha = CALM R31, not R31A).
+            if best is not None:
+                diff, d_km, i, n_common = best
+                match = reps[i]
+                log(f"    {key[0]}:{key[1]} joined to {match['site_id']} ({d_km:.2f} km, "
+                    f"{n_common} shared years, median difference {diff:.1f} cm)")
         if match is None:
             sid = r.site_key or f"{r.source}:{r.source_site_id}"
             if any(s["site_id"] == sid for s in reps):
@@ -4793,6 +4815,30 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
 
 def _has_flag(flags: pd.Series, name: str) -> pd.Series:
     return flags.fillna("").str.contains(r"(?:^|;)" + name + r"(?:;|$)")
+
+
+def pinned_series_flags(rec: pd.DataFrame) -> pd.DataFrame:
+    """
+    Temperature series whose ALT is set by a sensor depth (CONFIG pinned_sd_cm, pinned_cv):
+    at least min_years valid years whose SD is below pinned_sd_cm and below pinned_cv of
+    the median. Every year of such a series is flagged 'pinned_to_sensor' (not used); a
+    copy of it in another source gets the flag in site_state_flags (COPY_FLAGS).
+    """
+    rec = rec.copy()
+    rec["flag"] = rec.flag.fillna("")
+    temp = pd.Series(is_temperature_method(rec.method), index=rec.index)
+    valid = temp & ~rec.censored & ~rec.flag.str.contains(INVALID_FLAGS)
+    yr = rec[valid].groupby(["source", "source_site_id", "year"]).alt_cm.mean()
+    st = yr.groupby(level=[0, 1]).agg(["size", "std", "median"])
+    pin = st[(st["size"] >= CONFIG["min_years"]) & (st["std"] < CONFIG["pinned_sd_cm"])
+             & (st["std"] < CONFIG["pinned_cv"] * st["median"])]
+    hit = temp & pd.Series(list(zip(rec.source, rec.source_site_id)), index=rec.index).isin(set(pin.index))
+    rec["flag"] = add_flag(rec.flag, hit, "pinned_to_sensor")
+    for (src, sid), r in pin.iterrows():
+        log(f"    {src}:{sid}: ALT {r['median']:.1f} +/- {r['std']:.2f} cm over {int(r['size'])} valid "
+            f"years, pinned to a sensor depth: flagged pinned_to_sensor")
+    log(f"  pinned_to_sensor: {len(pin)} temperature series, {int(hit.sum())} site-years")
+    return rec
 
 
 def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
@@ -5102,7 +5148,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> lis
 
     log("\n== STAGE 3: build\n[merge]")
     rec = assign_physical_sites(drop_short_series(rec))
-    rec = site_state_flags(rec)
+    rec = site_state_flags(pinned_series_flags(rec))
     agree = check_source_agreement(rec)
     agree.to_csv(out / "check_source_agreement.csv", index=False)
     pre = check_g02189(rec)
