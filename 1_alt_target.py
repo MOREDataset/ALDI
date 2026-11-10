@@ -4782,15 +4782,28 @@ def require(modules):
 
 def publish(work: Path, final: Path) -> None:
     """The build succeeded: the current output becomes data/previous/<name> (one copy is
-    kept), and the new one takes its place."""
+    kept), and the new one takes its place. Folders are renamed, not copied: on Windows a
+    folder open in Explorer, Excel or a terminal cannot be renamed, so each rename is
+    tried for 10 s and then the script stops with a message (nothing is half moved)."""
     import shutil
+
+    def rename(src: Path, dst: Path) -> None:
+        for _ in range(5):
+            try:
+                src.rename(dst)
+                return
+            except PermissionError:
+                time.sleep(2)
+        sys.exit(f"Could not rename {src} to {dst}: a program (Explorer, Excel, a terminal) is "
+                 f"using it. Close it and rename by hand. The new build is in {work}.")
+
     if final.exists():
         prev = final.parent / "previous" / final.name
         if prev.exists():
             shutil.rmtree(prev)
         prev.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(final), str(prev))
-    shutil.move(str(work), str(final))
+        rename(final, prev)
+    rename(work, final)
 
 
 def main() -> None:
