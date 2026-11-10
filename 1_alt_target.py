@@ -3952,7 +3952,7 @@ def read_tarfala_pace(raw) -> pd.DataFrame:
     rec = finish(pd.concat(out, ignore_index=True), "tarfala_pace")
     if rec.empty:
         return rec
-    ok = rec.flag.eq("") & ~rec.censored
+    ok = ~rec.flag.str.contains(INVALID_FLAGS) & ~rec.censored     # as counted in the build
     n_ok = ok.groupby(rec.source_site_id).sum().reindex(rec.source_site_id.unique(), fill_value=0)
     keep = n_ok.idxmax()
     log("  tarfala_pace: usable years per borehole " + ", ".join(f"{k} {int(v)}" for k, v in n_ok.items())
@@ -4709,6 +4709,8 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
           method names.
       (e) CONFIG force_join names it as the same borehole as a series of a preferred
           source (two products of one logger that disagree, so rules b-d keep them apart).
+    When rules b-d pass for several sites, the series joins the one that agrees best
+    (smallest median difference), then the nearest.
     Two different site keys are never joined, and neither are two series of the same
     source (the source itself lists them as different plots, e.g. the Eight Mile Lake
     thaw-gradient sites or the Kolyma water-balance plots, even when they share a
@@ -4744,6 +4746,7 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
             lon = np.array([s["lon"] for s in reps])
             dist = haversine_km(r.lat, r.lon, lat, lon)
             near = np.where(dist <= max(CONFIG["dup_distance_km"], CONFIG["copy_km"]))[0]
+            best = None                       # (median difference, distance, i, shared years)
             for i in near[np.argsort(dist[near])]:
                 s = reps[i]
                 if r.site_key and s["site_key"]:
@@ -4754,25 +4757,30 @@ def assign_physical_sites(rec: pd.DataFrame) -> pd.DataFrame:
                 a, b = by_key[key], by_key[s["key"]]
                 common = a.index.intersection(b.index)
                 same_fam = s["fam"] == r.fam
+                ok = False
                 if len(common) >= 2:
                     diff = (a[common] - b[common]).abs().median()
                     tol = max(CONFIG["dup_agree_cm"], CONFIG["dup_agree_frac"] * b.mean())
-                    if same_fam and dist[i] <= CONFIG["dup_distance_km"] and diff <= tol and not same_src:
-                        match = s                                            # rule (b)
-                    elif (same_fam and r.fam == "temperature" and len(common) >= 5
-                          and dist[i] <= CONFIG["same_borehole_km"]
-                          and diff <= max(CONFIG["same_borehole_agree_cm"],
-                                          CONFIG["same_borehole_agree_frac"] * b.mean())):
-                        match = s                                            # rule (c)
-                    elif (len(common) >= 5 and diff <= CONFIG["copy_agree_cm"]
-                          and a[common].corr(b[common]) >= CONFIG["copy_min_r"]):
-                        match = s                                            # rule (d)
-                    if match is not None:
-                        log(f"    {key[0]}:{key[1]} joined to {s['site_id']} ({dist[i]:.2f} km, "
-                            f"{len(common)} shared years, median difference {diff:.1f} cm)")
-                        break
-                if same_fam and dist[i] <= CONFIG["dup_distance_km"]:
+                    ok = ((same_fam and dist[i] <= CONFIG["dup_distance_km"] and diff <= tol
+                           and not same_src)                                 # rule (b)
+                          or (same_fam and r.fam == "temperature" and len(common) >= 5
+                              and dist[i] <= CONFIG["same_borehole_km"]
+                              and diff <= max(CONFIG["same_borehole_agree_cm"],
+                                              CONFIG["same_borehole_agree_frac"] * b.mean()))  # (c)
+                          or (len(common) >= 5 and diff <= CONFIG["copy_agree_cm"]
+                              and a[common].corr(b[common]) >= CONFIG["copy_min_r"]))      # (d)
+                    if ok and (best is None or (diff, dist[i]) < best[:2]):
+                        best = (diff, dist[i], i, len(common))
+                if not ok and same_fam and dist[i] <= CONFIG["dup_distance_km"]:
                     n_close += 1
+            # Of all candidates that pass, the one that agrees best (then the nearest): several
+            # series can sit at one coordinate (the KP313 cables), or a copy can lie beyond a
+            # nearer plot that also passes (Kytalyk Allaiha = CALM R31, not R31A).
+            if best is not None:
+                diff, d_km, i, n_common = best
+                match = reps[i]
+                log(f"    {key[0]}:{key[1]} joined to {match['site_id']} ({d_km:.2f} km, "
+                    f"{n_common} shared years, median difference {diff:.1f} cm)")
         if match is None:
             sid = r.site_key or f"{r.source}:{r.source_site_id}"
             if any(s["site_id"] == sid for s in reps):
