@@ -4274,10 +4274,10 @@ def read_roshydromet_soil(raw) -> pd.DataFrame:
       - The stations of the 1930-1990 Russian ALT product (ru_hms_alt) carry its site key
         (CONFIG rusoil_ruhms), so the two are one site; the daily values rank first (monthly
         means smooth the late-summer peak, so ALT from them reads shallow).
-    ALT by the 0 C rule (method soil_temp). Many stations read only 80, 160 and 320 cm:
-    the 0 C crossing then lies between sensors 80 cm apart, and those years are flagged
-    'wide_sensor_spacing'. Stations without permafrost thaw past 320 cm and give only
-    lower bounds.
+    ALT by the 0 C rule (method soil_temp). Most station-years are lower bounds: the
+    cleared, snow-covered station plot thaws below the deepest sensor in use, or there
+    is no permafrost (first build: 157 valid of 5,264 site-years). Stations that read
+    only 80 and 160 cm (Verkhoyansk) get 'wide_sensor_spacing'.
     """
     cat = pd.read_csv(io.StringIO(RUSOIL_STATIONS), dtype={"wmo": int}).set_index("wmo")
     use = [d for d in RUSOIL_DEPTHS_CM if d >= 20]
