@@ -191,7 +191,7 @@ CONFIG = {
     # the same borehole apart as two sites; CALM's values stay first (priority).
     "frost_calm_code": {"SN15270": "N2"},
     # Series read for comparison only (flag check_only, never used and never passing
-    # flags to other sources). Frost SN99875 is the 100 m Janssonhaugen borehole under a
+    # flags to other sources). Frost SN99875 is the 102 m Janssonhaugen borehole under a
     # concrete lid: its upper metres read a damped annual cycle and ALT 17 cm (median)
     # shallower than the 15 m borehole P11 next to it, which CALM N1 reports (within 0-4 cm
     # in 1999-2024) and which metno_janssonhaugen reads.
@@ -3840,7 +3840,7 @@ def read_metno_frost(raw) -> pd.DataFrame:
 
 def read_metno_janssonhaugen(raw) -> pd.DataFrame:
     """
-    Janssonhaugen, Adventdalen, Svalbard: the shallow (15 m) borehole P11 next to the 100 m
+    Janssonhaugen, Adventdalen, Svalbard: the shallow (15 m) borehole P11 next to the 102 m
     PACE borehole, sensors at 20-500 cm, 6-hourly, April 1999 to 18 August 2025 (logger and
     thermistor string upgraded in August 2025). Sent to the user by K. Isaksen (MET Norway)
     by email on 10 November 2026; cite Isaksen et al. 2000, 2001 and 2022. He notes that
@@ -3882,9 +3882,9 @@ def read_metno_janssonhaugen(raw) -> pd.DataFrame:
     temps = pd.DataFrame(dict(source_site_id=key, time=daily.day, depth_cm=daily.depth_cm,
                               temp_c=daily["mean"]))
     site = pd.DataFrame([dict(source_site_id=key, site_name="Janssonhaugen shallow borehole P11 (15 m), "
-                              "Adventdalen, Svalbard", lat=78.1792, lon=16.4708, country="Norway (Svalbard)",
-                              calm_code="N1", site_note="15 m borehole next to the 100 m PACE borehole, "
-                              "about 275 m a.s.l.; the borehole behind CALM N1",
+                              "Adventdalen, Svalbard", lat=78.1794, lon=16.4669, country="Norway (Svalbard)",
+                              calm_code="N1", site_note="15 m borehole next to the 102 m PACE borehole, "
+                              "270 m a.s.l. (Isaksen et al. 2001); the borehole behind CALM N1",
                               source_file=f"{API_FOLDERS['metno_janssonhaugen']}/"
                                           + ", ".join(sorted(t.file.unique())))])
     rec = records_from_profiles(temps, site, "borehole_temp")
@@ -5361,7 +5361,7 @@ itex,ADC_sweep/ITEX_Utqiagvik_Atqasuk_thaw/2024_Barrow_Atqasuk_ITEX_Thaw_v1.csv,
 kwbs,Kolyma_WBS/PANGAEA_881754.tab,https://doi.pangaea.de/10.1594/PANGAEA.881754?format=textfile,a805f0fb21b80b109d4e72ccbfb0f3de6213d5960bf8e373f5404208b5106301,1361993,https://creativecommons.org/licenses/by/3.0/,open,"Thaw depth and snow height time series at different sites within Kolyma Water-Balance Station (KWBS), 1954-1997"
 kwbs,Kolyma_WBS/PANGAEA_881792.tab,https://doi.pangaea.de/10.1594/PANGAEA.881792?format=textfile,ad1823503574d0e9806756b9e931163efb5b586737b5d1ffc0dadb32532be3e6,156384,https://creativecommons.org/licenses/by/3.0/,open,"Soil temperature time series at the Nizhnyaya meteorological station within Kolyma Water-Balance Station (KWBS), 1974-1981"
 kytalyk,Russia_PANGAEA/PANGAEA_961879.tab,https://doi.pangaea.de/10.1594/PANGAEA.961879?format=textfile,0a87a4c504c7161d64b25d47abecf3d8e3b55e634b68dffc6d8b3b0f072cf34d,20820,https://creativecommons.org/licenses/by/4.0/,open,Thaw depth of the landscape in northeastern Siberia (S5)
-metno_janssonhaugen,METNO_Janssonhaugen_shallow/P11_Janssonhaugen-1999-2025.txt,https://cryo.met.no/en/permafrost/janssonhaugen,,3475025,"shared by the data owner; cite Isaksen et al. 2000, 2001, 2022",email,"Sent by K. Isaksen (MET Norway) by email on 10 November 2026 as a ZIP with this file and four papers; unpack it into METNO_Janssonhaugen_shallow/. Data after the August 2025 upgrade follow later; he plans to add the series to the GTN-P platform."
+metno_janssonhaugen,METNO_Janssonhaugen_shallow/P11_Janssonhaugen-1999-2025.txt,https://cryo.met.no/en/permafrost/janssonhaugen,267585284dcc2d3b9e7dbefbdce64eae9fa1a51e0ab8301821a9bce33e6f0f07,3475025,"shared by the data owner; cite Isaksen et al. 2000, 2001, 2022",email,"Sent by K. Isaksen (MET Norway) by email on 10 November 2026 as a ZIP with this file and four papers; unpack it into METNO_Janssonhaugen_shallow/. Data after the August 2025 upgrade follow later; he plans to add the series to the GTN-P platform."
 ngee_barrow,NGEE_Arctic/NGEE-BRW-ABCD-sensor-locations_w-o_figs_20170720.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-6011010b2ddffef-20221216T183635146238,714281556a67871aba6ad0d1432bd57b6fc857240a985d932a95bcefd19c2a66,3774,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
 ngee_barrow,NGEE_Arctic/NGEE_BRW_A_2012-09-01_2013-09-30_Thermal_Transect.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-24858052ca470a0-20221216T183550503153,8fe94e1b6714530ff026164ea2c7ee9219245a492ad13811adaff3732e7756cb,5163348,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
 ngee_barrow,NGEE_Arctic/NGEE_BRW_A_2013-10-01_2014-09-30_Thermal_Transect.csv,https://data.ess-dive.lbl.gov/catalog/d1/mn/v2/object/ess-dive-de711f9f19ced31-20221216T183552434371,80b66968f3b28ada62a29117accc837b44fdb370a880a2dca3bc2f5f9b25bb99,4867385,http://creativecommons.org/licenses/by/4.0/,open,"Subsurface Temperature, Moisture, Thermal Conductivity and Heat Flux, Area A, B, C, and D, Utqiagvik (Barrow), Alaska, 2012-2023"
