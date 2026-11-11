@@ -80,7 +80,7 @@ The Janssonhaugen shallow borehole and the change of Frost SN99875 to `check_onl
 
 Site joining was corrected on 10 November 2026: when several sites pass the agreement rules, a series now joins the one it agrees with best, not the nearest that passes. Two series moved: Kytalyk Allaiha, a copy of CALM R31, had been joined to CALM R31A (1 km away from R31), which gave R31A five years that are not its own; and the Canada collection's KP313-T4 had been joined to the GSC cable KP313T2 instead of its copy KP313T4 (four cables share one coordinate). CALM R31A then has 5 valid years and drops out: 366 sites, 6,697 valid site-years, ALDI-eligible sites unchanged at 224.
 
-Known limitation, kept on purpose (decision of 10 November 2026): ALT pinned to a sensor depth. Seven temperature series have valid ALT that varies by less than 2 cm (SD) over 8 or more years: the GSC cables KP313T5 (99.5 ± 0.2 cm, 12 years), 12TC01 (99.0 ± 0.4), T6UPLAND (163.6 ± 0.7), CAL02 (98.3 ± 1.2), NCL02 (97.2 ± 1.3) and T5UPLAND (76.1 ± 1.8), and the GTN-P borehole 432 at Bolvansky (297.8 ± 0.2). In each, the sensor below the 0 °C crossing stays just under 0 °C (a maximum of -0.04 to -0.6 °C) while the sensor above is warm, so the interpolated crossing lands a few cm above the lower sensor every year, wherever the thaw front is in between. At 12TC01, CAL02 and KP313T5 the lower sensor sits in the zero curtain (-0.2 to 0 °C for most of July-October), so the thaw front reaches it or nearly does; at NCL02, T5UPLAND and T6UPLAND it stays at -0.3 to -0.6 °C, so the true thaw depth lies somewhere in the 50 cm gap and the value is probably too deep. Either way the year-to-year change is set by the sensor spacing, not by the thaw. The series stay in the data unflagged; four of them are ALDI-eligible (KP313T5, CAL02, NCL02, T5UPLAND), and their near-zero variance can pull ALDI trends toward zero. A rule that would flag them (SD below 2 cm and below 3 % of the median over at least 8 valid years) was written (branch `pinned-sensor`) but not adopted.
+ALT pinned to a sensor depth (rule adopted on 10 November 2026, after the test build). Eight temperature series have valid ALT that varies by less than 2 cm (SD) over 8 or more years: the GSC cables KP313T5 (99.5 ± 0.2 cm, 12 years), 12TC01 (99.0 ± 0.4), T6UPLAND (163.6 ± 0.7), CAL02 (98.3 ± 1.2), NCL02 (97.2 ± 1.3) and T5UPLAND (76.1 ± 1.8), the GTN-P borehole 432 at Bolvansky (297.8 ± 0.2) and the Alaska station `tsp_alaska:US_A10_116`. In each, the sensor below the 0 °C crossing stays just under 0 °C (a maximum of -0.04 to -0.6 °C) while the sensor above is warm, so the interpolated crossing lands a few cm above the lower sensor every year, wherever the thaw front is in between. At 12TC01, CAL02 and KP313T5 the lower sensor sits in the zero curtain (-0.2 to 0 °C for most of July-October), so the thaw front reaches it or nearly does; at NCL02, T5UPLAND and T6UPLAND it stays at -0.3 to -0.6 °C, so the true thaw depth lies somewhere in the 50 cm gap and the value is probably too deep. Either way the year-to-year change is set by the sensor spacing, not by the thaw. No other definition frees them: in the test build of 10 November 2026 the deepest daily 0 °C crossing varied by only 0.3-1.9 cm at the same series, and an extrapolation from the thawed sensors is not possible where only one sensor above the crossing thawed. They are therefore flagged `pinned_to_sensor` in every year and not used (SD below 2 cm and below 3 % of the median over at least 8 valid years; CONFIG `pinned_sd_cm`, `pinned_cv`; 87 site-years). Without the rule the build has 366 sites and 234 ALDI-eligible sites; with it, 359 and 231 (CAL02, KP313T5 and T5UPLAND drop out).
 
 One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 2007-2021). Isaksen (MET Norway) answered the Janssonhaugen request on 10 November 2026 with the shallow borehole P11 (`metno_janssonhaugen`); the data after the August 2025 logger upgrade are to follow.
 
@@ -93,9 +93,13 @@ One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 200
   the season's fullest survey).
 - **Thaw tubes** (GSC Mackenzie Valley): the maximum thaw depth read from the tube.
 - **Ground temperatures** (boreholes, soil stations, temperature cables): each sensor's
-  maximum temperature of the year, then the depth where that profile first crosses 0 °C
-  going down, by linear interpolation between the two sensors around it. A sensor is used
-  in a year only if it has data on at least 80 % of the days from 1 August to 30 September.
+  maximum temperature of the thaw season, then the depth where that profile first crosses
+  0 °C going down, by linear interpolation between the two sensors around it. The thaw
+  season runs from 1 June to 31 May and carries the summer's year (CONFIG
+  `season_start_month`): the sensor just below the thaw front often peaks in
+  November-January (49 % of temperature site-years, 23 % in January), and with a
+  calendar year that heat counted toward the next year's value. A sensor is used
+  in a season only if it has data on at least 80 % of the days from 1 August to 30 September.
   The value is not used when:
   - every sensor thawed (the thaw went deeper than the deepest sensor; flag `lower_bound`),
   - the two sensors around the crossing are more than 50 cm apart (or 50 % of the ALT
@@ -107,6 +111,33 @@ One data request is still open, by email: the Kilpisjärvi palsas (Verdonen, 200
   - the last thawed sensor, the one the crossing is interpolated from, reads more than
     1 °C warmer than the sensor above it. The annual maximum falls with depth, so its
     depth label or the sensor is wrong (flag `profile_inversion`).
+
+  Each temperature value also carries, for its uncertainty and for testing other
+  definitions (none of these changes the value used):
+  - `sensor_above_cm`, `sensor_below_cm`: the two sensors around the crossing;
+  - `alt_thr_plus_cm`, `alt_thr_minus_cm`: ALT with the threshold at +0.1 and -0.1 °C,
+    the usual sensor accuracy (CONFIG `sensor_accuracy_c`); the deepest sensor when every
+    sensor is above -0.1 °C;
+  - `below_max_c`, `below_max_date`: the maximum of the sensor below the crossing and its
+    date;
+  - `alt_daily_cm`, `alt_daily_date`: the deepest 0 °C crossing of the daily profiles (the
+    same rule, day by day, so maxima of different dates are not mixed; as at PERMOS and
+    the PACE boreholes).
+
+  Why: below the thaw front the ground stays just under 0 °C, so the maximum of the
+  sensor below the front is close to 0 °C wherever the front is, and linear
+  interpolation puts ALT right above that sensor (review of 10 November 2026,
+  https://claude.ai/artifact/3SM1Fvx65xwGZKDSERNtQT). Test build of 10 November 2026,
+  1,079 used temperature site-years with a sensor on each side of the crossing: 31 % lie
+  in the deepest 10 % of their bracket and 19 % are `front_indeterminate`; moving the
+  threshold from +0.1 to -0.1 °C deepens ALT by a median 5.6 cm (IQR 3.3-10.4); the daily
+  crossing is a median 1.1 cm shallower than the value (IQR 0.4-3.0) and changes
+  per-site trends by a median +0.3 %/decade. The thaw-season year changed 157 of 2,422
+  temperature site-years (median -0.8 cm; 4 by more than 20 cm, at deep-thaw mountain
+  boreholes in Norway). An extrapolation from the two lowest thawed sensors (Riseborough
+  2008) was tried and dropped: it needs two thawed sensors, which most GSC cables do not
+  have, and elsewhere it ran to the sensor below and gave flat series. The pinned series
+  stay pinned under every definition (daily crossing SD 0.3-1.9 cm).
 
 ## Flags
 
@@ -151,7 +182,17 @@ GTN-P or BNZ LTER (Bonanza Creek U18 2011-2025, Pearl Creek U19 2015-2018, and 1
 early surveys at Russian and Canadian sites).
 
 Informational only: `nonmonotonic_profile`, `burned` and `burned_site`, `small_sample`,
-`unusual_year_regional`, `unusual_year_isolated`, `deep_thaw_check_talik`.
+`unusual_year_regional`, `unusual_year_isolated`, `deep_thaw_check_talik`, and three
+temperature flags:
+
+- `front_indeterminate`: the maximum of the sensor below the crossing is within 0.1 °C of
+  0 °C. That sensor may sit in the zero curtain, so the thaw front can be anywhere
+  between the two sensors, and a 0.1 °C sensor error moves the value by a whole bracket.
+- `autumn_gap`: the sensor below the crossing has data on fewer than 80 % of the days of
+  October-December, when it often peaks (CONFIG `min_autumn_cover`), so the value may be
+  too shallow. Typical for the last season of a record.
+- `edge_max`: a maximum of the two sensors around the crossing falls within 15 days of
+  1 June (CONFIG `edge_days`), so it may belong to the season next to it.
 
 ## Canada ground temperature collection
 
