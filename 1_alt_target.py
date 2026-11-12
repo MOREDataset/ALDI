@@ -322,7 +322,14 @@ CONFIG = {
     #   Frost SN15265 sensor one label higher (0.00 C difference), and its 0.2 m column
     #   holds a channel that matches no sensor. Its ALT reads 30-100 cm too deep, so
     #   2013 onward is not used (the site keeps the Frost values).
+    # roshydromet_soil: Isit' (WMO 24951; the station of the Russian ALT series RUHMS_239)
+    #   breaks after 1997. ALT is 128-155 cm in 1990-1997 (110-145 cm in the 1956-1983
+    #   Russian ALT product), the sensors below 40 cm are missing in 1999-2003 (lower bounds
+    #   at 40 cm), and from 2004 ALT sits at 314-319 cm, at the bottom of the 240-320 cm
+    #   bracket (edge_max from 2009). ALT doubling within six years at a station plot is a
+    #   change of the sensors or of their depths, not of the ground: 1998 onward is not used.
     "sensor_problem_years": {"uio_boreholes": {"UIO_juv1": [(2013, 2100)]},
+                             "roshydromet_soil": {"RUSOIL_24951": [(1998, 2100)]},
                              "canada_gt": {"LECCT02": [(1900, 2005)],
                                            "LECTOUR": [(1900, 2005), (2017, 2100)],
                                            "BYLOTPD": [(2013, 2100)]}},
@@ -4489,7 +4496,8 @@ def read_roshydromet_soil(raw) -> pd.DataFrame:
     ALT by the 0 C rule (method soil_temp). Most station-years are lower bounds: the
     cleared, snow-covered station plot thaws below the deepest sensor in use, or there
     is no permafrost (first build: 157 valid of 5,264 site-years). Stations that read
-    only 80 and 160 cm (Verkhoyansk) get 'wide_sensor_spacing'.
+    only 80 and 160 cm (Verkhoyansk) get 'wide_sensor_spacing'. Station-years listed in
+    CONFIG sensor_problem_years (Isit' from 1998) get 'sensor_problem'.
     """
     cat = pd.read_csv(io.StringIO(RUSOIL_STATIONS), dtype={"wmo": int}).set_index("wmo")
     use = [d for d in RUSOIL_DEPTHS_CM if d >= 20]
@@ -4532,7 +4540,16 @@ def read_roshydromet_soil(raw) -> pd.DataFrame:
         rec = records_from_profiles(g.drop(columns="wmo").assign(source_site_id=key), site, "soil_temp")
         if len(rec):
             out.append(rec)
-    return finish(pd.concat(out, ignore_index=True), "roshydromet_soil") if out else empty_records()
+    if not out:
+        return empty_records()
+    rec = finish(pd.concat(out, ignore_index=True), "roshydromet_soil")
+    bad = pd.Series(False, index=rec.index)
+    for sid, periods in CONFIG["sensor_problem_years"]["roshydromet_soil"].items():
+        for y0, y1 in periods:
+            bad |= (rec.source_site_id == sid) & rec.year.between(y0, y1)
+    rec["flag"] = add_flag(rec.flag, bad, "sensor_problem")
+    log(f"  roshydromet_soil: {int(bad.sum())} station-years with sensor problems flagged")
+    return rec
 
 
 def read_g02189(raw) -> pd.DataFrame:
@@ -4948,12 +4965,33 @@ def _has_flag(flags: pd.Series, name: str) -> pd.Series:
     return flags.fillna("").str.contains(r"(?:^|;)" + name + r"(?:;|$)")
 
 
+def equilibration_flags(rec: pd.DataFrame) -> pd.DataFrame:
+    """
+    Borehole equilibration (CONFIG equilibration_years): the first years of each series of
+    the listed sources are flagged 'borehole_equilibration'. This runs before
+    pinned_series_flags so that a new hole's unsettled first year does not hide a series
+    pinned to a sensor (GSC cable NCL02: SD 2.5 cm with its first year 2009, 1.4 cm
+    without). site_state_flags passes the flag on to copies in other sources (COPY_FLAGS).
+    """
+    rec = rec.copy()
+    rec["flag"] = rec.flag.fillna("")
+    for src, n in CONFIG["equilibration_years"].items():
+        m = rec.source == src
+        first = rec[m].groupby("source_site_id").year.transform("min")
+        hit = m & (rec.year < first.reindex(rec.index).fillna(9999) + n)
+        rec["flag"] = add_flag(rec.flag, hit, "borehole_equilibration")
+        log(f"  {src}: first {n} year(s) of {rec[m].source_site_id.nunique()} series flagged "
+            f"borehole_equilibration ({int(hit.sum())} site-years)")
+    return rec
+
+
 def pinned_series_flags(rec: pd.DataFrame) -> pd.DataFrame:
     """
     Temperature series whose ALT is set by a sensor depth (CONFIG pinned_sd_cm, pinned_cv):
     at least min_years valid years whose SD is below pinned_sd_cm and below pinned_cv of
     the median. Every year of such a series is flagged 'pinned_to_sensor' (not used); a
-    copy of it in another source gets the flag in site_state_flags (COPY_FLAGS).
+    copy of it in another source gets the flag in site_state_flags (COPY_FLAGS). Runs after
+    equilibration_flags, so the SD is taken over the years that are used.
     """
     rec = rec.copy()
     rec["flag"] = rec.flag.fillna("")
@@ -4979,8 +5017,9 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
     back through another source's unflagged copy of the same value (BNZ LTER, GTN-P).
       1. Talik onset (CONFIG talik_onset_cm): in the listed sources, a probe or tube series
          is flagged 'possible_talik' from the first year it is deeper than the threshold.
-      2. Borehole equilibration (CONFIG equilibration_years): the first years of each
-         series of the listed sources.
+      2. Borehole equilibration (CONFIG equilibration_years) is set before this step, in
+         equilibration_flags, so the pinned test does not count a new hole's first year;
+         step 5 copies it to the other sources.
       3. STATE_FLAGS ('talik', 'possible_talik'): every record of the site from the first
          flagged year on.
       4. YEAR_STATE_FLAGS ('no_refreeze'): every record of the site in that year.
@@ -5007,14 +5046,7 @@ def site_state_flags(rec: pd.DataFrame) -> pd.DataFrame:
             log(f"  {src}: {len(onset)} series deeper than {thr:g} cm in some year; "
                 f"{int(hit.sum())} site-years from that year on flagged possible_talik")
 
-    # 2. first years of new boreholes
-    for src, n in CONFIG["equilibration_years"].items():
-        m = rec.source == src
-        first = rec[m].groupby("source_site_id").year.transform("min")
-        hit = m & (rec.year < first.reindex(rec.index).fillna(9999) + n)
-        rec["flag"] = add_flag(rec.flag, hit, "borehole_equilibration")
-        log(f"  {src}: first {n} year(s) of {rec[m].source_site_id.nunique()} series flagged "
-            f"borehole_equilibration ({int(hit.sum())} site-years)")
+    # 2. first years of new boreholes: already flagged in equilibration_flags
 
     # 3. talik state from the first flagged year on
     for f in STATE_FLAGS:
@@ -5296,7 +5328,7 @@ def build(raw_dirs: list[Path], out: Path, only: list[str] | None = None) -> lis
 
     log("\n== STAGE 3: build\n[merge]")
     rec = assign_physical_sites(drop_short_series(rec))
-    rec = site_state_flags(pinned_series_flags(rec))
+    rec = site_state_flags(pinned_series_flags(equilibration_flags(rec)))
     agree = check_source_agreement(rec)
     agree.to_csv(out / "check_source_agreement.csv", index=False)
     pre = check_g02189(rec)
