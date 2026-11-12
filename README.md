@@ -6,18 +6,23 @@ multi-source ALT dataset and the Active Layer Dynamics Index (ALDI) computed fro
 
 - **ALT target (step 1).** End-of-season ALT from probing grids, thaw tubes and
   ground-temperature profiles of about 35 sources, merged into one series per site, with
-  quality flags. Run 7 (2 November 2026): 359 sites and 6,567 valid site-years.
+  quality flags. Build of 12 November 2026: 358 sites and 6,605 valid site-years.
 - **ALDI A (step 3).** One hierarchical Bayesian model of all series (log ALT, AR(1) noise
   per method family, shared region-year anomalies, partial pooling of site trends within
   250 km regions, lower-bound years as censored values). Each site gets a rate of change in
   % per decade, its 90 % interval and a class: rapid or gradual thickening, stable, gradual
-  or rapid thinning, or indeterminate (the record cannot decide). Applied to 229 sites
-  north of 60 N with at least 10 years over 12 or more years since 1990.
+  or rapid thinning, or indeterminate (the record cannot decide). Applied to 230 sites
+  north of 60 N with at least 10 years over 12 or more years since 1990 (4,614
+  site-years, 44 regions). Run of 12 November 2026: network rate +8.8 %/dec (95 %
+  6.6-11.6); 57 sites thicken rapidly and 63 gradually, 13 are stable, 1 thins and 96
+  are not yet resolved.
 - **ALDI B (step 3).** Each site's trend split into the part expected from the air
   temperature record (thawing degree-days, Stefan's law, ERA5-Land corrected to the site
   elevation) and a residual that the modelled weather does not explain, in seven variants
   from this summer's thawing degree-days alone to degree-day memory, winter, snow and rain.
-  The residual is a statistical decomposition, not an attribution of cause.
+  The residual is a statistical decomposition, not an attribution of cause. Run of
+  12 November 2026: thawing degree-days explain 1.3 of the mean site trend of
+  6.6 %/dec, and 78 sites deepen faster than they predict.
 
 The figure below shows the framework of the earlier version (v4, six classes and
 class-stratified causal models on 129 CALM sites, EGUsphere-2026-2639). It is kept for
