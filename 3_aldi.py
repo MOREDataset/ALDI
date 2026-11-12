@@ -2581,8 +2581,9 @@ def sensitivity_figure(tab, out):
 # The years below are found from the exact SD, not from this approximation.
 #
 # Standard test. Per-site OLS of log ALT on year, p from the t (= F) test, all years
-# (lower-bound years at their bound, as a per-site analysis would use them), as in
-# Streletskiy et al. (2026, Commun. Earth Environ. 7:671). Its expected behaviour on
+# (lower-bound years at their bound, as a per-site analysis would use them): the test of
+# Streletskiy et al. (2026, Commun. Earth Environ. 7:671), who fit ALT in cm (the cm
+# version is in the rates-in-cm table, also on their 2000-2024 rule). Its expected behaviour on
 # these records (power, false positives without a trend, sign errors and exaggeration
 # of the "significant" rates, Gelman & Carlin 2014) follows from the same noise model,
 # with the hierarchical rate as the true rate.
@@ -2902,6 +2903,28 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
           {"what": "ALDI share of sites with a significant increase, OLS on cm",
            "value": float(100 * ((ck.ols_p_cm < 0.05) & (ck.ols_slope_cm_yr > 0)).mean()), "unit": "%",
            "sites": len(ck)}]
+    # The same test on the rule of Streletskiy et al. (2026): years 2000-2024 only, at least ten years
+    # in that window (here ten years that are not lower bounds, north of 60 N as everywhere in ALDI),
+    # a linear trend of ALT in cm per site, F test (= t test of the slope) at p < 0.05. Lower-bound
+    # years enter at their bound, as in the whole-record test above.
+    sw = dict(cfg, sample=dict(cfg["sample"], min_year=2000, max_year=2024, min_span_years=10))
+    dw, _ = load_series(annual, sw)
+    slope_w, p_w = [], []
+    for _, g in dw.groupby("site_id"):
+        yrs, a = g.year.to_numpy(float), g.alt_cm.to_numpy(float)
+        bw, aw = np.polyfit(yrs, a, 1)
+        sdw = np.sqrt(np.sum((a - aw - bw * yrs) ** 2) / (len(yrs) - 2))
+        slope_w.append(bw)
+        p_w.append(2 * stats.t.sf(abs(bw / (sdw / np.sqrt(np.sum((yrs - yrs.mean()) ** 2)))), len(yrs) - 2))
+    if slope_w:
+        slope_w, p_w = np.array(slope_w), np.array(p_w)
+        up_w = (p_w < 0.05) & (slope_w > 0)
+        cm += [{"what": "ALDI per-site OLS on cm, 2000-2024 and >= 10 years (rule of Streletskiy et al. 2026), "
+                        "share with a significant increase", "value": float(100 * up_w.mean()), "unit": "%",
+                "sites": len(slope_w)},
+               {"what": "ALDI per-site OLS on cm, 2000-2024 and >= 10 years, sites with a significant increase",
+                "value": float(slope_w[up_w].mean()) if up_w.any() else np.nan, "unit": "cm/yr",
+                "sites": int(up_w.sum())}]
     sens_sites = Path(sens_dir) / "aldi_v6_sensitivity_sites.csv" if sens_dir else None
     if sens_sites is not None and sens_sites.exists():
         ss = pd.read_csv(sens_sites)
@@ -2915,8 +2938,16 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
             cm.append({"what": f"ALDI region {reg_id} ({g.region_rate_v6.iloc[0]:.1f} %/dec)",
                        "value": float(g.region_rate_v6.iloc[0] * g.alt_ref_cm.mean() / 100),
                        "unit": "cm/decade", "sites": len(g)})
-    pub = [("Streletskiy et al. 2026, Arctic CALM 2000-2024, sites with a significant increase", 0.8, "cm/yr", np.nan),
-           ("Streletskiy et al. 2026, Northern Hemisphere, share with a significant increase", 66.4, "%", 156),
+    # Streletskiy et al. (2026, Commun. Earth Environ. 7:671, doi:10.1038/s43247-026-03824-1): 156 CALM sites
+    # with at least ten years of ALT in 2000-2024, 137 of them in the Northern Hemisphere. Arctic: 55.2 %
+    # (53 sites) with a significant increase, by 0.8 +/- 0.8 cm/yr. Northern Hemisphere: 66.4 % (91 of 137),
+    # raised by the mountain sites (European mountains 94.7 %, 18 of 19; Third Pole 90.9 %, 20 of 22).
+    # The paper does not give the number of Arctic sites (53 / 0.552 = 96).
+    pub = [("Streletskiy et al. 2026, Arctic, 2000-2024, sites with a significant increase", 0.8, "cm/yr", 53),
+           ("Streletskiy et al. 2026, Arctic, 2000-2024, share with a significant increase "
+            + "(53 sites; number of Arctic sites not given)", 55.2, "%", np.nan),
+           ("Streletskiy et al. 2026, Northern Hemisphere incl. mountains, share with a significant increase",
+            66.4, "%", 137),
            ("Lin et al. EGUsphere-2026-841, circum-Arctic mean at increasing sites", 1.48, "cm/yr", np.nan),
            ("Smith et al. 2024 (ICOP), Mackenzie Valley thaw tubes, ALT", 1.0, "cm/decade", np.nan),
            ("Smith et al. 2024 (ICOP), Mackenzie Valley thaw tubes, thaw penetration (fixed datum)", 8.0, "cm/decade", np.nan)]
