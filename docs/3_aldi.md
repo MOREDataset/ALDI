@@ -316,7 +316,13 @@ accounting) into numbers a reader can compare with the usual analysis:
   surface-referenced tubes carry the subsidence bias and ground temperatures do not.
 - **Rates in cm** (`aldi_v6_checks_cm.csv`, Table S7): site rates times the site's fitted
   ALT, and the per-site OLS on ALT in cm as in Streletskiy et al. (2026) and Lin et al.
-  (EGUsphere-2026-841), beside their published values and Smith et al. (2024).
+  (EGUsphere-2026-841), beside their published values and Smith et al. (2024). The OLS is
+  run on the whole record and again on the rule of Streletskiy et al. (2000-2024 only, at
+  least ten years in that window). Their published shares (Commun. Earth Environ. 7:671,
+  156 CALM sites): 55.2 % of Arctic sites increase significantly (53 sites, 0.8 +- 0.8
+  cm/yr; the number of Arctic sites is not given), and 66.4 % in the Northern Hemisphere
+  (91 of 137 sites), raised by the mountain sites (European mountains 18 of 19, Third Pole
+  20 of 22). The Arctic share is the comparator for ALDI.
 - **MCMC diagnostics** of every fit of the main run (Table S8) and the count of sites whose
   survey date drifts by more than 14 days over the record.
 
@@ -357,9 +363,12 @@ Results of the 12 November 2026 run (PC; `data/3_aldi_checks/aldi_v6_checks.txt`
   ground temperatures -1.9 in 2 regions).
 - **cm**: hierarchical site rates average 6.1 cm/decade (median 4.3; 7.2 in the 2000-2024
   run). The per-site OLS on cm gives 1.27 cm/yr at the 106 sites with a significant
-  increase (Streletskiy et al. 2026: 0.8 cm/yr, Arctic CALM 2000-2024) and 0.93 cm/yr over
-  all 175 increasing sites (Lin et al.: 1.48). Averages over "significant" sites are 2x the
-  hierarchical mean, as the exaggeration above predicts.
+  increase (46 % of 230) and 0.93 cm/yr over all 175 increasing sites (Lin et al.: 1.48).
+  On the rule of Streletskiy et al. (2026), 2000-2024 and at least ten years, 52 % of 218
+  series increase significantly, by 1.35 cm/yr on average (114 sites), against their Arctic
+  55 % and 0.8 +- 0.8 cm/yr (their Northern Hemisphere 66 % includes the mountain sites).
+  Averages over "significant" sites are 2x the hierarchical mean, as the exaggeration above
+  predicts.
 - **MCMC**: 10 fits of the main run, max R-hat 1.007, min ESS 831, no divergences. Survey
   date drifts by more than 14 days at 12 of the 39 sites with dates (median +6 days).
 
