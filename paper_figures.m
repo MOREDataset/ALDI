@@ -125,6 +125,13 @@ ann = ann(tf, :); loc = loc(tf);
 inwin = ann.year >= res.year_min(loc) & ann.year <= res.year_max(loc);
 ann = ann(inwin, :); loc = loc(inwin);
 ann.family = res.family(loc);
+% only the series' own method family: 3_aldi.py drops the years of a second method in a
+% series (single_method_family), so Fig S1 counts exactly the measured values in the model
+mfam = strings(height(ann), 1);
+mfam(ann.method == "probe") = "probe";
+mfam(ann.method == "thaw_tube") = "thaw_tube";
+mfam(ismember(ann.method, ["borehole_temp" "soil_temp" "soil_temp_monthly"])) = "temperature";
+ann = ann(mfam == ann.family, :);
 [~, iu] = unique(ann.site_id + "_" + string(ann.year));
 ann = ann(iu, :);
 fprintf('%d analysed site-years (sum of n_obs in the results: %d)\n', height(ann), sum(res.n_obs));
@@ -402,7 +409,7 @@ if have_sens
     nrun = height(sf); yy = (nrun:-1:1)';
     m0 = find(sf.run == "main", 1);
     C_EXP = [0.27 0.45 0.70];
-    fig = new_figure(12, 10);
+    fig = new_figure(12, 4 + 0.4 * nrun);
     ax = axes(fig); hold(ax, 'on');
     hS = gobjects(1, 3);
     hS(1) = errorbar(ax, sf.A_network_rate, yy, sf.A_network_rate - sf.A_network_lo95, ...
@@ -424,12 +431,15 @@ if have_sens
     xline(ax, 0, '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.4);
     RUN_ID = ["main" "cens_sd_0.5" "cens_sd_1.0" "no_censored" "undated_doy_243" "drop_site_quality" ...
               "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km" ...
-              "subsidence_0.2" "subsidence_0.5" "subsidence_1.0"];
+              "subsidence_0.2" "subsidence_0.5" "subsidence_1.0" ...
+              "survey_doy" "temp_interval_flagged" "temp_interval_all"];
     RUN_L  = ["Main run" "Censored years: HalfNormal(0.5)" "Censored years: HalfNormal(1.0)" ...
               "Censored years left out" "Undated surveys on 31 August" "Without imprecise locations" ...
               "Without fire-disturbed plots" "One series per place" "2000-2024 only" ...
               "At least 8 years (not 10)" "Regions of 150 km" "Regions of 500 km" ...
-              "Subsidence 0.2 cm/yr, ice-rich" "Subsidence 0.5 cm/yr, ice-rich" "Subsidence 1.0 cm/yr, ice-rich"];
+              "Subsidence 0.2 cm/yr, ice-rich" "Subsidence 0.5 cm/yr, ice-rich" "Subsidence 1.0 cm/yr, ice-rich" ...
+              "Probe survey day as covariate" "Uncertain temperature years as intervals" ...
+              "All temperature years as intervals"];
     run_l = strrep(sf.run, '_', ' ');
     [tf, loc] = ismember(sf.run, RUN_ID); run_l(tf) = RUN_L(loc(tf));
     yticks(ax, 1:nrun); yticklabels(ax, flipud(run_l)); ylim(ax, [0.5 nrun + 0.5]);
@@ -540,8 +550,10 @@ p = @(varargin) fprintf(fid, [varargin{1} '\n'], varargin{2:end});
 p('ALDI paper: numbers quoted in the Results (from data\\3_aldi*, %s)', char(datetime('now', 'Format', 'yyyy-MM-dd')));
 p('');
 p('DATA');
-p('  series %d, site-years %d (Fig S1 count %d), regions %d', n_sites, sum(res.n_obs), height(ann), ...
-    numel(unique(res.region_id)));
+n_lb = 0;
+if ismember('n_censored', res.Properties.VariableNames), n_lb = sum(res.n_censored, 'omitnan'); end
+p('  series %d, site-years %d (%d measured values + %d lower bounds; Fig S1 counts %d measured), regions %d', ...
+    n_sites, sum(res.n_obs) + n_lb, sum(res.n_obs), n_lb, height(ann), numel(unique(res.region_id)));
 p('  series not from CALM: %d of %d', sum(~startsWith(res.site_id, "CALM_")), n_sites);
 for f = 1:numel(FAM), p('  %s: %d series', FAM_L(f), sum(res.family == FAM(f))); end
 p('  record span: median %d years (%d to %d)', median(res.span_years), min(res.span_years), max(res.span_years));
