@@ -8,6 +8,8 @@ STEP 3: ALDI A + B, the active layer dynamics index.
     py -3.12 3_aldi.py --checks       also the paper checks (detection time, per-site OLS test,
                                       residual by ice and method, cm per decade; ~1 min, no refit)
     py -3.12 3_aldi.py --no-main --sensitivity --checks   only these, on the existing data/3_aldi
+    py -3.12 3_aldi.py --no-main --sensitivity --runs survey_doy,temp_interval_flagged
+                                      only the named sensitivity runs (+ main), to data/3_aldi_sensitivity_runs
     py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
 
 A  One hierarchical Bayesian trend model for all ALT series: each site's rate of change
@@ -86,6 +88,13 @@ sample:
   use_censored: true
   censored_ok_flags: [lower_bound, burned_site, unusual_year_isolated, unusual_year_regional, nonmonotonic_profile,
                       edge_max, autumn_gap, front_indeterminate]
+  # Temperature ALT as an interval instead of a point (sensitivity runs only, added
+  # 2026-11-13). none: the 0 C value (main). flagged: years flagged front_indeterminate
+  # (the sensor below the crossing peaks within 0.1 C of 0 C, so the front may sit at it)
+  # count only as lying between the ALT read at +0.1 C and at -0.1 C, open above when the
+  # -0.1 C crossing is below the deepest sensor. all: every temperature year as such an
+  # interval (sensor accuracy as the observation error, so precise years count more).
+  temp_interval: none
   # One method family per series. Probe, thaw tube and temperature ALT differ in level
   # (processing_notes.md), so a family switch inside a series creates a step that a
   # trend test reads as change. Years of the minority family are dropped (20 sites).
@@ -144,6 +153,12 @@ model:
   # Site deviations from their region: normal (main) or student (t with 4 df,
   # sensitivity for the few heavy-tailed BNZ / Mackenzie rates).
   slope_dist: normal
+  # Probe survey day as a covariate of A (sensitivity run only, added 2026-11-13): the
+  # day of year minus the site's mean survey day, per 10 days, one coefficient for the
+  # network; undated years count as the site's mean day. A later survey meets a deeper
+  # thaw, so a survey date that drifts later reads as thickening (17 probe sites drift
+  # by more than 5 days per decade). B needs no covariate: its TDD runs to the survey day.
+  survey_doy: false
   chains: 4
   warmup: 1500
   draws: 1500
@@ -339,9 +354,39 @@ def load_series(annual: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataF
 
     cols = ["site_id", "lat", "lon", "year", "alt_cm", "censored", "method", "family", "flag",
             "obs_date", "source"]
+    if s.get("temp_interval", "none") != "none":
+        d = d.copy()
+        d["ivl_lo_cm"], d["ivl_hi_cm"] = temperature_interval(d, s["temp_interval"])
+        cols += ["ivl_lo_cm", "ivl_hi_cm"]
     d = d[[c for c in cols if c in d.columns]].sort_values(["site_id", "year"]).reset_index(drop=True)
     assert (d["alt_cm"] > 0).all()
     return d, pd.concat(log, ignore_index=True)
+
+
+def temperature_interval(d: pd.DataFrame, mode: str) -> tuple[np.ndarray, np.ndarray]:
+    """[lo, hi] in cm of the temperature years chosen by the temp_interval setting, NaN for
+    the rows that stay points. lo = ALT read at +0.1 C (shallower), hi = ALT read at -0.1 C
+    (deeper). hi is inf when the -0.1 C crossing is censored at the deepest sensor: in a
+    front_indeterminate year that shows as hi equal to the sensor below the crossing (in
+    any other year the -0.1 C crossing lies above that sensor). Rows without the step 1
+    columns, or with lo = hi, stay points."""
+    need = {"alt_thr_plus_cm", "alt_thr_minus_cm", "sensor_below_cm"}
+    if not need <= set(d.columns):
+        sys.exit(f"temp_interval needs the step 1 columns {sorted(need)}: rerun 1_alt_target.py")
+    if mode not in ("flagged", "all"):
+        raise ValueError(f"temp_interval: {mode}")
+    fi = d["flag"].fillna("").str.split(";").apply(lambda f: "front_indeterminate" in f).to_numpy(bool)
+    alt = d["alt_cm"].to_numpy(float)
+    p = d["alt_thr_plus_cm"].to_numpy(float)
+    m = d["alt_thr_minus_cm"].to_numpy(float)
+    b = d["sensor_below_cm"].to_numpy(float)
+    lo = np.where(np.isfinite(p) & (p > 0), np.minimum(p, alt), alt)
+    hi = np.where(np.isfinite(m), np.maximum(m, alt), alt)
+    hi = np.where(fi & np.isfinite(m) & np.isfinite(b) & np.isclose(m, b), np.inf, hi)
+    sel = (d["family"].to_numpy() == "temperature") & ~d["censored"].to_numpy(bool) & ~np.isclose(lo, hi)
+    if mode == "flagged":
+        sel &= fi
+    return np.where(sel, lo, np.nan), np.where(sel, hi, np.nan)
 
 
 # ---------------------------------------------------------------------------
@@ -1010,6 +1055,30 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
     # site mean of y over uncensored years (centre of the intercept prior)
     ybar = pd.Series(np.where(cens, np.nan, y)).groupby(s_idx).mean().to_numpy()
 
+    # interval years (temp_interval setting): the model draws the value inside [lo, hi];
+    # an interval open above becomes a lower bound at lo
+    ivl_idx, ivl_lo, ivl_hi, n_open = np.zeros(0, int), np.zeros(0), np.zeros(0), 0
+    if "ivl_lo_cm" in d.columns:
+        lo = d["ivl_lo_cm"].to_numpy(float)
+        hi = d["ivl_hi_cm"].to_numpy(float)
+        closed = np.isfinite(lo) & np.isfinite(hi)
+        open_ = np.isfinite(lo) & np.isinf(hi)
+        ivl_idx = np.nonzero(closed)[0]
+        ivl_lo, ivl_hi = np.log(lo[closed]), np.log(hi[closed])
+        y = np.where(open_, np.log(np.where(open_, lo, 1.0)), y)
+        cens = cens | open_
+        n_open = int(open_.sum())
+
+    # probe survey day minus the site's mean survey day, per 10 days (0 when undated)
+    doy_dev, n_dated = np.zeros(len(d)), 0
+    if "obs_date" in d.columns:
+        doy = pd.to_datetime(d["obs_date"], errors="coerce").dt.dayofyear.to_numpy(float)
+        ok = (d["family"].to_numpy() == "probe") & np.isfinite(doy)
+        if ok.any():
+            m_doy = pd.Series(np.where(ok, doy, np.nan)).groupby(s_idx).transform("mean").to_numpy()
+            doy_dev = np.where(ok, (doy - m_doy) / 10.0, 0.0)
+            n_dated = int(ok.sum())
+
     # region-year cells observed by >= 2 sites: shared year-to-year anomaly (weather
     # shocks common to nearby sites). Cells with one site get index -1 (no effect).
     r_obs = reg_idx[s_idx]
@@ -1022,7 +1091,8 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
                ry_idx=ry_idx, n_ry=len(ry_codes),
                s_idx=s_idx, r_idx_site=reg_idx, f_idx_site=fam_idx_site,
                t=t, y=y, cens=cens, prev=prev, gap=gap, ybar=ybar, tdd_dropped=dropped,
-               extra_dropped=n_extra_dropped)
+               extra_dropped=n_extra_dropped, ivl_idx=ivl_idx, ivl_lo=ivl_lo, ivl_hi=ivl_hi,
+               n_ivl_open=n_open, doy_dev=doy_dev, n_dated=n_dated)
     if tdd is not None:
         lt = np.log(d["tdd"].to_numpy(float))
         x = lt - pd.Series(lt).groupby(s_idx).transform("mean").to_numpy()
@@ -1060,7 +1130,7 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
 # ---------------------------------------------------------------------------
 
 def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None,
-          region_year=True):
+          region_year=True, survey_doy=False):
     import jax.numpy as jnp
     import numpyro
     import numpyro.distributions as dist
@@ -1102,6 +1172,10 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
     sigma = numpyro.deterministic("sigma_site", jnp.exp(m_f[f_site] + sd_ls * zl))
 
     mean = a[s_idx] + slope[s_idx] * t
+    if survey_doy and mode == "A":
+        # log ALT per 10 days of later survey (prior: within about +-10 %)
+        g_doy = numpyro.sample("gamma_doy", dist.Normal(0.0, 0.05))
+        mean = mean + g_doy * jnp.asarray(arr["doy_dev"])
     if mode == "B":
         x = jnp.asarray(arr["x"])
         if k_mode == "fixed":
@@ -1138,6 +1212,13 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
         else:
             off = numpyro.sample("cens_offset", dist.HalfNormal(p["cens_sd"]).expand([len(ci)]))
         y = y.at[ci].set(y_obs[ci] + off)
+    # interval years: value uniform in [lo, hi] (log units) a priori, so the likelihood of
+    # the year is that of the interval (the constant 1 / (hi - lo) does not matter)
+    ii = np.asarray(arr.get("ivl_idx", np.zeros(0, int)))
+    if len(ii):
+        u = numpyro.sample("ivl_u", dist.Uniform(0.0, 1.0).expand([len(ii)]))
+        lo_, hi_ = jnp.asarray(arr["ivl_lo"]), jnp.asarray(arr["ivl_hi"])
+        y = y.at[ii].set(lo_ + (hi_ - lo_) * u)
 
     e = y - mean
     rho_obs = rho_f[f_site][s_idx]
@@ -1153,7 +1234,8 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
 
 
 def fit(arr, mode="A", k_mode="hierarchical", slope_dist="normal", chains=4, warmup=1000,
-        draws=1000, seed=0, priors=None, progress=False, target_accept=0.9, region_year=True):
+        draws=1000, seed=0, priors=None, progress=False, target_accept=0.9, region_year=True,
+        survey_doy=False):
     import jax
     from numpyro.infer import MCMC, NUTS
 
@@ -1162,7 +1244,7 @@ def fit(arr, mode="A", k_mode="hierarchical", slope_dist="normal", chains=4, war
                 chain_method="parallel" if jax.local_device_count() >= chains else "sequential",
                 progress_bar=progress)
     mcmc.run(jax.random.PRNGKey(seed), arr, mode=mode, k_mode=k_mode, slope_dist=slope_dist,
-             priors=priors, region_year=region_year, extra_fields=("diverging",))
+             priors=priors, region_year=region_year, survey_doy=survey_doy, extra_fields=("diverging",))
     return mcmc
 
 
@@ -2239,6 +2321,16 @@ SENSITIVITY = [
          why="as above with 0.5 cm/yr (typical published rate)"),
     dict(name="subsidence_1.0", subsidence_cm_yr=1.0,
          why="as above with 1.0 cm/yr (high end: Utqiagvik, warm Interior Alaska)"),
+    # Added 2026-11-13 (review of the 12 November run): survey timing and the reading of
+    # temperature ALT. See survey_doy and temp_interval in SETTINGS.
+    dict(name="survey_doy", set={"model.survey_doy": True},
+         why="probe survey day (minus the site's mean day) as a covariate of A, so a survey date "
+             "that drifts later is not read as thickening; B unchanged (TDD already runs to the survey day)"),
+    dict(name="temp_interval_flagged", set={"sample.temp_interval": "flagged"},
+         why="temperature years flagged front_indeterminate as intervals between the ALT at +0.1 and "
+             "-0.1 C (open above when that is below the deepest sensor) instead of points"),
+    dict(name="temp_interval_all", set={"sample.temp_interval": "all"},
+         why="every temperature year as such an interval (sensor accuracy as observation error)"),
 ]
 SENS_MARGINS = [(2.5, 10.0), (5.0, 15.0)]     # (stable margin, rapid threshold), %/dec
 DISTURBED_NOTE = re.compile(r"burned|fire line|safety region", re.I)
@@ -2339,8 +2431,9 @@ def declustered_mean(lat, lon, v, km=250):
     return float(np.average(v[ok], weights=w[ok]))
 
 
-def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
-    """The runs in SENSITIVITY; see the comment above it."""
+def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
+    """The runs in SENSITIVITY (or main plus the names in `only`); see the comment above it."""
+    runs = [sc for sc in SENSITIVITY if only is None or sc["name"] == "main" or sc["name"] in only]
     out, temp = Path(out), Path(temp)
     annual = pd.read_csv(annual_file, low_memory=False)
     tdd = pd.read_csv(temp / "tdd_site_years.csv")
@@ -2352,7 +2445,7 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
     flags = site_flags(eligible_sites(data0, cfg), annual, temp)
     flags.to_csv(out / "aldi_v6_sensitivity_flags.csv", index=False)
     ice = None
-    for sc in SENSITIVITY:
+    for sc in runs:
         t0 = time.time()
         c = copy.deepcopy(cfg)
         for k, v in sc.get("set", {}).items():
@@ -2382,9 +2475,15 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
         else:
             arr = build_arrays(d, c)
             mc = fit(arr, "A", region_year=c["model"]["region_year"], slope_dist=c["model"]["slope_dist"],
-                     priors=pri, **fit_kw)
+                     priors=pri, survey_doy=c["model"]["survey_doy"], **fit_kw)
             sA, netA, rateA = summarise_A(mc, arr, c)
             diags.append(diagnostics(mc))
+            if c["model"]["survey_doy"]:
+                gd = 100 * (np.exp(np.asarray(mc.get_samples()["gamma_doy"])) - 1)
+                row.update(A_doy_pct_per_10d=float(np.median(gd)), A_doy_lo95=float(np.quantile(gd, 0.025)),
+                           A_doy_hi95=float(np.quantile(gd, 0.975)), n_dated_probe=arr["n_dated"])
+            if len(arr["ivl_idx"]) or arr["n_ivl_open"]:
+                row.update(n_interval=len(arr["ivl_idx"]), n_interval_open=arr["n_ivl_open"])
             row.update(n_sites=arr["n_sites"], n_site_years=len(arr["y"]), n_censored=int(arr["cens"].sum()),
                        n_regions=arr["n_regions"])
             if sc["name"] == "main":
@@ -2451,9 +2550,10 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
         if (col.startswith(("n_", "B_n_", "Bwm_n_", "A_", "B_", "Bwm_")) and col.split("_", 1)[1] in
                 ORDER + RESID_ORDER + ["sites", "site_years", "censored", "regions", "n_sites", "n_site_years",
                                        "undated_retimed", "deeper_than_TDD"]) or col in (
-                "divergences", "seconds", "n_subsidence_series"):
+                "divergences", "seconds", "n_subsidence_series", "n_dated_probe", "n_interval",
+                "n_interval_open"):
             tab[col] = tab[col].astype("Int64")
-    tab = tab.loc[[s["name"] for s in SENSITIVITY if s["name"] in tab.index]
+    tab = tab.loc[[s["name"] for s in runs if s["name"] in tab.index]
                   + [f"margins_{m:g}_{r:g}" for m, r in SENS_MARGINS]]
     tab.to_csv(out / "aldi_v6_sensitivity.csv")
     sites = pd.concat(site_rows, ignore_index=True)
@@ -2488,21 +2588,28 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw):
         f"B_{k}" for k in RESID_ORDER] + ["Bwm_mean_expected", "Bwm_mean_residual", "Bwm_deeper_than_TDD"]
     L.append(tab.drop(index=[i for i in tab.index if i.startswith("margins")])[[c for c in cols_b if c in tab]]
              .round(2).to_string())
+    extra = [c for c in ["A_doy_pct_per_10d", "A_doy_lo95", "A_doy_hi95", "n_dated_probe", "n_interval",
+                         "n_interval_open"] if c in tab]
+    if extra:
+        L.append("\nsurvey_doy: change of probe ALT per 10 days later survey (% of ALT, 95 %) and dated probe "
+                 "site-years; temp_interval: interval site-years (closed, open above; open ones count as "
+                 "lower bounds):")
+        L.append(tab[extra].dropna(how="all").round(2).to_string())
     L.append("\nchange from main (shared sites): A mean site rate, B mean residual (main / wm), class changes:")
     base = tab.loc["main"]
     for r in tab.index:
         if r == "main" or r.startswith("margins"):
             continue
         n_a, n_b, n_sh = changed.get(r, (0, 0, 0))
-        L.append(f"  {r:18s} A {tab.at[r, 'A_mean_site_rate'] - base.A_mean_site_rate:+5.2f}  "
+        L.append(f"  {r:22s} A {tab.at[r, 'A_mean_site_rate'] - base.A_mean_site_rate:+5.2f}  "
                  f"B {tab.at[r, 'B_mean_residual'] - base.B_mean_residual:+5.2f} / "
                  f"{tab.at[r, 'Bwm_mean_residual'] - base.Bwm_mean_residual:+5.2f}   "
                  f"A class changed {n_a}, residual class changed {n_b} of {n_sh}")
     L.append("\nwhy each run:")
-    for s in SENSITIVITY:
-        L.append(f"  {s['name']:18s} {s['why']}")
+    for s in runs:
+        L.append(f"  {s['name']:22s} {s['why']}")
     for m, r in SENS_MARGINS:
-        L.append(f"  {'margins_%g_%g' % (m, r):18s} class margins stable +/-{m:g}, rapid {r:g} %/dec "
+        L.append(f"  {'margins_%g_%g' % (m, r):22s} class margins stable +/-{m:g}, rapid {r:g} %/dec "
                  f"(from the main fit's draws, no refit)")
     txt = "\n".join(L)
     (out / "aldi_v6_sensitivity.txt").write_text(txt)
@@ -3354,6 +3461,9 @@ def main():
     ap.add_argument("--validate", action="store_true", help="also run the simulation check")
     ap.add_argument("--sensitivity", action="store_true",
                     help="also run the sensitivity runs (one choice changed at a time; about 30-40 min)")
+    ap.add_argument("--runs", default=None,
+                    help="with --sensitivity: only these runs, comma-separated (main is always added); the "
+                         "table then goes to data/3_aldi_sensitivity_runs, so the full table is kept")
     ap.add_argument("--checks", action="store_true",
                     help="also the paper checks (detection time, standard per-site test, residual by ice "
                          "and method, rates in cm; about a minute, no refit)")
@@ -3413,9 +3523,15 @@ def main():
         import numpyro
         numpyro.set_host_device_count(mc_cfg["chains"])
 
+        only = None if a.runs is None else [r.strip() for r in a.runs.split(",") if r.strip()]
+        unknown = set(only or []) - {sc["name"] for sc in SENSITIVITY}
+        if unknown:
+            sys.exit(f"--runs: unknown run(s) {sorted(unknown)}; known: {[sc['name'] for sc in SENSITIVITY]}")
+
         def sensitivity_run(work):
-            sensitivity_runs(cfg, a.annual, a.out / "temperature", work, fit_kw)
-        stage(a.out.with_name(a.out.name + "_sensitivity"), sensitivity_run)
+            sensitivity_runs(cfg, a.annual, a.out / "temperature", work, fit_kw, only)
+        stage(a.out.with_name(a.out.name + ("_sensitivity" if only is None else "_sensitivity_runs")),
+              sensitivity_run)
 
     if a.checks:
         def checks_run(work):
