@@ -181,7 +181,7 @@ by a few between computers.
 ### Sensitivity runs (`--sensitivity`, `data/3_aldi_sensitivity/`)
 
 Each run changes one choice and refits A (main), B (main) and B (weather_memory); every
-fit R-hat <= 1.013, no divergences. Means over sites in %/dec; mu = network rate (mean over
+fit R-hat <= 1.013, no divergences (one divergence in `temp_interval_all`). Means over sites in %/dec; mu = network rate (mean over
 regions); declustered = 250 km equal-area cells count once. `aldi_v6_fig_sensitivity.png`
 shows the same.
 
@@ -199,6 +199,14 @@ shows the same.
 | 8 instead of 10 years | 240 | 61 / 60 / 15 / 103 | 8.3 | 6.99 | 9.4 | 1.34 | 5.16 | 3.35 | 78 |
 | regions 150 km | 230 | 57 / 59 / 14 / 99 | 8.8 | 7.06 | 9.8 | 1.33 | 5.22 | 3.45 | 78 |
 | regions 500 km | 230 | 61 / 53 / 14 / 101 | 8.7 | 6.99 | 9.5 | 1.33 | 5.25 | 3.42 | 78 |
+| probe survey day as covariate (A only) | 230 | 56 / 56 / 13 / 104 | 8.8 (6.4-11.4) | 6.79 | 9.8 | 1.33 | 5.24 | 3.40 | 78 |
+| front_indeterminate years as intervals | 230 | 59 / 59 / 13 / 98 | 8.9 | 7.09 | 9.9 | 1.33 | 5.27 | 3.43 | 81 |
+| every temperature year as an interval | 230 | 58 / 60 / 13 / 98 | 8.7 | 7.05 | 9.8 | 1.33 | 5.26 | 3.45 | 81 |
+
+The last three rows (added 13 November 2026) come from
+`py -3.12 3_aldi.py --no-main --sensitivity --runs survey_doy,temp_interval_flagged,temp_interval_all`
+(written to `data/3_aldi_sensitivity_runs/`); its main row is identical to the one above,
+site by site.
 
 Class margins without refit (main draws): stable +/-2.5 %/dec leaves no stable site (the
 13 become indeterminate: no record is precise enough to show a change below 2.5 %/dec);
@@ -218,6 +226,21 @@ rapid at 15 %/dec gives 19 rapid instead of 57.
   full record, 2.3 over the last 15 years).
 - Across all runs the B residual stays 5.0-6.3 %/dec (main) and 3.2-4.1 (weather_memory):
   positive in every run.
+- **Survey day (run `survey_doy`).** A probe surveyed later in the season meets a deeper
+  thaw: the fitted effect is +2.7 % of ALT per 10 days (95 %: 1.7-3.7; 726 dated probe
+  site-years at 39 sites, undated years count as the site's mean day). As a covariate of A
+  it lowers the probe mean rate from 7.86 to 7.43 %/dec, the mean site rate by 0.26 and the
+  network rate by 0.05. The class changes are at Bonanza Creek plots whose survey date
+  drifts later by up to 39 days over the record (rapid to gradual: EML_EXTENSIVE,
+  EML_MODERATE, UP4C; gradual to indeterminate: BFCONTROL, GSI2, RCBSC, TRM3, WCM1, WCM2),
+  plus 4 flips at class boundaries (rates moving by 0.2 or less). Other BNZ plots move
+  with them through the region mean. B is unchanged because its TDD runs to the survey day.
+- **Temperature ALT as an interval (runs `temp_interval_flagged`, `temp_interval_all`).**
+  Entering a year as only known to lie between the ALT read at +0.1 and -0.1 C (94 of the
+  735 temperature site-years are front_indeterminate: 90 closed intervals, 4 open above;
+  in the second run 506 years with both readings) moves every mean by 0.05 %/dec or less
+  and changes 4 classes, 2 of them real (HPW Shakwak, Banks Island, whose intervals are
+  wide). The point values are adequate for A and B.
 
 Simulation (`--validate`, 12 November 2026: 8 networks per scenario, the design of this
 run (230 sites, 4,614 site-years), real ERA5-Land TDD; 1,840 site intervals per scenario,
