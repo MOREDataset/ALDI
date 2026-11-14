@@ -221,6 +221,13 @@ The last three rows (added 13 November 2026) come from
 (written to `data/3_aldi_sensitivity_runs/`); its main row is identical to the one above,
 site by site.
 
+Run `mcmc_seed` (added 14 November 2026, fifth review) refits with the main settings and
+another seed of the sampler (seed + 1), so that the classes that change by Monte Carlo error
+alone can be told from those a choice changes (paper checks, block "CLASS CHANGES BETWEEN
+RUNS"). It is run on its own: `py -3.12 3_aldi.py --no-main --sensitivity --runs mcmc_seed`
+(written to `data/3_aldi_sensitivity_runs/`, which the paper checks read beside the full
+table).
+
 Class margins without refit (main draws): stable +/-2.5 %/dec leaves no stable site (the
 13 become indeterminate: no record is precise enough to show a change below 2.5 %/dec);
 rapid at 15 %/dec gives 19 rapid instead of 57.
@@ -298,7 +305,11 @@ coverage stays 0.90 and the expected trend is unbiased.
 Two A scenarios added on 14 November 2026 (third review of the paper). They are run on
 their own, `py -3.12 3_aldi.py --no-main --validate --scenarios A_thin,A_ppc --reps 10`,
 which writes `aldi_v6_simulation_reps_A_thin_A_ppc.csv` beside the main file; the paper
-checks read both files (a scenario is taken from the first file that holds it).
+checks read both files. Since 14 November 2026 (fifth review) each scenario is taken whole
+from one file, so that all its methods are scored on the same networks: from a file run
+later rather than from the main file, and from the most recently written of two such files
+(column `source_file` of `aldi_v6_checks_simulation_networks.csv` names it; until then the
+first file that held a scenario won).
 
 - **Rare local thinning among thickening neighbours (`A_thin`).** Trends drawn as in
   `A_fit`; then 12 series per network (about 5 %) get a true rate of -10 %/dec, at most one
@@ -321,6 +332,20 @@ checks read both files (a scenario is taken from the first file that holds it).
   detectability check take the hierarchical rates as true and leave the pooling out; this
   check runs the whole model. Both are conditional on Model A.
 
+- **Trend-unpooled fit in the main scenarios (added 14 November 2026, fifth review of the
+  paper).** Model A differs from the per-site methods in two ways at once: its noise model
+  (AR(1) per method, region-year anomalies, lower bounds as censored values) and the pooling
+  of trends. `run_A` therefore also refits every network of `A_fit`, `A_heavy`, `A_null` and
+  `A_misspec` with the trend-unpooled fit (method `v6_unpooled`: Model A's noise model,
+  censoring and region-year term, each series trend with its own N(0, 1) prior; target
+  acceptance 0.95 as in `A_thin`), scored like the others, with its interval of the mean of
+  the series trends in the `network_*` columns (it has no mu). On the same networks, per-site
+  method -> trend-unpooled is what the noise model changes and trend-unpooled -> Model A what
+  pooling changes (paper checks, block "POOLING AGAINST THE NOISE MODEL"). The fits draw no
+  numbers from the generator, so the networks stay those of earlier runs: `--scenarios
+  A_fit,A_heavy,A_null` takes the generator in the order of the main run of 12 November 2026
+  and should reproduce its networks and scores, and `A_misspec` is run on its own as before.
+  `score` also gives the RMSE by record length (`rmse_12-15` etc.).
 - **What Model A does not assume (`A_misspec`, added 14 November 2026, first review of the
   paper).** Run on its own (`--scenarios A_misspec`, which writes
   `aldi_v6_simulation_reps_A_misspec.csv`). Trends drawn as in `A_fit`; then in each record
@@ -532,7 +557,41 @@ accounting) into numbers a reader can compare with the usual analysis:
   (`A_heavy`, `A_misspec`, `A_thin`) and over all; the share it covers with its exact
   (Clopper-Pearson) 95 % interval, bias and RMSE, and, where the runs hold the columns, its
   mean width, the RMSE over the posterior SD that width implies, and the coverage and width
-  of the interval of mu and of the region bootstrap.
+  of the interval of mu and of the region bootstrap. Fifth review: the scenarios need not
+  share one coverage, so the pooled rows (`kind` "pooled, descriptive") are descriptive
+  counts, and their Clopper-Pearson interval would assume one common coverage. Without that
+  assumption a pooled count still tests that the coverage is at least 95 % in every scenario
+  pooled, because a sum of independent binomial counts whose probabilities are all at least
+  0.95 is stochastically at least Binomial(n, 0.95): `p_nominal_in_every_scenario` =
+  P(Binomial(n, 0.95) <= k) (for one scenario the exact one-sided test). Where the runs hold
+  the trend-unpooled fit, the same interval of that fit is scored too (`unpooled_*`), and the
+  interval of mu over the networks that store it (`mu_networks`, `mu_covered`, `mu_p_nominal`).
+- **Pooling against the noise model** (`aldi_v6_checks_pooling_vs_noise.csv`, Table S8
+  `TableS8_simulation_pooling_vs_noise.csv`; added 2026-11-14, fifth review): per scenario
+  that holds both the trend-unpooled fit and Model A (`A_fit`, `A_heavy`, `A_null`,
+  `A_misspec`, `A_thin`), the coverage of the 90 % intervals, RMSE, wrong direction and
+  resolved share of per-site OLS, per-site Akritas-Theil-Sen, the trend-unpooled fit and Model
+  A, overall and by record length; the paired differences between networks (trend-unpooled
+  minus Model A in RMSE, trend-unpooled minus OLS and minus Akritas-Theil-Sen and Model A
+  minus trend-unpooled in coverage, each with its SE from the spread between networks); and
+  the share of the RMSE gain of Model A over OLS that comes after the trend-unpooled fit
+  (pooling) and the share of its coverage gain that the trend-unpooled fit already reaches
+  (noise model).
+- **Class changes between runs** (`aldi_v6_checks_class_changes.csv` and
+  `aldi_v6_checks_class_changes_sites.csv`, Table S4 `TableS4_class_changes.csv` and
+  `TableS4_class_changes_by_series.csv`; added 2026-11-14, fifth review): for every run that
+  refits Model A with one choice changed (`data/3_aldi_sensitivity`,
+  `data/3_aldi_sensitivity_runs` for runs not in the full table, such as `mcmc_seed`, and
+  `data/3_aldi_keep_pinned` with the low-variability temperature series kept), the classes of
+  the series it shares with its own main fit: changes of class, changes between the groups
+  thickening / stable / unresolved / thinning, rapid <-> gradual, and how many group changes
+  are borderline, that is, at a series whose deciding interval end lay within 1 %/dec of its
+  class boundary in the main fit (`class_margin`); the median rate change of the group
+  changes; and a summary over the processing runs with the same period (without the
+  2000-2024 window, which changes the period, the subsidence scenarios, which change the
+  quantity, `undated_doy_243`, which does not refit A, and the reference runs `mcmc_seed` and
+  `keep_low_variability`). The changed series of `survey_doy`, `keep_low_variability` and
+  `mcmc_seed` are listed in the text.
 - **Trend targets** (`aldi_v6_checks_trend_targets.csv`, Table S8
   `TableS8_simulation_trend_targets.csv`; added 2026-11-14, fourth review): for scenario
   `A_misspec`, per method, the coverage of the 90 % intervals, RMSE and wrong-direction
