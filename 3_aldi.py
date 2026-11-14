@@ -3678,8 +3678,8 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                      "coverage90_max", "rmse_pct_dec", "called_trend"]].round(3).to_string(index=False))
         if "network_cover95_lo" in sn:
             nc = sn.dropna(subset=["network_cover95"])
-            L.append("  coverage of the 95 % interval of the network rate (one per network; exact 95 % interval of "
-                     "that share): " + "; ".join(
+            L.append("  coverage of the 95 % interval of the mean site rate (columns network_*; one per network; "
+                     "exact 95 % interval of that share): " + "; ".join(
                          f"{w.scenario} {w.method} {int(round(w.network_cover95 * w.networks))} of {int(w.networks)} "
                          f"({w.network_cover95_lo:.2f} to {w.network_cover95_hi:.2f})" for w in nc.itertuples()))
 
