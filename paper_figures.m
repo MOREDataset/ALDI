@@ -591,7 +591,9 @@ if have_sim
                 if isnumeric(r.(v)), r.(v) = NaN; end
             end
             r.scenario = later.scenario(i); r.method = later.method(i);
-            for v = intersect(string(r.Properties.VariableNames), string(later.Properties.VariableNames))'
+            % intersect of two rows is a row; a for loop over a column would run once with the
+            % whole column, so no transpose here
+            for v = intersect(string(r.Properties.VariableNames), string(later.Properties.VariableNames))
                 if v ~= "scenario" && v ~= "method", r.(v) = later.(v)(i); end
             end
             TS3 = [TS3; r]; %#ok<AGROW>
