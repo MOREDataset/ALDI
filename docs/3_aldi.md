@@ -272,9 +272,15 @@ The last row scores the mean of the site rates of each network, not mu: for v6 t
 posterior of the mean of the site rates (`rate.mean(1)` in each draw) against the mean of
 the true site rates, for v5.2 pooled its pooled mean against the same truth (the columns
 `network_err` and `network_cover95` of the simulation files keep their names). With 8
-networks its coverage is known only coarsely (7 of 8: Clopper-Pearson 47-100 %). Over the
-28 networks of `A_fit`, `A_thin` and `A_ppc` the v6 interval covers the truth 23 times
-(82 %, 63-94 %; added 14 November 2026), so it is probably somewhat too narrow.
+networks its coverage is known only coarsely (7 of 8: Clopper-Pearson 47-100 %). By
+scenario (paper checks, block "SERIES MEAN", `aldi_v6_checks_series_mean.csv`; 14 November
+2026): `A_fit` 7 of 8, `A_null` 8 of 8 and `A_ppc` 7 of 10, so 22 of 26 networks drawn from
+Model A (85 %, 65-96 %); `A_heavy` 7 of 8, `A_misspec` 7 of 8 and `A_thin` 9 of 10, so 23 of
+26 misspecified networks (88 %, 70-98 %); 45 of 52 in all (87 %, 74-94 %). The shortfall is
+not caused by the misspecified scenarios, and the interval is probably somewhat too narrow:
+in `A_misspec`, the only scenario that stores its width so far, the RMSE of the mean site
+rate (0.74 %/dec) is 1.42 times the posterior SD implied by the width (mean width 2.03).
+Bias -0.51 (`A_ppc`) to +0.29 %/dec. The cause is open.
 
 Per-site OLS (added 9 November 2026, same simulated networks) is the method of recent
 syntheses: a linear trend per site tested at p < 0.05 (e.g. Streletskiy et al. 2026), with
@@ -368,14 +374,38 @@ and S8 of the paper):
   17, 22.3 (16-28) against 21, and 94.0 (53-111) against 96 in all; stable series of 26+
   years 12.1 (6-15) against 13. Every observed count lies inside the simulated range.
 - Mean site rate: its 95 % interval covers the truth in 9 of 10 `A_thin` networks (bias
-  +0.28 %/dec) and 7 of 10 `A_ppc` networks (bias -0.51); with the 7 of 8 of `A_fit`, 23
-  of 28 (see above). The paper therefore also gives the region-bootstrap interval of the
-  series mean (Table 2). The cause is open: the simulation stores whether the interval
-  covers the truth, not its width.
+  +0.28 %/dec) and 7 of 10 `A_ppc` networks (bias -0.51); every scenario is listed above.
+  The paper also gives the region-bootstrap interval of the series mean (Table 2), as an
+  alternative assessment rather than a verified correction (see `A_misspec` below).
 - Sampling: the largest R-hat over the 10 `A_thin` networks is 1.03 with normal, 1.04 with
   Student-t and 1.01 with unpooled series trends; on average the worst parameter of a
   network has R-hat 1.010-1.018 and an effective sample size of 300-414 (`A_ppc` 1.014 and
   337); the Student-t and trend-unpooled refits had one divergent transition each.
+
+Rerun of `A_misspec` on the PC on 14 November 2026 after PR #40 (`py -3.12 3_aldi.py
+--no-main --validate --scenarios A_misspec`, about 5 minutes, then `--checks` and
+`paper_figures`). It reproduced the first run exactly (coverage 0.878 / 0.874 / 0.920 /
+0.811 / 0.665 for v6, v6 without region-year, v5.2 site, v5.2 pooled and OLS; RMSE 5.444 /
+5.741 / 10.220 / 6.273 / 10.919) and adds:
+
+- **Trend targets** (block "TREND TARGETS UNDER A CHANGE OF TREND",
+  `aldi_v6_checks_trend_targets.csv`). The noise-free Theil-Sen slope differs from the
+  least-squares slope by 1.47 %/dec RMS over series (mean -0.03; 95 % of series within
+  3.12), the GLS slope by 0.23 (95 % within 0.49). Coverage of the 90 % intervals against
+  the least-squares / Theil-Sen / GLS target: v6 0.878 / 0.856 / 0.877, v5.2 site
+  (Akritas-Theil-Sen) 0.920 / 0.916 / 0.918, v5.2 pooled 0.811 / 0.797 / 0.813, OLS 0.665 /
+  0.656 / 0.664; RMSE v6 5.44 / 5.78 / 5.43, Akritas-Theil-Sen 10.22 / 10.29 / 10.22. Against
+  its own target Akritas-Theil-Sen covers no more than against least squares, so the
+  difference between the methods does not come from the choice of target.
+- **Series mean, mu and bootstrap.** The 95 % interval of the mean site rate covers 7 of 8
+  networks with a mean width of 2.03 (RMSE / posterior SD 1.42); the interval of mu covers
+  the mu the networks were drawn from in 7 of 8 (mean width 5.1); the region bootstrap of
+  the mean site rate covers the true mean in 8 of 8 but is 2.6 times as wide (mean width
+  5.2). Eight networks cannot show that the bootstrap's coverage is right; the paper calls
+  it an alternative assessment of the uncertainty.
+- Sampling as in the first run: on average the worst parameter of a network has R-hat
+  1.010 (v6) and 1.013 (without region-year) and an effective sample size of 476 and 344;
+  no divergent transitions.
 
 ### Thaw-subsidence bounds (sensitivity runs `subsidence_0.2`, `_0.5`, `_1.0`; added 2026-11-09)
 
