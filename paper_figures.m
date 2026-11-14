@@ -398,13 +398,18 @@ p_ats = 0.5 * erfc(-(res.rate_pct_dec ./ res.rate_se) / sqrt(2));
 if have_so
     so_w = iw(res.rate_v6_lo_site_only, res.rate_v6_hi_site_only);
     so_p = sum(res.p6_thickening_site_only > 0.9);
+    so_med = sprintf('%.1f', median(res.rate_v6_site_only, 'omitnan'));
 else
-    so_w = '-'; so_p = '-';
+    so_w = '-'; so_p = '-'; so_med = '-';
 end
 rows = [row('Series', n_sites, n_sites, n_sites)
         row('Network rate (mu, mean of regions), % per decade', '-', '-', ci(nw))
         row('Mean of series rates, % per decade', sprintf('%.1f', mean(res.rate_pct_dec, 'omitnan')), ...
             ci(nso), ci(nsm))
+        % the median as well (added 2026-11-14): unpooled rates of short records are wide and,
+        % as percentages, skewed to the right, so a few of them pull the unpooled mean up
+        row('Median of series rates, % per decade', sprintf('%.1f', median(res.rate_pct_dec, 'omitnan')), ...
+            so_med, sprintf('%.1f', median(res.rate_v6, 'omitnan')))
         row('Median width of 90 % interval, % per decade', iw(res.rate_lo, res.rate_hi), so_w, ...
             iw(res.rate_v6_lo, res.rate_v6_hi))
         row('Series with P(thickening) > 0.9', sum(p_ats > 0.9), so_p, sum(res.p6_thickening > 0.9))];
@@ -899,7 +904,8 @@ if have_ck
         ma = rd(fullfile(CK, 'aldi_v6_checks_method.csv'));
         p('  agreement of the methods (Table S3), mean %%/dec and difference from probes within regions');
         p('  [difference, 95 %% interval, shared regions; smallest and largest with one shared region left out]:');
-        mlist = ["hierarchical rate" "site-only Bayesian rate" "per-site OLS rate"];
+        mlist = ["hierarchical rate" "site-only Bayesian rate" "site-only Bayesian rate, precision-weighted" ...
+                 "per-site OLS rate"];
         if MODEL_B, mlist = [mlist "model B residual trend"]; end
         has_loro = ismember('loro_min', ma.Properties.VariableNames);
         for m = mlist
