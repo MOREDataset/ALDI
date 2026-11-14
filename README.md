@@ -69,8 +69,8 @@ step, with its settings at the top.
   a minute; needs geopandas for the permafrost-map part). `--no-main` skips the main fit
   and adds the other runs to the existing `data/3_aldi`. Everything at once:
   `py -3.12 3_aldi.py --power --sensitivity --checks --validate`.
-- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-5 and S1-S5 of the
-  Results (PNG and PDF) and writes Tables 1-3, S1-S9 and S12 (CSV) and `key_numbers.txt` (the
+- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-4 and S1-S4 of the
+  Results (PNG and PDF) and writes Tables 2 and S1-S10 (CSV) and `key_numbers.txt` (the
   numbers quoted in the text). It uses the outputs of `3_aldi.py --power --sensitivity
   --checks --validate`; a missing run only drops its figure, table or markers.
 - A new output replaces the current one only when its run finished without error. The

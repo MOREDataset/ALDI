@@ -20,30 +20,40 @@
 %   data\1_alt_target\alt_multisource_annual.csv, source_inventory.csv
 %   data\raw\permafrost_map\nhipa.byte  (IPA permafrost map, NSIDC GGD318; map background)
 %
-% Every figure has one panel and makes one point of the Results.
+% Every figure has one panel and makes one point of the Results. Numbering follows the
+% draft of 14 November 2026 (three research questions; supplement numbered by first
+% citation). Model B (the part of the trend associated with air temperature) was set
+% aside for a follow-up paper on that day: MODEL_B below brings its figure and tables
+% back, under names that start with B_.
 % Main text
-%   Fig 1  Sites on the IPA permafrost map, coloured by ALDI class         (Results 1)
-%   Fig 2  Regional and network rates of ALT change                        (Results 1)
-%   Fig 3  Site classes by record length, per-site method vs hierarchical  (Results 2)
-%   Fig 4  Simulation: coverage of 90 % intervals by record length         (Results 2)
-%   Fig 5  Expected from air temperature vs residual trend, per site       (Results 3)
-%   Table 1  Data sources of the analysed series
-%   Table 2  Model A: network rates and class counts, three methods
-%   Table 3  Model B: expected and residual trend for every climate input and check
-%            (supplement Table S10 in the draft of 14 November 2026)
+%   Fig 1  Sites on the IPA permafrost map, coloured by ALDI class          (Results 3.3)
+%   Fig 2  Regional and network rates of ALT change                         (Results 3.2)
+%   Fig 3  Site classes by record length, per-site method vs hierarchical   (Results 3.3)
+%   Fig 4  Simulation: coverage of 90 % intervals by record length          (Results 3.3)
+%   Table 2  Summaries of the network trend: mu, mean of the regions, means over equal-area
+%            cells, places and series, from the posterior draws (Table 1, published
+%            studies, is not made here)
 % Supplement
 %   Fig S1  Site-years per year by measurement method
-%   Fig S2  Sensitivity runs, Models A and B
-%   Fig S3  Residual trend, low minus high ground ice within regions
+%   Fig S2  Sensitivity runs: network rate of each run
+%   Fig S3  Regional trends of all regions with their 90 and 95 % intervals
 %   Fig S4  Site rate on its own (per-site OLS) vs in the hierarchical model
-%   Fig S5  Regional trends of all regions with their 90 and 95 % intervals (Table S12)
-%   Table S1  Sensitivity runs   Table S2  By measurement method   Table S3  Simulation check
-%   Table S4  Years of record a site needs, per method    Table S5  By record length:
-%             observed and expected shares, the standard per-site test
-%   Table S6  Residual trend by ground ice and method     Table S7  Rates in cm per decade
-%             beside published values                     Table S8  MCMC diagnostics
-%   Table S9  Agreement of the three methods (within regions and at one place)
-%   Table S12 Regional trends: median, 90 and 95 % intervals, P(trend > 0)
+%   Table S1  Data sources of the analysed series
+%   Table S2  MCMC diagnostics of the fits of Model A
+%   Table S3  Agreement of the three methods: within regions (with each shared region left
+%             out in turn) and at one place (TableS3_method_agreement, TableS3_method_loro),
+%             and the series of each method (TableS3_by_method)
+%   Table S4  Sensitivity runs and class margins
+%   Table S5  Years of record a site needs, per method
+%   Table S6  By record length: observed and expected shares, the standard per-site test
+%   Table S7  Rates in cm per decade beside published values
+%   Table S8  Simulation check
+%   Table S9  Regional trends: median, 90 and 95 % intervals, P(trend > 0)
+%   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), site-only
+%             Bayesian fit) and from the hierarchical model
+% With MODEL_B = true also: B_Fig_expected_vs_residual (Fig 5 until 14 November 2026),
+% B_Fig_ground_ice_within_regions, B_Table_decomposition, B_Table_residual_by_ice_and_method,
+% and the Model B columns and markers of the tables above and of Fig S2.
 
 clear; close all;
 
@@ -55,6 +65,7 @@ OUT  = fullfile(DATA, '4_paper');
 if ~exist(OUT, 'dir'), mkdir(OUT); end
 
 MIN_SITES_REGION = 4;          % regions with fewer sites are pooled in Fig 2
+MODEL_B = false;               % Model B outputs (follow-up paper): false since 14 Nov 2026
 W1 = 8.3; W2 = 17.5;           % Copernicus one- and two-column widths, cm
 FONT = 8;
 set(groot, 'defaultAxesFontSize', FONT, 'defaultTextFontSize', FONT, ...
@@ -104,7 +115,7 @@ if have_ck
     ckd  = rd(fullfile(CK, 'aldi_v6_checks_detection.csv'));
     ck_txt = fileread(fullfile(CK, 'aldi_v6_checks.txt'));
 else
-    warning('No %s: run py -3.12 3_aldi.py --no-main --checks for the dashes of Fig 3, Fig S4 and Tables S4-S9', CK);
+    warning('No %s: run py -3.12 3_aldi.py --no-main --checks for the dashes of Fig 3, Fig S4 and Tables S2, S3 and S5-S7', CK);
 end
 
 n_sites = height(res);
@@ -114,14 +125,18 @@ span_bin(res.span_years > 15 & res.span_years <= 20) = SPAN_L(2);
 span_bin(res.span_years > 20 & res.span_years <= 25) = SPAN_L(3);
 span_bin(res.span_years > 25) = SPAN_L(4);
 burned = as_logical(res.flag_burned);
-ex = res.expected_rate; rs = res.resid_rate;             % Model B, air temperature, ERA5-Land
+if MODEL_B
+    ex = res.expected_rate; rs = res.resid_rate;         % Model B, air temperature, ERA5-Land
+end
 fprintf('%d sites read from data\\3_aldi\n', n_sites);
 
-% all figures are remade below; this also clears file names of earlier versions
-old = [dir(fullfile(OUT, 'Fig*.png')); dir(fullfile(OUT, 'Fig*.pdf'))];
+% all figures and tables are remade below; this also clears the names of earlier versions
+% (the numbering changed on 14 November 2026)
+old = [dir(fullfile(OUT, 'Fig*.png')); dir(fullfile(OUT, 'Fig*.pdf')); dir(fullfile(OUT, 'Table*.csv')); ...
+       dir(fullfile(OUT, 'B_*.*'))];
 for i = 1:numel(old), delete(fullfile(OUT, old(i).name)); end
 
-% analysed site-years (one per site and year, inside the analysed window): Fig S1, Table 1
+% analysed site-years (one per site and year, inside the analysed window): Fig S1, Table S1
 ann = rd(fullfile(DATA, '1_alt_target', 'alt_multisource_annual.csv'));
 ann = ann(as_logical(ann.use), :);
 [tf, loc] = ismember(ann.site_id, res.site_id);
@@ -258,7 +273,7 @@ save_figure(fig, OUT, 'Fig3_classes_by_record_length');
 
 %% Figure 4: simulation check, coverage of 90 % intervals by record length
 % The rates of false and wrong-sign trends of the same simulation are quoted in the text
-% (key_numbers.txt) and listed in Table S3.
+% (key_numbers.txt) and listed in Table S8.
 if have_sim
     fig = new_figure(W1, 8);
     ax = axes(fig); hold(ax, 'on');
@@ -279,71 +294,74 @@ if have_sim
     save_figure(fig, OUT, 'Fig4_simulation_coverage');
 end
 
-%% Figure 5: Model B, expected from air temperature vs residual trend
+%% Model B (MODEL_B): expected from air temperature vs residual trend (Fig 5 until 14 Nov 2026)
 % Large markers: the mean over sites of the main fit; with k fixed at 0.5 (Stefan's
 % exponent: errors in TDD pull a fitted k toward 0, so this is about the most the
 % expected part can be); and with thaw subsidence added at the probe and thaw-tube
 % series on medium- or high-ice ground (sensitivity runs: 0.2, 0.5 and 1.0 cm/yr; the
 % surface these methods measure from sinks, so their ALT trend is too small).
-fig = new_figure(14, 12.5);
-ax = axes(fig); hold(ax, 'on');
-plot(ax, [res.expected_lo res.expected_hi]', [rs rs]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
-plot(ax, [ex ex]', [res.resid_lo res.resid_hi]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
-xline(ax, 0, ':', 'Color', [0.4 0.4 0.4]);
-yline(ax, 0, '-', 'Color', [0.3 0.3 0.3], 'LineWidth', 0.8);          % zero residual
-h = gobjects(0); lab = strings(0);
-for c = numel(RES):-1:1
-    k = res.class_resid == RES(c);
-    if ~any(k), continue; end
-    h(end+1) = scatter(ax, ex(k), rs(k), 14, RES_C(c, :), 'filled', 'MarkerEdgeColor', [0.2 0.2 0.2], ...
-        'LineWidth', 0.3); %#ok<SAGROW>
-    lab(end+1) = sprintf('%s (%d)', RES_L(c), sum(k)); %#ok<SAGROW>
-end
-if any(burned)
-    h(end+1) = scatter(ax, ex(burned), rs(burned), 40, 'k', 'LineWidth', 0.8);
-    lab(end+1) = sprintf('Burned plots (%d)', sum(burned));
-end
-h = fliplr(h); lab = fliplr(lab);
-bm = [net_value(net, 'B_main_mean_expected_pct_dec'); net_value(net, 'B_main_mean_residual_pct_dec')];
-bk = [net_value(net, 'B_kfixed_mean_expected_pct_dec'); net_value(net, 'B_kfixed_mean_residual_pct_dec')];
-sub_runs = ["main" "subsidence_0.2" "subsidence_0.5" "subsidence_1.0"];
-if have_sens
-    [tf, loc] = ismember(sub_runs, sens.run);
-    if sum(tf) >= 2
-        h(end+1) = plot(ax, sens.B_mean_expected(loc(tf)), sens.B_mean_residual(loc(tf)), '-^', 'Color', 'k', ...
-            'MarkerFaceColor', [0.6 0.6 0.6], 'MarkerSize', 5, 'LineWidth', 0.8);
-        lab(end+1) = "Mean with hypothetical subsidence (0.2, 0.5, 1.0 cm/yr)";
-        for r = find(tf & sub_runs ~= "main")
-            text(ax, sens.B_mean_expected(loc(r)) + 2, sens.B_mean_residual(loc(r)), ...
-                "+" + erase(sub_runs(r), "subsidence_") + " cm/yr", 'FontSize', FONT - 1, ...
-                'VerticalAlignment', 'middle', 'BackgroundColor', 'w', 'Margin', 0.5);
+if MODEL_B
+    fig = new_figure(14, 12.5);
+    ax = axes(fig); hold(ax, 'on');
+    plot(ax, [res.expected_lo res.expected_hi]', [rs rs]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
+    plot(ax, [ex ex]', [res.resid_lo res.resid_hi]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
+    xline(ax, 0, ':', 'Color', [0.4 0.4 0.4]);
+    yline(ax, 0, '-', 'Color', [0.3 0.3 0.3], 'LineWidth', 0.8);          % zero residual
+    h = gobjects(0); lab = strings(0);
+    for c = numel(RES):-1:1
+        k = res.class_resid == RES(c);
+        if ~any(k), continue; end
+        h(end+1) = scatter(ax, ex(k), rs(k), 14, RES_C(c, :), 'filled', 'MarkerEdgeColor', [0.2 0.2 0.2], ...
+            'LineWidth', 0.3); %#ok<SAGROW>
+        lab(end+1) = sprintf('%s (%d)', RES_L(c), sum(k)); %#ok<SAGROW>
+    end
+    if any(burned)
+        h(end+1) = scatter(ax, ex(burned), rs(burned), 40, 'k', 'LineWidth', 0.8);
+        lab(end+1) = sprintf('Burned plots (%d)', sum(burned));
+    end
+    h = fliplr(h); lab = fliplr(lab);
+    bm = [net_value(net, 'B_main_mean_expected_pct_dec'); net_value(net, 'B_main_mean_residual_pct_dec')];
+    bk = [net_value(net, 'B_kfixed_mean_expected_pct_dec'); net_value(net, 'B_kfixed_mean_residual_pct_dec')];
+    sub_runs = ["main" "subsidence_0.2" "subsidence_0.5" "subsidence_1.0"];
+    if have_sens
+        [tf, loc] = ismember(sub_runs, sens.run);
+        if sum(tf) >= 2
+            h(end+1) = plot(ax, sens.B_mean_expected(loc(tf)), sens.B_mean_residual(loc(tf)), '-^', 'Color', 'k', ...
+                'MarkerFaceColor', [0.6 0.6 0.6], 'MarkerSize', 5, 'LineWidth', 0.8);
+            lab(end+1) = "Mean with hypothetical subsidence (0.2, 0.5, 1.0 cm/yr)";
+            dx = 0.02 * (max(res.expected_hi) - min(res.expected_lo));   % label beside its marker
+            for r = find(tf & sub_runs ~= "main")
+                text(ax, sens.B_mean_expected(loc(r)) + dx, sens.B_mean_residual(loc(r)), ...
+                    "+" + erase(sub_runs(r), "subsidence_") + " cm/yr", 'FontSize', FONT - 1, ...
+                    'VerticalAlignment', 'middle', 'BackgroundColor', 'w', 'Margin', 0.5);
+            end
         end
     end
+    if ~isnan(bk(1, 1))
+        h(end+1) = plot(ax, bk(1, 1), bk(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
+            'LineWidth', 1);
+        lab(end+1) = "Mean, k fixed at Stefan's 0.5";
+    end
+    bw = [net_value(net, 'B_weather_memory_mean_expected_pct_dec'); net_value(net, 'B_weather_memory_mean_residual_pct_dec')];
+    if ~isnan(bw(1, 1))
+        h(end+1) = plot(ax, bw(1, 1), bw(2, 1), 's', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
+            'LineWidth', 1);
+        lab(end+1) = "Mean, all weather terms + 2-year memory";
+    end
+    h(end+1) = plot(ax, bm(1, 1), bm(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'k', 'MarkerSize', 7);
+    lab(end+1) = "Mean, summer TDD (main fit)";
+    xlim(ax, [floor(min(res.expected_lo)) - 0.5, ceil(max(res.expected_hi)) + 0.5]);
+    ylim(ax, [floor(min(res.resid_lo)) - 1, ceil(max(res.resid_hi)) + 1]);
+    xl = xlim(ax);
+    text(ax, xl(2), 0, 'zero residual ', 'HorizontalAlignment', 'right', 'VerticalAlignment', 'bottom', ...
+        'FontSize', FONT - 1, 'Color', [0.3 0.3 0.3]);
+    xlabel(ax, 'Trend associated with summer air temperature, TDD (% per decade)');
+    ylabel(ax, 'Residual trend after TDD (% per decade)');
+    legend(ax, h, lab, 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', 'FontSize', FONT - 1);
+    save_figure(fig, OUT, 'B_Fig_expected_vs_residual');
 end
-if ~isnan(bk(1, 1))
-    h(end+1) = plot(ax, bk(1, 1), bk(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
-        'LineWidth', 1);
-    lab(end+1) = "Mean, k fixed at Stefan's 0.5";
-end
-bw = [net_value(net, 'B_weather_memory_mean_expected_pct_dec'); net_value(net, 'B_weather_memory_mean_residual_pct_dec')];
-if ~isnan(bw(1, 1))
-    h(end+1) = plot(ax, bw(1, 1), bw(2, 1), 's', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
-        'LineWidth', 1);
-    lab(end+1) = "Mean, all weather terms + 2-year memory";
-end
-h(end+1) = plot(ax, bm(1, 1), bm(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'k', 'MarkerSize', 7);
-lab(end+1) = "Mean, summer TDD (main fit)";
-xlim(ax, [floor(min(res.expected_lo)) - 0.5, ceil(max(res.expected_hi)) + 0.5]);
-ylim(ax, [floor(min(res.resid_lo)) - 1, ceil(max(res.resid_hi)) + 1]);
-xl = xlim(ax);
-text(ax, xl(2), 0, 'zero residual ', 'HorizontalAlignment', 'right', 'VerticalAlignment', 'bottom', ...
-    'FontSize', FONT - 1, 'Color', [0.3 0.3 0.3]);
-xlabel(ax, 'Trend associated with summer air temperature, TDD (% per decade)');
-ylabel(ax, 'Residual trend after TDD (% per decade)');
-legend(ax, h, lab, 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', 'FontSize', FONT - 1);
-save_figure(fig, OUT, 'Fig5_expected_vs_residual');
 
-%% Table 1: data sources of the analysed series
+%% Table S1: data sources of the analysed series
 inv_f = fullfile(DATA, '1_alt_target', 'source_inventory.csv');
 [src, ~, gi] = unique(ann.source);
 T1 = table(src, accumarray(gi, 1), 'VariableNames', {'source', 'site_years'});
@@ -358,58 +376,78 @@ if isfile(inv_f)
     T1.licence(tf) = inv.licence(loc(tf));
 end
 T1 = sortrows(T1, 'site_years', 'descend');
-writetable(T1, fullfile(OUT, 'Table1_data_sources.csv'));
+writetable(T1, fullfile(OUT, 'TableS1_data_sources.csv'));
 
-%% Table 2: Model A network rates and classes, three methods
-v52 = regexp(summ, 'v5\.2 rerun: \d+ sites, network ([\-\d.]+)', 'tokens', 'once');
-v52_net = NaN; if ~isempty(v52), v52_net = str2double(v52{1}); end
+%% Table 2: summaries of the network trend (from the posterior draws; 3_aldi.py of 14 Nov 2026)
+sum_f = fullfile(DATA, '3_aldi', 'aldi_v6_network_summaries.csv');
+if isfile(sum_f)
+    copyfile(sum_f, fullfile(OUT, 'Table2_network_summaries.csv'));
+else
+    warning('No %s: rerun py -3.12 3_aldi.py (main run of 14 November 2026 or later)', sum_f);
+end
+
+%% Table S10: rates and classes from the record alone and from the hierarchical model
+% per site: the Akritas-Theil-Sen trend with AR(1) correction (v5.2) and the site-only
+% Bayesian fit (Model A without pooling of trends, same noise model); hierarchical: Model A.
+% P(thickening) of Sen + AR(1) is the normal approximation Phi(rate / SE), not a posterior.
 row = @(name, a, b, c) {string(name), string(a), string(b), string(c)};
 iw = @(lo, hi) sprintf('%.1f', median(hi - lo, 'omitnan'));
-pw = 2 * 1.644854 * res.rate_pooled_sd;
-rows = [row('Sites', n_sites, n_sites, n_sites)
-        row('Network rate (mean of regions), % per decade', '-', sprintf('%.1f', v52_net), ci(nw))
-        row('Mean of site rates, % per decade', sprintf('%.1f', mean(res.rate_pct_dec, 'omitnan')), ...
-            sprintf('%.1f', mean(res.rate_pooled, 'omitnan')), ci(nsm))
-        row('Median width of 90 % interval, % per decade', iw(res.rate_lo, res.rate_hi), ...
-            sprintf('%.1f', median(pw, 'omitnan')), iw(res.rate_v6_lo, res.rate_v6_hi))];
+have_so = ismember('class_v6_site_only', res.Properties.VariableNames);
+nso = net_value(net, 'A_site_only_mean_site_rate_pct_dec');
+p_ats = 0.5 * erfc(-(res.rate_pct_dec ./ res.rate_se) / sqrt(2));
+if have_so
+    so_w = iw(res.rate_v6_lo_site_only, res.rate_v6_hi_site_only);
+    so_p = sum(res.p6_thickening_site_only > 0.9);
+else
+    so_w = '-'; so_p = '-';
+end
+rows = [row('Series', n_sites, n_sites, n_sites)
+        row('Network rate (mu, mean of regions), % per decade', '-', '-', ci(nw))
+        row('Mean of series rates, % per decade', sprintf('%.1f', mean(res.rate_pct_dec, 'omitnan')), ...
+            ci(nso), ci(nsm))
+        row('Median width of 90 % interval, % per decade', iw(res.rate_lo, res.rate_hi), so_w, ...
+            iw(res.rate_v6_lo, res.rate_v6_hi))
+        row('Series with P(thickening) > 0.9', sum(p_ats > 0.9), so_p, sum(res.p6_thickening > 0.9))];
 for c = 1:numel(CLS)
-    rows = [rows; row(CLS_L(c), sum(res.class_site == CLS(c)), sum(res.class_pooled == CLS(c)), ...
-        sum(res.class_v6 == CLS(c)))]; %#ok<AGROW>
+    if have_so, nc = sum(res.class_v6_site_only == CLS(c)); else, nc = '-'; end
+    rows = [rows; row(CLS_L(c), sum(res.class_site == CLS(c)), nc, sum(res.class_v6 == CLS(c)))]; %#ok<AGROW>
 end
-T2 = cell2table(rows, 'VariableNames', {'quantity', 'per_site_Sen_AR1', 'pooled_REML', 'hierarchical_v6'});
-writetable(T2, fullfile(OUT, 'Table2_modelA_network_and_classes.csv'));
+T2 = cell2table(rows, 'VariableNames', {'quantity', 'per_site_Sen_AR1', 'site_only_bayesian', 'hierarchical'});
+writetable(T2, fullfile(OUT, 'TableS10_rates_and_classes_by_method.csv'));
 
-%% Table 3 (Table S10 of the draft): Model B decomposition for every climate input and check
-if ~have_power, pnet = []; end
-B = b_inputs(net, have_power, pnet);                      % used in key_numbers below
-VAR_ID = ["main" "kfixed" "lag" "memory" "air" "weather" "weather_memory" ...
-          "kprior_zero" "kprior_wide" "dprior_wide" "region_year"];
-VAR_L  = ["Summer TDD (main)" "k fixed at 0.5 (Stefan)" "+ previous summer's TDD" ...
-          "+ TDD of the two previous summers" "+ previous summer's TDD and winter freezing index" ...
-          "+ winter freezing index, winter snow and summer rain" "All weather terms + 2-year memory" ...
-          "Check: k prior centred on 0" "Check: k prior SD 1.0 (four times wider)" ...
-          "Check: wider priors of the residual-trend hierarchy" "Check: with a region-year term"];
-T3 = table();
-for i = 1:numel(VAR_ID) + have_power
-    if i <= numel(VAR_ID)
-        tb = net; pre = "B_" + VAR_ID(i); lab3 = VAR_L(i); src3 = "ERA5-Land"; tres = res;
-        col = "class_resid"; if VAR_ID(i) ~= "main", col = "class_resid_" + VAR_ID(i); end
-    else
-        tb = pnet; pre = "B_main"; lab3 = "Summer TDD (main)"; src3 = "NASA POWER"; tres = pres; col = "class_resid";
+%% Model B (MODEL_B): decomposition for every climate input and check (Table 3 until 14 Nov 2026)
+if MODEL_B
+    if ~have_power, pnet = []; end
+    B = b_inputs(net, have_power, pnet);                      % used in key_numbers below
+    VAR_ID = ["main" "kfixed" "lag" "memory" "air" "weather" "weather_memory" ...
+              "kprior_zero" "kprior_wide" "dprior_wide" "region_year"];
+    VAR_L  = ["Summer TDD (main)" "k fixed at 0.5 (Stefan)" "+ previous summer's TDD" ...
+              "+ TDD of the two previous summers" "+ previous summer's TDD and winter freezing index" ...
+              "+ winter freezing index, winter snow and summer rain" "All weather terms + 2-year memory" ...
+              "Check: k prior centred on 0" "Check: k prior SD 1.0 (four times wider)" ...
+              "Check: wider priors of the residual-trend hierarchy" "Check: with a region-year term"];
+    T3 = table();
+    for i = 1:numel(VAR_ID) + have_power
+        if i <= numel(VAR_ID)
+            tb = net; pre = "B_" + VAR_ID(i); lab3 = VAR_L(i); src3 = "ERA5-Land"; tres = res;
+            col = "class_resid"; if VAR_ID(i) ~= "main", col = "class_resid_" + VAR_ID(i); end
+        else
+            tb = pnet; pre = "B_main"; lab3 = "Summer TDD (main)"; src3 = "NASA POWER"; tres = pres; col = "class_resid";
+        end
+        e3 = net_value(tb, char(pre + "_mean_expected_pct_dec"));
+        if isnan(e3(1)), continue; end
+        r3 = net_value(tb, char(pre + "_mean_residual_pct_dec"));
+        t3 = net_value(tb, char(pre + "_mean_total_pct_dec"));
+        k3 = net_value(tb, char(pre + "_k0"));
+        if ismember(col, tres.Properties.VariableNames), cc = tres.(col); else, cc = strings(0, 1); end
+        T3 = [T3; table(lab3, src3, string(ci(e3)), string(ci(r3)), string(ci(t3)), round(100 * e3(1) / t3(1)), ...
+            k3(1), sum(cc == RES(1)), sum(cc == RES(2)), sum(cc == RES(3)), sum(cc == RES(4)), ...
+            'VariableNames', {'climate_input', 'temperature', 'expected_pct_dec', 'residual_pct_dec', ...
+            'total_pct_dec', 'expected_share_pct', 'k_this_summer', 'positive_residual', 'residual_within_5', ...
+            'negative_residual', 'not_resolved'})]; %#ok<AGROW>
     end
-    e3 = net_value(tb, char(pre + "_mean_expected_pct_dec"));
-    if isnan(e3(1)), continue; end
-    r3 = net_value(tb, char(pre + "_mean_residual_pct_dec"));
-    t3 = net_value(tb, char(pre + "_mean_total_pct_dec"));
-    k3 = net_value(tb, char(pre + "_k0"));
-    if ismember(col, tres.Properties.VariableNames), cc = tres.(col); else, cc = strings(0, 1); end
-    T3 = [T3; table(lab3, src3, string(ci(e3)), string(ci(r3)), string(ci(t3)), round(100 * e3(1) / t3(1)), ...
-        k3(1), sum(cc == RES(1)), sum(cc == RES(2)), sum(cc == RES(3)), sum(cc == RES(4)), ...
-        'VariableNames', {'climate_input', 'temperature', 'expected_pct_dec', 'residual_pct_dec', ...
-        'total_pct_dec', 'expected_share_pct', 'k_this_summer', 'positive_residual', 'residual_within_5', ...
-        'negative_residual', 'not_resolved'})]; %#ok<AGROW>
+    writetable(T3, fullfile(OUT, 'B_Table_decomposition.csv'));
 end
-writetable(T3, fullfile(OUT, 'Table3_modelB_decomposition.csv'));
 
 %% Supplement: Fig S1, analysed site-years per year by measurement method
 fig = new_figure(12, 6.5);
@@ -426,13 +464,18 @@ xlabel(ax, 'Year'); ylabel(ax, 'Site-years in the analysis');
 legend(ax, hb, FAM_L, 'Location', 'northwest', 'Box', 'off');
 save_figure(fig, OUT, 'FigS1_site_years');
 
-%% Supplement: Fig S2 and Table S1, sensitivity runs
+%% Supplement: Fig S2 and Table S4, sensitivity runs
 if have_sens
-    keep = intersect({'run', 'n_sites', 'n_site_years', 'A_network_rate', 'A_network_lo95', 'A_network_hi95', ...
+    cols_s = {'run', 'n_sites', 'n_site_years', 'A_network_rate', 'A_network_lo95', 'A_network_hi95', ...
         'A_mean_site_rate', 'A_declustered_250km', 'A_rapid_thickening', 'A_gradual_thickening', 'A_stable', ...
-        'A_gradual_thinning', 'A_rapid_thinning', 'A_indeterminate', 'B_mean_expected', 'B_mean_residual', ...
-        'B_deeper_than_TDD', 'Bwm_mean_expected', 'Bwm_mean_residual', 'Bwm_deeper_than_TDD'}, ...
-        sens.Properties.VariableNames, 'stable');
+        'A_gradual_thinning', 'A_rapid_thinning', 'A_indeterminate', 'n_subsidence_series'};
+    if MODEL_B
+        cols_s = [cols_s, {'B_mean_expected', 'B_mean_residual', 'B_deeper_than_TDD', 'Bwm_mean_expected', ...
+            'Bwm_mean_residual', 'Bwm_deeper_than_TDD'}];
+    else
+        sens = sens(sens.run ~= "undated_doy_243", :);       % changes Model B only
+    end
+    keep = intersect(cols_s, sens.Properties.VariableNames, 'stable');
     RUN_ID = ["main" "cens_sd_0.5" "cens_sd_1.0" "no_censored" "undated_doy_243" "drop_site_quality" ...
               "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km" ...
               "subsidence_0.2" "subsidence_0.5" "subsidence_1.0" ...
@@ -445,12 +488,12 @@ if have_sens
               "Probe survey day as covariate" "Flagged temperature years as intervals" ...
               "All temperature years as intervals" "Class margins 2.5 / 10 (no refit)" ...
               "Class margins 5 / 15 (no refit)"];
-    % Table S1 with a readable label beside each run id
+    % Table S4 with a readable label beside each run id
     T_s1 = sens(:, keep);
     lab_s1 = strrep(T_s1.run, '_', ' ');
     [tf, loc] = ismember(T_s1.run, RUN_ID); lab_s1(tf) = RUN_L(loc(tf));
     T_s1 = addvars(T_s1, lab_s1, 'After', 'run', 'NewVariableNames', 'label');
-    writetable(T_s1, fullfile(OUT, 'TableS1_sensitivity.csv'));
+    writetable(T_s1, fullfile(OUT, 'TableS4_sensitivity.csv'));
 
     % one row per run, both models on one rate axis; dotted lines mark the main run
     sf = sens(~isnan(sens.A_network_rate), :);           % margins_* runs only reclassify: no rates
@@ -459,19 +502,23 @@ if have_sens
     C_EXP = [0.27 0.45 0.70];
     fig = new_figure(12, 4 + 0.4 * nrun);
     ax = axes(fig); hold(ax, 'on');
-    hS = gobjects(1, 3);
+    hS = gobjects(1, 1);
     hS(1) = errorbar(ax, sf.A_network_rate, yy, sf.A_network_rate - sf.A_network_lo95, ...
         sf.A_network_hi95 - sf.A_network_rate, 'horizontal', 'o', 'Color', 'k', 'MarkerFaceColor', 'k', ...
         'MarkerSize', 3, 'CapSize', 2);
-    sl = {'Model A: network rate (95 % interval)'};
-    hS(2) = plot(ax, sf.B_mean_expected, yy, 'o', 'Color', C_EXP, 'MarkerFaceColor', C_EXP, 'MarkerSize', 4);
-    hS(3) = plot(ax, sf.B_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerFaceColor', CLS_C(1, :), 'MarkerSize', 4);
-    sl(2:3) = {'Model B: expected from air temperature', 'Model B: residual, air temperature'};
-    vals = {sf.A_network_rate, sf.B_mean_expected, sf.B_mean_residual}; cols = {'k', C_EXP, CLS_C(1, :)};
-    if ismember('Bwm_mean_residual', sf.Properties.VariableNames)
-        hS(4) = plot(ax, sf.Bwm_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerSize', 4);
-        sl{4} = 'Model B: residual, all weather + memory';
-        vals{4} = sf.Bwm_mean_residual; cols{4} = CLS_C(1, :);
+    sl = {'Network rate (95 % interval)'};
+    vals = {sf.A_network_rate}; cols = {'k'};
+    if MODEL_B
+        sl{1} = 'Model A: network rate (95 % interval)';
+        hS(2) = plot(ax, sf.B_mean_expected, yy, 'o', 'Color', C_EXP, 'MarkerFaceColor', C_EXP, 'MarkerSize', 4);
+        hS(3) = plot(ax, sf.B_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerFaceColor', CLS_C(1, :), 'MarkerSize', 4);
+        sl(2:3) = {'Model B: expected from air temperature', 'Model B: residual, air temperature'};
+        vals(2:3) = {sf.B_mean_expected, sf.B_mean_residual}; cols(2:3) = {C_EXP, CLS_C(1, :)};
+        if ismember('Bwm_mean_residual', sf.Properties.VariableNames)
+            hS(4) = plot(ax, sf.Bwm_mean_residual, yy, 'o', 'Color', CLS_C(1, :), 'MarkerSize', 4);
+            sl{4} = 'Model B: residual, all weather + memory';
+            vals{4} = sf.Bwm_mean_residual; cols{4} = CLS_C(1, :);
+        end
     end
     if ~isempty(m0)
         for j = 1:numel(vals), xline(ax, vals{j}(m0), ':', 'Color', cols{j}, 'LineWidth', 0.6); end
@@ -480,14 +527,19 @@ if have_sens
     run_l = strrep(sf.run, '_', ' ');
     [tf, loc] = ismember(sf.run, RUN_ID); run_l(tf) = RUN_L(loc(tf));
     yticks(ax, 1:nrun); yticklabels(ax, flipud(run_l)); ylim(ax, [0.5 nrun + 0.5]);
-    xlim(ax, [min([0; sf.B_mean_expected]) - 0.5, max(sf.A_network_hi95) + 0.5]);
+    if MODEL_B
+        xlim(ax, [min([0; sf.B_mean_expected]) - 0.5, max(sf.A_network_hi95) + 0.5]);
+    else
+        xlim(ax, [min([0; sf.A_network_lo95]) - 0.5, max(sf.A_network_hi95) + 0.5]);
+    end
     xlabel(ax, 'Rate of ALT change (% per decade)');
     legend(ax, hS, sl, 'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
     save_figure(fig, OUT, 'FigS2_sensitivity');
 end
 
-%% Supplement: Fig S3, residual trend by ground-ice content (IPA map), within regions
-if ismember('pf_ice', res.Properties.VariableNames)
+%% Model B (MODEL_B): residual trend by ground-ice content (IPA map), within regions
+% (Fig S3 / S5 until 14 Nov 2026)
+if MODEL_B && ismember('pf_ice', res.Properties.VariableNames)
     reg_ids = unique(res.region_id); d = []; lbl = strings(0); nn = [];
     for r = reg_ids'
         lo_k = res.region_id == r & res.pf_ice == "low"; hi_k = res.region_id == r & res.pf_ice == "high";
@@ -503,7 +555,7 @@ if ismember('pf_ice', res.Properties.VariableNames)
     % Regions are compared with themselves only, because ground ice and climate both
     % change from region to region.
     ice_fe = fe_contrast(rs, res.pf_ice, res.region_id, "low", "high", 2000);
-    % quote the same interval as Table S6 and the summary (the bootstrap of 3_aldi.py; this
+    % quote the same interval as B_Table_residual_by_ice_and_method and the summary (the bootstrap of 3_aldi.py; this
     % one draws other regions, so its interval differs in the first decimal)
     if have_ck && isfile(fullfile(CK, 'aldi_v6_checks_ice_method.csv'))
         im6 = rd(fullfile(CK, 'aldi_v6_checks_ice_method.csv'));
@@ -524,7 +576,7 @@ if ismember('pf_ice', res.Properties.VariableNames)
         legend(ax, [hB hF], {'Difference within each region (sites low/high)', ...
             sprintf('All regions, fixed effects: %+.1f (95 %%: %+.1f to %+.1f)', ice_fe(1:3))}, ...
             'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
-        save_figure(fig, OUT, 'FigS3_ground_ice_within_regions');
+        save_figure(fig, OUT, 'B_Fig_ground_ice_within_regions');
     end
 end
 
@@ -559,26 +611,33 @@ if have_ck
     save_figure(fig, OUT, 'FigS4_shrinkage');
 end
 
-%% Supplement: Table S2 by measurement method, Table S3 simulation
+%% Supplement: Table S3 (series of each method), Table S8 simulation
 T = table();
 for f = 1:numel(FAM)
     k = res.family == FAM(f);
-    T = [T; table(FAM_L(f), sum(k), sum(res.n_obs(k)), median(res.span_years(k)), mean(res.rate_v6(k), 'omitnan'), ...
-        mean(ex(k), 'omitnan'), mean(rs(k), 'omitnan'), sum(res.class_resid(k) == RES(1)), ...
-        'VariableNames', {'method', 'sites', 'site_years', 'median_span_yr', 'mean_rate_A', ...
-        'mean_expected_B', 'mean_residual_B', 'deeper_than_TDD'})]; %#ok<AGROW>
+    Tf = table(FAM_L(f), sum(k), sum(res.n_obs(k)), median(res.span_years(k)), mean(res.rate_v6(k), 'omitnan'), ...
+        median(res.rate_v6(k), 'omitnan'), 'VariableNames', {'method', 'series', 'site_years', 'median_span_yr', ...
+        'mean_rate', 'median_rate'});
+    if MODEL_B
+        Tf = [Tf table(mean(ex(k), 'omitnan'), mean(rs(k), 'omitnan'), sum(res.class_resid(k) == RES(1)), ...
+            'VariableNames', {'mean_expected_B', 'mean_residual_B', 'deeper_than_TDD'})]; %#ok<AGROW>
+    end
+    T = [T; Tf]; %#ok<AGROW>
 end
-writetable(T, fullfile(OUT, 'TableS2_by_method.csv'));
+writetable(T, fullfile(OUT, 'TableS3_by_method.csv'));
 if have_sim
-    keep = intersect({'scenario', 'method', 'coverage90', 'rmse_pct_dec', 'wrong_direction', 'resolved', ...
-        'called_trend', 'trend_p05', 'network_err', 'network_cover95', 'expected_coverage90', 'resid_bias', ...
-        'false_deeper'}, sim.Properties.VariableNames, 'stable');
+    cols_m = {'scenario', 'method', 'coverage90', 'rmse_pct_dec', 'wrong_direction', 'resolved', ...
+        'called_trend', 'trend_p05', 'network_err', 'network_cover95', 'expected_coverage90'};
+    if MODEL_B, cols_m = [cols_m, {'resid_bias', 'false_deeper'}]; end
+    keep = intersect(cols_m, sim.Properties.VariableNames, 'stable');
     TS3 = sim(:, keep);
+    if ~MODEL_B, TS3 = TS3(~startsWith(TS3.scenario, "B_"), :); end
     % standard error of the mean coverage from the spread between the simulated networks, and
     % the scenarios run later (A_misspec), from the paper checks
     nf = fullfile(CK, 'aldi_v6_checks_simulation_networks.csv');
     if have_ck && isfile(nf)
         sn = rd(nf);
+        if ~MODEL_B, sn = sn(~startsWith(sn.scenario, "B_"), :); end
         TS3.networks = nan(height(TS3), 1); TS3.coverage90_se = nan(height(TS3), 1);
         for i = 1:height(TS3)
             k = sn.scenario == TS3.scenario(i) & sn.method == TS3.method(i);
@@ -599,10 +658,10 @@ if have_sim
             TS3 = [TS3; r]; %#ok<AGROW>
         end
     end
-    writetable(TS3, fullfile(OUT, 'TableS3_simulation.csv'));
+    writetable(TS3, fullfile(OUT, 'TableS8_simulation.csv'));
 end
 
-%% Supplement: Fig S5 and Table S12, trends of all regions with their intervals
+%% Supplement: Fig S3 and Table S9, trends of all regions with their intervals
 % (review of 14 November 2026: Fig 2 pools the 32 regions with fewer than four series)
 reg_f = fullfile(DATA, '3_aldi', 'aldi_v6_regions.csv');
 if isfile(reg_f)
@@ -611,7 +670,7 @@ if isfile(reg_f)
     for i = 1:height(rg), rg.name(i) = region_name(rg.lat(i), rg.lon(i)); end
     rg = sortrows(rg, 'rate_median');
     writetable(rg(:, [{'region_id', 'name'}, setdiff(rg.Properties.VariableNames, {'region_id', 'name'}, 'stable')]), ...
-        fullfile(OUT, 'TableS12_regions.csv'));
+        fullfile(OUT, 'TableS9_regions.csv'));
     nrg = height(rg); yy = (1:nrg)';
     fig = new_figure(12, 4 + 0.33 * nrg);
     ax = axes(fig); hold(ax, 'on');
@@ -629,23 +688,43 @@ if isfile(reg_f)
     legend(ax, [h1 h2 hN], {'Two or more series: median, 90 % (thick) and 95 % (thin) interval', ...
         'One series', sprintf('Network rate, %.1f (%.1f to %.1f)', nw)}, 'Location', 'southoutside', ...
         'Box', 'off', 'FontSize', FONT - 1);
-    save_figure(fig, OUT, 'FigS5_regional_trends');
+    save_figure(fig, OUT, 'FigS3_regional_trends');
 end
 
-%% Supplement: Tables S4-S9 from the paper checks (copied from data\3_aldi_checks)
+%% Supplement: Tables S2, S3, S5, S6 and S7 from the paper checks (data\3_aldi_checks)
 if have_ck
-    copies = {'aldi_v6_checks_detection.csv', 'TableS4_detection_time.csv'
-              'aldi_v6_checks_by_span.csv', 'TableS5_by_record_length.csv'
-              'aldi_v6_checks_ice_method.csv', 'TableS6_residual_by_ice_and_method.csv'
+    copies = {'aldi_v6_checks_detection.csv', 'TableS5_detection_time.csv'
+              'aldi_v6_checks_by_span.csv', 'TableS6_by_record_length.csv'
               'aldi_v6_checks_cm.csv', 'TableS7_rates_in_cm.csv'
-              'aldi_v6_checks_diagnostics.csv', 'TableS8_mcmc_diagnostics.csv'
-              'aldi_v6_checks_method.csv', 'TableS9_method_agreement.csv'};
+              'aldi_v6_checks_method_loro.csv', 'TableS3_method_loro.csv'};
+    if MODEL_B
+        copies = [copies; {'aldi_v6_checks_ice_method.csv', 'B_Table_residual_by_ice_and_method.csv'}];
+    end
     for i = 1:size(copies, 1)
         if isfile(fullfile(CK, copies{i, 1}))
             copyfile(fullfile(CK, copies{i, 1}), fullfile(OUT, copies{i, 2}));
         else
             warning('No %s: rerun py -3.12 3_aldi.py --no-main --checks', copies{i, 1});
         end
+    end
+    % without Model B: the MCMC diagnostics of the fits of Model A only, and the method
+    % agreement without the rows of the Model B residual
+    f2 = fullfile(CK, 'aldi_v6_checks_diagnostics.csv');
+    if isfile(f2)
+        T = rd(f2);
+        if ~MODEL_B, T = T(T.model == "A", :); end
+        writetable(T, fullfile(OUT, 'TableS2_mcmc_diagnostics.csv'));
+    end
+    f3 = fullfile(CK, 'aldi_v6_checks_method.csv');
+    if isfile(f3)
+        T = rd(f3);
+        if ~MODEL_B, T = T(T.measure ~= "model B residual trend", :); end
+        writetable(T, fullfile(OUT, 'TableS3_method_agreement.csv'));
+    end
+    f4 = fullfile(OUT, 'TableS3_method_loro.csv');
+    if ~MODEL_B && isfile(f4)
+        T = rd(f4);
+        writetable(T(T.measure ~= "model B residual trend", :), f4);
     end
 end
 
@@ -672,10 +751,24 @@ if have_sens
         p('  declustered (250 km cells): %.1f; mean over regions %.1f', sens.A_declustered_250km(m0), ...
             sens.A_mean_over_regions(m0));
     end
-    ks = ~startsWith(sens.run, "subsidence");               % bounds, reported under MODEL B
-    p('  sensitivity runs: network %.1f to %.1f, residual %.1f to %.1f, residual all weather %.1f to %.1f', ...
-        min(sens.A_network_rate(ks)), max(sens.A_network_rate(ks)), min(sens.B_mean_residual(ks)), ...
-        max(sens.B_mean_residual(ks)), min(sens.Bwm_mean_residual(ks)), max(sens.Bwm_mean_residual(ks)));
+    ks = ~startsWith(sens.run, "subsidence");               % scenarios, listed below
+    if MODEL_B
+        p('  sensitivity runs: network %.1f to %.1f, residual %.1f to %.1f, residual all weather %.1f to %.1f', ...
+            min(sens.A_network_rate(ks)), max(sens.A_network_rate(ks)), min(sens.B_mean_residual(ks)), ...
+            max(sens.B_mean_residual(ks)), min(sens.Bwm_mean_residual(ks)), max(sens.Bwm_mean_residual(ks)));
+    else
+        kr = ks & sens.run ~= "main" & ~startsWith(sens.run, "margins");
+        p('  sensitivity runs (%d, without the 3 subsidence scenarios): network %.1f to %.1f %%/dec', sum(kr), ...
+            min(sens.A_network_rate(kr)), max(sens.A_network_rate(kr)));
+        for r = ["subsidence_0.2" "subsidence_0.5" "subsidence_1.0"]
+            k = sens.run == r;
+            if any(k)
+                p('  hypothetical subsidence of %s cm/yr at %d probe and tube series on medium- or high-ice ground: network %s %%/dec', ...
+                    erase(r, "subsidence_"), sens.n_subsidence_series(k), ...
+                    ci([sens.A_network_rate(k) sens.A_network_lo95(k) sens.A_network_hi95(k)]));
+            end
+        end
+    end
 end
 for c = 1:numel(CLS)
     p('  %s: %d hierarchical, %d per site (v5.2)', CLS_L(c), sum(res.class_v6 == CLS(c)), sum(res.class_site == CLS(c)));
@@ -690,34 +783,36 @@ for b = 1:4
 end
 p('  regional rates (Fig 2):');
 for i = height(reg):-1:1, p('    %s: %.1f', reg.label(i), reg.region_rate(i)); end
-p('');
-p('MODEL B');
-for i = 1:numel(B)
-    p('  %s: expected %s, residual %s, total %s %%/dec, k %.2f', B(i).name, ci(B(i).exp), ci(B(i).res), ...
-        ci(B(i).tot), B(i).k(1));
-end
-for c = 1:numel(RES), p('  %s: %d sites', RES_L(c), sum(res.class_resid == RES(c))); end
-p('  burned plots: %d, all deeper than temperature explains: %d', sum(burned), ...
-    sum(burned & res.class_resid == RES(1)));
-p('  residual without burned plots: %.1f (all %.1f)', mean(rs(~burned), 'omitnan'), mean(rs, 'omitnan'));
-bk = [net_value(net, 'B_kfixed_mean_expected_pct_dec'); net_value(net, 'B_kfixed_mean_residual_pct_dec')];
-if ~isnan(bk(1, 1))
-    p('  k fixed at 0.5 (most the expected part can take): expected %s, residual %s %%/dec', ci(bk(1, :)), ci(bk(2, :)));
-end
-if have_sens
-    for r = ["subsidence_0.2" "subsidence_0.5" "subsidence_1.0"]
-        k = sens.run == r;
-        if any(k)
-            p('  %s cm/yr at ice-rich probe and tube series (%d series): network %.1f, expected %.2f, residual %.2f %%/dec', ...
-                erase(r, "subsidence_"), sens.n_subsidence_series(k), sens.A_network_rate(k), ...
-                sens.B_mean_expected(k), sens.B_mean_residual(k));
+if MODEL_B
+    p('');
+    p('MODEL B');
+    for i = 1:numel(B)
+        p('  %s: expected %s, residual %s, total %s %%/dec, k %.2f', B(i).name, ci(B(i).exp), ci(B(i).res), ...
+            ci(B(i).tot), B(i).k(1));
+    end
+    for c = 1:numel(RES), p('  %s: %d sites', RES_L(c), sum(res.class_resid == RES(c))); end
+    p('  burned plots: %d, all deeper than temperature explains: %d', sum(burned), ...
+        sum(burned & res.class_resid == RES(1)));
+    p('  residual without burned plots: %.1f (all %.1f)', mean(rs(~burned), 'omitnan'), mean(rs, 'omitnan'));
+    bk = [net_value(net, 'B_kfixed_mean_expected_pct_dec'); net_value(net, 'B_kfixed_mean_residual_pct_dec')];
+    if ~isnan(bk(1, 1))
+        p('  k fixed at 0.5 (most the expected part can take): expected %s, residual %s %%/dec', ci(bk(1, :)), ci(bk(2, :)));
+    end
+    if have_sens
+        for r = ["subsidence_0.2" "subsidence_0.5" "subsidence_1.0"]
+            k = sens.run == r;
+            if any(k)
+                p('  %s cm/yr at ice-rich probe and tube series (%d series): network %.1f, expected %.2f, residual %.2f %%/dec', ...
+                    erase(r, "subsidence_"), sens.n_subsidence_series(k), sens.A_network_rate(k), ...
+                    sens.B_mean_expected(k), sens.B_mean_residual(k));
+            end
         end
     end
-end
-if exist('d', 'var') && ~isempty(d)
-    p('  low minus high ground ice within regions (region fixed effects, %d regions): %+.1f (%+.1f to %+.1f)', ...
-        ice_fe(4), ice_fe(1:3));
-    p('    plain per-region differences: %.1f to %.1f', min(d), max(d));
+    if exist('d', 'var') && ~isempty(d)
+        p('  low minus high ground ice within regions (region fixed effects, %d regions): %+.1f (%+.1f to %+.1f)', ...
+            ice_fe(4), ice_fe(1:3));
+        p('    plain per-region differences: %.1f to %.1f', min(d), max(d));
+    end
 end
 if have_sim
     p('');
@@ -734,9 +829,9 @@ if have_sim
         end
     end
     k = sim.method == "v6_B_resid" & sim.scenario == "B_fit";
-    if any(k), p('  Model B residual: coverage %.2f, bias %+.2f %%/dec', sim.coverage90(k), sim.resid_bias(k)); end
+    if MODEL_B && any(k), p('  Model B residual: coverage %.2f, bias %+.2f %%/dec', sim.coverage90(k), sim.resid_bias(k)); end
     k = sim.method == "v6_B_resid" & ismember(sim.scenario, ["B_climate" "B_tdderr"]);
-    if any(k), p('  Model B, no residual trend: sites called deeper %.3f', max(sim.false_deeper(k))); end
+    if MODEL_B && any(k), p('  Model B, no residual trend: sites called deeper %.3f', max(sim.false_deeper(k))); end
 end
 if have_ck
     p('');
@@ -769,48 +864,62 @@ if have_ck
         sum(~sig & contains(cks.class_v6, "thickening")), sum(~sig & cks.class_v6 == "stable"));
     p('  shrinkage toward the region (median): %s', strjoin(compose('%s yr %.2f', cksp.span, cksp.median_shrinkage)', ', '));
     keys = ["share that is regional" "class of a site with NO data" "POSTERIOR EXPECTED CLASS COUNTS" ...
-            "P(rate >" "with site fixed effects R2" "share of the TREND" "MCMC:" "survey date drift" ...
-            "site-years by method, all" "UNRESOLVED RECORDS" "ACCELERATION" "median trend before" ...
-            "p < 0.05: faster"];
+            "P(rate >" "MCMC:" "survey date drift" "site-years by method, all" "UNRESOLVED RECORDS" ...
+            "site-only Bayesian fit (same noise" "site-only fit, classes of all" "ACCELERATION" ...
+            "median trend before" "p < 0.05: faster" "Benjamini-Hochberg over the records" ...
+            "records, p < 0.05 faster" "EXCLUDED YEARS THAT MARK" "  no_refreeze: " "talik or possible_talik: " ...
+            "wide_sensor_spacing: " "profile_inversion: " "analysed series with" ...
+            "coverage of the 95 % interval of the network rate"];
+    if MODEL_B, keys = [keys "with site fixed effects R2" "share of the TREND"]; end
     lines = splitlines(string(ck_txt));
     for kk = keys
         for ln = lines(contains(lines, kk))'
             p('  %s', strtrim(ln));
         end
     end
-    im = rd(fullfile(CK, 'aldi_v6_checks_ice_method.csv'));
-    p('  residual trend by ground ice, mean %%/dec (low / medium / high; sites):');
-    for f = [FAM "all"]
-        v = nan(1, 3); n = zeros(1, 3); ICE = ["low" "medium" "high"];
-        for j = 1:3
-            k = im.family == f & im.pf_ice == ICE(j);
-            if any(k), v(j) = im.mean_resid(k); n(j) = im.sites(k); end
+    if MODEL_B
+        im = rd(fullfile(CK, 'aldi_v6_checks_ice_method.csv'));
+        p('  residual trend by ground ice, mean %%/dec (low / medium / high; sites):');
+        for f = [FAM "all"]
+            v = nan(1, 3); n = zeros(1, 3); ICE = ["low" "medium" "high"];
+            for j = 1:3
+                k = im.family == f & im.pf_ice == ICE(j);
+                if any(k), v(j) = im.mean_resid(k); n(j) = im.sites(k); end
+            end
+            k = im.family == f & im.pf_ice == "low_minus_high_within_regions" & f ~= "all";  % "all": under MODEL B
+            s = sprintf('    %s: %.1f / %.1f / %.1f (%d / %d / %d)', f, v, n);
+            if any(k)
+                s = [s sprintf('; low minus high within %d shared regions %+.1f (%+.1f to %+.1f)', im.sites(k), ...
+                    im.mean_resid(k), im.lo95(k), im.hi95(k))]; %#ok<AGROW>
+            end
+            p('%s', s);
         end
-        k = im.family == f & im.pf_ice == "low_minus_high_within_regions" & f ~= "all";  % "all": under MODEL B
-        s = sprintf('    %s: %.1f / %.1f / %.1f (%d / %d / %d)', f, v, n);
-        if any(k)
-            s = [s sprintf('; low minus high within %d shared regions %+.1f (%+.1f to %+.1f)', im.sites(k), ...
-                im.mean_resid(k), im.lo95(k), im.hi95(k))]; %#ok<AGROW>
-        end
-        p('%s', s);
     end
     if isfile(fullfile(CK, 'aldi_v6_checks_method.csv'))
         ma = rd(fullfile(CK, 'aldi_v6_checks_method.csv'));
-        p('  agreement of the methods (Table S9), mean %%/dec and difference from probes within regions:');
-        for m = ["hierarchical rate" "per-site OLS rate" "model B residual trend"]
+        p('  agreement of the methods (Table S3), mean %%/dec and difference from probes within regions');
+        p('  [difference, 95 %% interval, shared regions; smallest and largest with one shared region left out]:');
+        mlist = ["hierarchical rate" "site-only Bayesian rate" "per-site OLS rate"];
+        if MODEL_B, mlist = [mlist "model B residual trend"]; end
+        has_loro = ismember('loro_min', ma.Properties.VariableNames);
+        for m = mlist
             s = sprintf('    %s:', m);
             for f = FAM
                 k = ma.measure == m & ma.group == f;
                 if ~any(k), continue; end
                 s = [s sprintf(' %s %.1f (%d)', f, ma.mean(k), ma.n(k))]; %#ok<AGROW>
                 if isfinite(ma.minus_probe_within_regions(k))
-                    s = [s sprintf(' [%+.1f, %+.1f to %+.1f, %d regions]', ma.minus_probe_within_regions(k), ...
+                    s = [s sprintf(' [%+.1f, %+.1f to %+.1f, %d regions', ma.minus_probe_within_regions(k), ...
                         ma.lo95(k), ma.hi95(k), ma.shared_regions(k))]; %#ok<AGROW>
+                    if has_loro && isfinite(ma.loro_min(k))
+                        s = [s sprintf('; %+.1f to %+.1f', ma.loro_min(k), ma.loro_max(k))]; %#ok<AGROW>
+                    end
+                    s = [s ']']; %#ok<AGROW>
                 end
             end
             p('%s', s);
         end
-        for m = ["hierarchical rate" "per-site OLS rate"]
+        for m = ["hierarchical rate" "site-only Bayesian rate" "per-site OLS rate"]
             k1 = ma.measure == m + ", |difference| of two series at one place" & ma.group == "same method";
             k2 = ma.measure == m + ", |difference| of two series at one place" & ma.group == "different methods";
             if any(k1) && any(k2)
@@ -842,12 +951,27 @@ if isfile(reg_f)
         rg.name(k0), rg.n_series(k0), rg.rate_median(k0), rg.lo95(k0), rg.hi95(k0)), '; '));
 end
 lines = splitlines(string(summ));
-for ln = lines(contains(lines, "corr(expected, residual mean)") | contains(lines, "site-years by method family"))'
+kl = contains(lines, "site-years by method family") | contains(lines, "site-only fit (no pooling");
+if MODEL_B, kl = kl | contains(lines, "corr(expected, residual mean)"); end
+for ln = lines(kl)'
     p('  %s', strtrim(ln));
+end
+if isfile(sum_f)
+    st = rd(sum_f);
+    p('  Table 2, summaries of the network trend (per posterior draw; region bootstrap for the series mean):');
+    for i = 1:height(st)
+        s = sprintf('    %s (%d %s): %.1f (%.1f to %.1f)', st.summary(i), st.n_units(i), st.unit(i), st.median(i), ...
+            st.lo95(i), st.hi95(i));
+        if isfinite(st.region_bootstrap_lo95(i))
+            s = [s sprintf('; region bootstrap %.1f to %.1f', st.region_bootstrap_lo95(i), st.region_bootstrap_hi95(i))]; %#ok<AGROW>
+        end
+        p('%s', s);
+    end
 end
 dep_f = fullfile(DATA, '3_aldi', 'aldi_v6_dependence.csv');
 if isfile(dep_f)
     dp = rd(dep_f);
+    if ~MODEL_B, dp = dp(startsWith(dp.fit, "A "), :); end
     p('  dependence left in the residuals: lag-1 autocorrelation of innovations | same-year correlation of two series of a region');
     for i = 1:height(dp)
         p('    %s: %+.2f (%d pairs) | %+.2f (%d pairs)', dp.fit(i), dp.lag1(i), dp.n_lag1(i), dp.same_region_year(i), dp.n_pairs(i));
@@ -876,8 +1000,10 @@ if isfile(fullfile(kp, 'aldi_v6_network.csv'))
         p('    added: %s (%s, %d values, %d-%d): %.1f %%/dec (%.1f to %.1f), %s', sid, kr.family(k), kr.n_obs(k), ...
             kr.year_min(k), kr.year_max(k), kr.rate_v6(k), kr.rate_v6_lo(k), kr.rate_v6_hi(k), kr.class_v6(k));
     end
-    p('    model B main: expected %s, residual %s %%/dec', ci(net_value(kn, 'B_main_mean_expected_pct_dec')), ...
-        ci(net_value(kn, 'B_main_mean_residual_pct_dec')));
+    if MODEL_B
+        p('    model B main: expected %s, residual %s %%/dec', ci(net_value(kn, 'B_main_mean_expected_pct_dec')), ...
+            ci(net_value(kn, 'B_main_mean_residual_pct_dec')));
+    end
 end
 fclose(fid);
 fprintf('Done: figures and tables in %s\n', OUT);
