@@ -40,6 +40,7 @@
 %             observed and expected shares, the standard per-site test
 %   Table S6  Residual trend by ground ice and method     Table S7  Rates in cm per decade
 %             beside published values                     Table S8  MCMC diagnostics
+%   Table S9  Agreement of the three methods (within regions and at one place)
 
 clear; close all;
 
@@ -100,7 +101,7 @@ if have_ck
     ckd  = rd(fullfile(CK, 'aldi_v6_checks_detection.csv'));
     ck_txt = fileread(fullfile(CK, 'aldi_v6_checks.txt'));
 else
-    warning('No %s: run py -3.12 3_aldi.py --no-main --checks for the dashes of Fig 3, Fig S4 and Tables S4-S8', CK);
+    warning('No %s: run py -3.12 3_aldi.py --no-main --checks for the dashes of Fig 3, Fig S4 and Tables S4-S9', CK);
 end
 
 n_sites = height(res);
@@ -472,6 +473,13 @@ if ismember('pf_ice', res.Properties.VariableNames)
     % Regions are compared with themselves only, because ground ice and climate both
     % change from region to region.
     ice_fe = fe_contrast(rs, res.pf_ice, res.region_id, "low", "high", 2000);
+    % quote the same interval as Table S6 and the summary (the bootstrap of 3_aldi.py; this
+    % one draws other regions, so its interval differs in the first decimal)
+    if have_ck && isfile(fullfile(CK, 'aldi_v6_checks_ice_method.csv'))
+        im6 = rd(fullfile(CK, 'aldi_v6_checks_ice_method.csv'));
+        k6 = im6.family == "all" & im6.pf_ice == "low_minus_high_within_regions";
+        if any(k6), ice_fe(1:3) = [im6.mean_resid(k6) im6.lo95(k6) im6.hi95(k6)]; end
+    end
     if ~isempty(d)
         fig = new_figure(11, 3.5 + 0.6 * numel(d));
         ax = axes(fig); hold(ax, 'on');
@@ -538,15 +546,20 @@ if have_sim
     writetable(sim(:, keep), fullfile(OUT, 'TableS3_simulation.csv'));
 end
 
-%% Supplement: Tables S4-S8 from the paper checks (copied from data\3_aldi_checks)
+%% Supplement: Tables S4-S9 from the paper checks (copied from data\3_aldi_checks)
 if have_ck
     copies = {'aldi_v6_checks_detection.csv', 'TableS4_detection_time.csv'
               'aldi_v6_checks_by_span.csv', 'TableS5_by_record_length.csv'
               'aldi_v6_checks_ice_method.csv', 'TableS6_residual_by_ice_and_method.csv'
               'aldi_v6_checks_cm.csv', 'TableS7_rates_in_cm.csv'
-              'aldi_v6_checks_diagnostics.csv', 'TableS8_mcmc_diagnostics.csv'};
+              'aldi_v6_checks_diagnostics.csv', 'TableS8_mcmc_diagnostics.csv'
+              'aldi_v6_checks_method.csv', 'TableS9_method_agreement.csv'};
     for i = 1:size(copies, 1)
-        copyfile(fullfile(CK, copies{i, 1}), fullfile(OUT, copies{i, 2}));
+        if isfile(fullfile(CK, copies{i, 1}))
+            copyfile(fullfile(CK, copies{i, 1}), fullfile(OUT, copies{i, 2}));
+        else
+            warning('No %s: rerun py -3.12 3_aldi.py --no-main --checks', copies{i, 1});
+        end
     end
 end
 
@@ -692,6 +705,31 @@ if have_ck
                 im.mean_resid(k), im.lo95(k), im.hi95(k))]; %#ok<AGROW>
         end
         p('%s', s);
+    end
+    if isfile(fullfile(CK, 'aldi_v6_checks_method.csv'))
+        ma = rd(fullfile(CK, 'aldi_v6_checks_method.csv'));
+        p('  agreement of the methods (Table S9), mean %%/dec and difference from probes within regions:');
+        for m = ["hierarchical rate" "per-site OLS rate" "model B residual trend"]
+            s = sprintf('    %s:', m);
+            for f = FAM
+                k = ma.measure == m & ma.group == f;
+                if ~any(k), continue; end
+                s = [s sprintf(' %s %.1f (%d)', f, ma.mean(k), ma.n(k))]; %#ok<AGROW>
+                if isfinite(ma.minus_probe_within_regions(k))
+                    s = [s sprintf(' [%+.1f, %+.1f to %+.1f, %d regions]', ma.minus_probe_within_regions(k), ...
+                        ma.lo95(k), ma.hi95(k), ma.shared_regions(k))]; %#ok<AGROW>
+                end
+            end
+            p('%s', s);
+        end
+        for m = ["hierarchical rate" "per-site OLS rate"]
+            k1 = ma.measure == m + ", |difference| of two series at one place" & ma.group == "same method";
+            k2 = ma.measure == m + ", |difference| of two series at one place" & ma.group == "different methods";
+            if any(k1) && any(k2)
+                p('    two series at one place, %s: median |difference| %.1f same method (%d pairs), %.1f different methods (%d pairs)', ...
+                    m, ma.median(k1), ma.n(k1), ma.median(k2), ma.n(k2));
+            end
+        end
     end
     cm = rd(fullfile(CK, 'aldi_v6_checks_cm.csv'));
     p('  rates in cm (Table S7):');

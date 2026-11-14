@@ -2668,6 +2668,7 @@ def sensitivity_figure(tab, out):
 #   aldi_v6_checks_by_span.csv      observed and expected shares by record length
 #   aldi_v6_checks_detection.csv    years of record a site needs, per method family
 #   aldi_v6_checks_ice_method.csv   residual trend by ground-ice class and method family
+#   aldi_v6_checks_method.csv       agreement of the three methods: within regions and at one place
 #   aldi_v6_checks_cm.csv           rates in cm per decade beside published numbers
 #   aldi_v6_checks_diagnostics.csv  MCMC diagnostics of the fits of the main run
 #   aldi_v6_checks.txt              the numbers for the text
@@ -2995,6 +2996,57 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
     im.to_csv(out / "aldi_v6_checks_ice_method.csv", index=False)
     L.append("\nRESIDUAL TREND BY GROUND ICE (IPA) AND METHOD (%/dec; contrast rows: sites = shared regions):")
     L.append(im.round(2).to_string(index=False))
+
+    # --- agreement of the three methods (can probes, thaw tubes and ground temperatures share one index?) ---
+    # The raw means of the method families mix method with place (most thaw tubes are in the
+    # slowly deepening Mackenzie Delta), so each family is compared with the probes WITHIN
+    # regions (region fixed effects, 95 % interval from resampling whole regions, as for ground
+    # ice above): on the hierarchical rates, on the per-site OLS rates (no pooling, so the model
+    # cannot pull the methods together) and on the model B residuals. Second test, at the same
+    # place (series within 1 km): if the methods measured different things, two series of
+    # different methods at one place would differ more than two series of the same method.
+    mrows = []
+    cm_ = ck.merge(res[["site_id"] + (["location_id"] if "location_id" in res else [])], on="site_id", how="left")
+    for col, what in [("rate_v6", "hierarchical rate"), ("ols_rate", "per-site OLS rate"),
+                      ("resid_rate", "model B residual trend")]:
+        v = cm_.dropna(subset=[col])
+        con = _region_fe_contrast(v[col], v.family, v.region_id, "probe")
+        for f in FAMILIES:
+            k = v.family == f
+            c_ = con.get(f, (np.nan, np.nan, np.nan, np.nan))
+            mrows.append({"measure": what, "group": f, "n": int(k.sum()),
+                          "mean": float(v[col][k].mean()), "median": float(v[col][k].median()),
+                          "minus_probe_within_regions": c_[0], "lo95": c_[1], "hi95": c_[2],
+                          "shared_regions": c_[3]})
+    n_mixed_places = n_mixed_series = 0
+    if "location_id" in cm_:
+        prs = []
+        for _, g in cm_.groupby("location_id"):
+            g = g.reset_index(drop=True)
+            if g.family.nunique() > 1:
+                n_mixed_places, n_mixed_series = n_mixed_places + 1, n_mixed_series + len(g)
+            for i in range(len(g)):
+                for j in range(i + 1, len(g)):
+                    prs.append({"same": g.family[i] == g.family[j],
+                                "rate_v6": abs(g.rate_v6[i] - g.rate_v6[j]),
+                                "ols_rate": abs(g.ols_rate[i] - g.ols_rate[j])})
+        pr = pd.DataFrame(prs)
+        for same in [True, False]:
+            gp = pr[pr.same == same] if len(pr) else pr
+            for col, what in [("rate_v6", "hierarchical rate"), ("ols_rate", "per-site OLS rate")]:
+                mrows.append({"measure": f"{what}, |difference| of two series at one place",
+                              "group": "same method" if same else "different methods", "n": len(gp),
+                              "mean": float(gp[col].mean()) if len(gp) else np.nan,
+                              "median": float(gp[col].median()) if len(gp) else np.nan})
+    ma = pd.DataFrame(mrows)
+    ma["shared_regions"] = ma.shared_regions.astype("Int64")
+    ma.to_csv(out / "aldi_v6_checks_method.csv", index=False)
+    nfam = res.groupby("region_id").family.nunique()
+    L.append(f"\nAGREEMENT OF THE METHODS (%/dec; minus_probe_within_regions = difference from the probes in the "
+             f"same regions, region fixed effects, 95 % from resampling regions; {int((nfam >= 2).sum())} of "
+             f"{len(nfam)} regions hold two or more methods, {n_mixed_places} places {n_mixed_series} series; "
+             f"pair rows: n = pairs of series):")
+    L.append(ma.round(2).to_string(index=False))
 
     # --- cm per decade beside published numbers ---
     cm = [{"what": "ALDI hierarchical, mean of site rates", "value": float(ck.rate_v6_cm_dec.mean()),
