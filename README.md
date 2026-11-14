@@ -45,24 +45,32 @@ step, with its settings at the top.
 - **Step 1** rebuilds the ALT target from the raw files on the computer. `--download` first
   fetches new or missing source files (NEON then needs your token for that terminal:
   `$env:NEON_TOKEN="..."`, and MET Norway's Frost API your client ID:
-  `$env:FROST_CLIENT_ID="..."`; neither is ever saved).
+  `$env:FROST_CLIENT_ID="..."`; neither is ever saved). `--keep-pinned --out
+  data/1_alt_target_keep_pinned` builds a sensitivity copy that keeps the temperature series
+  pinned to a sensor depth (flagged, not removed); run step 3 on it with `--annual
+  data/1_alt_target_keep_pinned/alt_multisource_annual.csv --out data/3_aldi_keep_pinned`.
 - **Step 2**, one-time setup: `py -3.12 -m pip install earthengine-api geopandas scikit-learn`,
   then `earthengine authenticate` (browser sign-in), then the first run with
   `--project YOUR-EE-PROJECT-ID` (remembered in `data/ee_project.txt`). `--test` checks 3
   sites first. The default gets what ALDI B needs; `--all` gets every variable and merges
   them for the causal analysis. A stopped run continues where it left off.
-- **Step 3** options: `--power` (NASA POWER temperature, robustness run), `--validate`
-  (simulation check, 1-2 h), `--sensitivity` (fifteen runs that each change one choice:
+- **Step 3** writes, besides the results, `aldi_v6_regions.csv` (every regional trend with its
+  90 and 95 % intervals) and `aldi_v6_dependence.csv` (dependence the fits leave in the
+  residuals); model B also runs four checks of its split (other priors of k and of the residual
+  trend, and a region-year term). Options: `--power` (NASA POWER temperature, robustness run),
+  `--validate` (simulation check, 1-2 h; `--scenarios A_misspec` adds one scenario to the
+  existing simulation), `--sensitivity` (seventeen runs that each change one choice:
   censored prior, undated surveys, site quality, disturbed plots, one series per place,
   2000-2024 window, record length, region size, and three thaw-subsidence bounds; about
   1 h), `--checks` (the paper checks: years of record a site needs, the standard per-site
-  test on the same series, shrinkage, residual by ground ice and method, rates in cm; about
-  a minute, no refit), `--spatial` (only the spatial checks on the existing results, about
+  test on the same series, shrinkage, residual by ground ice and method, rates in cm, a test
+  for acceleration in the long records, the simulation's spread between networks; about a
+  minute, no refit), `--spatial` (only the spatial checks on the existing results, about
   a minute; needs geopandas for the permafrost-map part). `--no-main` skips the main fit
   and adds the other runs to the existing `data/3_aldi`. Everything at once:
   `py -3.12 3_aldi.py --power --sensitivity --checks --validate`.
-- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-5 and S1-S4 of the
-  Results (PNG and PDF) and writes Tables 1-3 and S1-S9 (CSV) and `key_numbers.txt` (the
+- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-5 and S1-S5 of the
+  Results (PNG and PDF) and writes Tables 1-3, S1-S9 and S12 (CSV) and `key_numbers.txt` (the
   numbers quoted in the text). It uses the outputs of `3_aldi.py --power --sensitivity
   --checks --validate`; a missing run only drops its figure, table or markers.
 - A new output replaces the current one only when its run finished without error. The

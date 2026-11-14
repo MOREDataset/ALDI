@@ -5002,11 +5002,25 @@ def pinned_series_flags(rec: pd.DataFrame) -> pd.DataFrame:
     pin = st[(st["size"] >= CONFIG["min_years"]) & (st["std"] < CONFIG["pinned_sd_cm"])
              & (st["std"] < CONFIG["pinned_cv"] * st["median"])]
     hit = temp & pd.Series(list(zip(rec.source, rec.source_site_id)), index=rec.index).isin(set(pin.index))
-    rec["flag"] = add_flag(rec.flag, hit, "pinned_to_sensor")
+    # --keep-pinned (sensitivity run, added 2026-11-14): the series stay in, with an
+    # informational flag, so that 3_aldi.py can be run with them
+    name = "pinned_series_kept" if CONFIG.get("keep_pinned") else "pinned_to_sensor"
+    rec["flag"] = add_flag(rec.flag, hit, name)
     for (src, sid), r in pin.iterrows():
+        # the evidence that the value is set by a sensor: the ALT sits a few cm above the
+        # sensor below the crossing in most years, and that sensor's annual maximum stays
+        # just below 0 C (in the zero curtain), so the front can be anywhere between the sensors
+        g = rec[valid & (rec.source == src) & (rec.source_site_id == sid)]
+        ev = ""
+        if {"sensor_below_cm", "sensor_above_cm", "below_max_c"} <= set(g.columns) and len(g):
+            gap_cm = g.sensor_below_cm - g.alt_cm
+            ev = (f"; sensors at {g.sensor_above_cm.median():.0f} and {g.sensor_below_cm.median():.0f} cm "
+                  f"(median), ALT {gap_cm.min():.1f}-{gap_cm.max():.1f} cm above the lower one, its annual "
+                  f"maximum {g.below_max_c.min():.2f} to {g.below_max_c.max():.2f} C; front_indeterminate in "
+                  f"{int(g.flag.str.contains('front_indeterminate').sum())} of {len(g)} years")
         log(f"    {src}:{sid}: ALT {r['median']:.1f} +/- {r['std']:.2f} cm over {int(r['size'])} valid "
-            f"years, pinned to a sensor depth: flagged pinned_to_sensor")
-    log(f"  pinned_to_sensor: {len(pin)} temperature series, {int(hit.sum())} site-years")
+            f"years, pinned to a sensor depth: flagged {name}{ev}")
+    log(f"  {name}: {len(pin)} temperature series, {int(hit.sum())} site-years")
     return rec
 
 
@@ -5472,12 +5486,18 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=OUT, help="output folder (default data/1_alt_target)")
     ap.add_argument("--min-years", type=int, default=CONFIG["min_years"])
     ap.add_argument("--only", nargs="*", help="download and read only these sources (for testing)")
+    ap.add_argument("--keep-pinned", action="store_true",
+                    help="sensitivity build: keep the temperature series pinned to a sensor depth (flagged "
+                         "pinned_series_kept, not removed); use with --out data/1_alt_target_keep_pinned")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--download", action="store_true", help="download new or missing source files first")
     g.add_argument("--download-only", action="store_true", help="only the download stage")
     a = ap.parse_args()
     require(NEEDED)
     CONFIG["min_years"] = a.min_years
+    CONFIG["keep_pinned"] = a.keep_pinned
+    if a.keep_pinned and a.out.resolve() == OUT.resolve():
+        sys.exit("--keep-pinned is a sensitivity build: give it its own --out (e.g. data/1_alt_target_keep_pinned)")
     work = a.out.with_name(a.out.name + "_building")
     if work.exists():
         shutil.rmtree(work)                  # leftover of an interrupted run

@@ -17,7 +17,8 @@ A  One hierarchical Bayesian trend model for all ALT series: each site's rate of
    gradual / rapid thinning, indeterminate).
 B  The same trends split into the part expected from air temperature (thawing
    degree-days, TDD, Stefan's law) and a residual that air temperature does not explain,
-   in seven variants (this summer's TDD only ... TDD memory, winter, snow and rain).
+   in seven variants (this summer's TDD only ... TDD memory, winter, snow and rain), plus
+   four checks of the split (other priors, a region-year term).
 v5.2, the site-by-site method of the earlier version, is rerun on the same site-years
 for comparison.
 
@@ -28,6 +29,8 @@ Writes  data/3_aldi/
                                  expected and residual trends per variant (B)
           aldi_v6_summary.txt    counts, network rates, B variants, diagnostics
           aldi_v6_network.csv    network parameters (median and 95 % interval)
+          aldi_v6_regions.csv    regional trends (median, 90 and 95 % intervals, P > 0)
+          aldi_v6_dependence.csv dependence left in the residuals of each fit
           aldi_v6_fig_*.png      figures
           temperature/           daily temperature per site, TDD and weather tables
         data/3_aldi_power/ (--power), data/3_aldi_validation/ (--validate),
@@ -204,6 +207,19 @@ climate:
     # weather_memory: weather with the two-year TDD memory, the most that the weather
     # record can explain.
     - {name: weather_memory, k_mode: hierarchical, extra: [tdd_lag1, tdd_lag2, fdd, snow_depth_winter, rain_summer]}
+    # Checks of the split (added 2026-11-14, review of draft 2 of the paper), not further
+    # climate inputs (check: true). TDD and the time trend both rise, so k and the residual
+    # trend d trade off; these show how far the split leans on the priors and on leaving
+    # out the region-year term. kprior_zero: the family means of k centred on 0 (no TDD
+    # effect) instead of Stefan's 0.5; kprior_wide: centred on 0.5 but four times wider (SD
+    # 1.0); dprior_wide: wider priors of the residual-trend hierarchy (mu SD 0.5, region and
+    # site SD scale 0.3); region_year: with the region-year term of model A, which takes up
+    # weather shared by a region that TDD misses (snow, rain, hydrology), so that k is then
+    # learnt only from TDD differences within a region-year and from regions seen by one series.
+    - {name: kprior_zero, k_mode: hierarchical, check: true, priors: {k_mu: 0.0}}
+    - {name: kprior_wide, k_mode: hierarchical, check: true, priors: {k_sd: 1.0}}
+    - {name: dprior_wide, k_mode: hierarchical, check: true, priors: {mu_sd: 0.5, tau_sd: 0.3}}
+    - {name: region_year, k_mode: hierarchical, check: true, region_year: true}
   k_fixed: 0.5
   # B runs without region-year effects: most of the shared year-to-year swing is the
   # TDD signal that k is estimated from.
@@ -1183,7 +1199,7 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
         else:
             # one mean per method family (3 values: too few for a variance), prior
             # centred on Stefan's 0.5 and wide enough to reach 0 or 1
-            k_f = numpyro.sample("k_family", dist.Normal(0.5, 0.25).expand([nf]))
+            k_f = numpyro.sample("k_family", dist.Normal(p.get("k_mu", 0.5), p.get("k_sd", 0.25)).expand([nf]))
             k0 = numpyro.deterministic("k0", k_f.mean())
             tau_k = numpyro.sample("tau_k", dist.HalfNormal(0.2))
             zk = numpyro.sample("z_k", dist.Normal(0, 1).expand([ns]))
@@ -1317,6 +1333,11 @@ def summarise_A(mcmc, arr, cfg):
     s["region_rate_v6"] = np.median(reg, 0)[arr["r_idx_site"]]
     net = {
         "mu": pct(np.asarray(smp["mu"])),
+        # mu is the mean of the distribution the regional trends are drawn from; the
+        # equal-weight mean of the fitted regional trends is a different estimand (the
+        # 2026-11-14 review asked for both)
+        "equal_region_mean": pct(np.asarray(smp["beta_region"]).mean(1)),
+        "region_draws": reg,
         "tau_region": 100 * np.asarray(smp["tau_region"]),
         "tau_site": 100 * np.asarray(smp["tau_site"]),
         "rho_family": np.asarray(smp["rho_family"]) * 0.95,
@@ -1343,6 +1364,10 @@ def summarise_B(mcmc, arr, cfg, k_mode):
     s["x_sd"] = arr["x_sd"]
     s["k_site"] = np.median(k, 0)
     s["k_lo"], s["k_hi"] = interval(k, lvl)
+    # how far the TDD term and the time trend trade off at a site (TDD rises too)
+    kc, dc = k - k.mean(0), d - d.mean(0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        s["corr_k_d"] = (kc * dc).mean(0) / (kc.std(0) * dc.std(0))
     for name, dr in [("expected", expected), ("resid", resid), ("total", total)]:
         lo, hi = interval(dr, lvl)
         s[f"{name}_rate"] = np.median(dr, 0)
@@ -1409,6 +1434,61 @@ def resid_var_site(mcmc, arr, mode="A", max_draws=1000):
         ei = e[:, su == i]
         out[i] = np.mean(np.var(ei, axis=1))
     return out
+
+
+def innovation_checks(mcmc, arr, mode="A", max_draws=500):
+    """Dependence that a fit leaves in the data (added 2026-11-14), from the standardized
+    AR(1) innovations of the measured years (posterior means over draws): (1) the lag-1
+    autocorrelation of a series' innovations in consecutive years, 0 if the AR(1) model
+    holds; (2) the correlation of the innovations of two series of one region in the same
+    year, 0 if nothing that a region shares is left out of the mean. Model A takes such
+    shared anomalies up in its region-year term; model B has no such term, so what B leaves
+    shows how much weather shared by a region TDD misses (B's intervals of network means
+    ignore it; the region bootstrap does not)."""
+    smp = mcmc.get_samples()
+    nd = len(np.asarray(smp["mu"]))
+    idx = np.unique(np.linspace(0, nd - 1, min(nd, max_draws)).astype(int))
+    s = arr["s_idx"]
+    mean = np.asarray(smp["a_site"])[idx][:, s] + np.asarray(smp["slope_site"])[idx][:, s] * arr["t"][None, :]
+    if mode == "B":
+        mean = mean + np.asarray(smp["k_site"])[idx][:, s] * arr["x"][None, :]
+        if arr.get("extra_names"):
+            ke = np.asarray(smp["k_extra_site"])[idx]
+            mean = mean + np.einsum("dne,ne->dn", ke[:, s, :], arr["X_extra"])
+    if "z_region_year" in smp:
+        g = np.asarray(smp["sd_region_year"])[idx][:, None] * np.asarray(smp["z_region_year"])[idx]
+        g = np.concatenate([g, np.zeros((len(idx), 1))], axis=1)
+        mean = mean + g[:, arr["ry_idx"]]
+    e = arr["y"][None, :] - mean
+    rho = (np.asarray(smp["rho_family"])[idx] * 0.95)[:, arr["f_idx_site"][s]]
+    sig = np.asarray(smp["sigma_site"])[idx][:, s]
+    prev, gap, cens = arr["prev"], arr["gap"], np.asarray(arr["cens"], bool)
+    has = prev >= 0
+    pp = prev[has]
+    u = e / sig
+    rg = rho[:, has] ** gap[has]
+    u[:, has] = (e[:, has] - rg * e[:, pp]) / (sig[:, has] * np.sqrt(1 - rg ** 2))
+    ok = ~cens
+    ok[has] &= ~cens[pp]                     # an innovation needs a measured previous value
+    um = u.mean(0)
+    j = np.nonzero(has & (gap == 1) & ok)[0]
+    j = j[ok[prev[j]]]
+    lag1 = float(np.corrcoef(um[j], um[prev[j]])[0, 1]) if len(j) > 10 else np.nan
+    df = pd.DataFrame({"r": arr["r_idx_site"][s], "y": arr["d"]["year"].to_numpy(int), "u": um})[ok]
+    a_, b_ = [], []
+    for _, g in df.groupby(["r", "y"]):
+        if len(g) >= 2:
+            v = g.u.to_numpy()
+            i1, i2 = np.triu_indices(len(v), 1)
+            a_.append(v[i1])
+            b_.append(v[i2])
+    if a_:
+        a_, b_ = np.concatenate(a_), np.concatenate(b_)
+        same = float(np.corrcoef(np.r_[a_, b_], np.r_[b_, a_])[0, 1])
+    else:
+        same = np.nan
+    return {"lag1": lag1, "n_lag1": int(len(j)), "same_region_year": same, "n_pairs": int(len(a_)),
+            "sd_innovation": float(np.std(um[ok]))}
 
 
 def ci_str(v, level=0.95, fmt="{:.2f}"):
@@ -2058,7 +2138,8 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
         s, net, rate = summarise_A(mc, arr, cfg)
         runs[name] = dict(mc=mc, s=s, net=net, rate=rate, diag=diagnostics(mc), sec=time.time() - t0,
                           sd_ry=(100 * np.asarray(mc.get_samples()["sd_region_year"])
-                                 if "sd_region_year" in mc.get_samples() else None))
+                                 if "sd_region_year" in mc.get_samples() else None),
+                          innov=innovation_checks(mc, arr, "A"))
         log.append(f"A {name}: {runs[name]['diag']}  ({runs[name]['sec']:.0f} s)")
     s = runs["main"]["s"]
     res = res52.merge(s.drop(columns=["lat", "lon", "family", "region_id"]), on="site_id", how="left",
@@ -2078,6 +2159,7 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
         arrAB = build_arrays(eligible_sites(arrB["d"].drop(columns=["tdd"]), cfg), cfg)
         mcAB = fit(arrAB, "A", region_year=cfg["climate"]["region_year"], priors=pri, **fit_kw)
         sAB, _, _ = summarise_A(mcAB, arrAB, cfg)
+        innov_AB = innovation_checks(mcAB, arrAB, "A")
         bruns = {}
         tdd_all = pd.read_csv(tdd_all_file) if tdd_all_file else None
         weather = pd.read_csv(weather_file) if weather_file else None
@@ -2091,15 +2173,18 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
                 continue
             t0 = time.time()
             p2 = dict(pri, k_fixed=cfg["climate"]["k_fixed"])
+            p2.update(v.get("priors") or {})              # check variants: other priors
+            ry_v = bool(v.get("region_year", cfg["climate"]["region_year"]))
             if v.get("extra"):
                 ex = extra_climate(tdd_all, v["extra"], weather)
                 arrV = build_arrays(d, cfg, tdd, ex, v["extra"])
             else:
                 arrV = arrB
-            mcB = fit(arrV, "B", k_mode=v["k_mode"], region_year=cfg["climate"]["region_year"], priors=p2, **fit_kw)
+            mcB = fit(arrV, "B", k_mode=v["k_mode"], region_year=ry_v, priors=p2, **fit_kw)
             sB, netB = summarise_B(mcB, arrV, cfg, v["k_mode"])
             bruns[v["name"]] = dict(s=sB, net=netB, diag=diagnostics(mcB), sec=time.time() - t0,
-                                    n_sites=arrV["n_sites"], n_obs=len(arrV["y"]))
+                                    n_sites=arrV["n_sites"], n_obs=len(arrV["y"]), check=bool(v.get("check")),
+                                    innov=innovation_checks(mcB, arrV, "B"))
             if v["name"] == "main":
                 resvar_B = resid_var_site(mcB, arrV, "B")
             lost = len(arrB["y"]) - len(arrV["y"])     # e.g. first years without a TDD lag
@@ -2141,6 +2226,7 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
     netrows = {}
     for name, r in runs.items():
         netrows[f"A_{name}_network_rate_pct_dec"] = q(r["net"]["mu"])
+        netrows[f"A_{name}_equal_region_mean_pct_dec"] = q(r["net"]["equal_region_mean"])
         netrows[f"A_{name}_mean_site_rate_pct_dec"] = q(r["rate"].mean(1))
         netrows[f"A_{name}_tau_region_pct"] = q(r["net"]["tau_region"])
         netrows[f"A_{name}_tau_site_pct"] = q(r["net"]["tau_site"])
@@ -2170,10 +2256,38 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
     nett = pd.DataFrame(netrows).T
     nett.to_csv(out / f"{pre}_network.csv")
 
+    # --- regional trends of the main fit (added 2026-11-14): one row per region ---
+    rd_ = runs["main"]["net"]["region_draws"]
+    rrows = []
+    for j, rc in enumerate(np.unique(arr["sites"]["region_id"])):      # the order of beta_region
+        ss = arr["sites"][arr["sites"]["region_id"] == rc]
+        v = rd_[:, j]
+        lon_r = np.radians(ss["lon"].to_numpy(float))
+        rrows.append({"region_id": rc, "n_series": len(ss),
+                      **{f"n_{f}": int((ss["family"] == f).sum()) for f in FAMILIES},
+                      "lat": float(ss["lat"].mean()),
+                      "lon": float(np.degrees(np.arctan2(np.sin(lon_r).mean(), np.cos(lon_r).mean()))),
+                      "rate_median": float(np.median(v)), "lo95": float(np.quantile(v, 0.025)),
+                      "hi95": float(np.quantile(v, 0.975)), "lo90": float(np.quantile(v, 0.05)),
+                      "hi90": float(np.quantile(v, 0.95)), "p_positive": float((v > 0).mean())})
+    regt = pd.DataFrame(rrows)
+    regt.to_csv(out / f"{pre}_regions.csv", index=False)
+
     # --- summary text ---
     L = log + [""]
     L.append(f"sites {len(res)}; site-years {len(arr['y'])} ({int(arr['cens'].sum())} censored); "
              f"regions {arr['n_regions']}; region-year cells with >= 2 sites {arr['n_ry']}")
+    fo = pd.crosstab(arr["d"]["family"], arr["d"]["censored"])
+    L.append("site-years by method family, measured / lower bounds: " + "; ".join(
+        f"{f} {int(fo.loc[f].get(False, 0))} / {int(fo.loc[f].get(True, 0))}" for f in FAMILIES if f in fo.index))
+    er, single = runs["main"]["net"]["equal_region_mean"], regt.n_series == 1
+    L.append(f"\nregional trends (model A main; {pre}_regions.csv): network mean mu {ci_str(runs['main']['net']['mu'])}; "
+             f"equal-weight mean of the {len(regt)} fitted regional trends {ci_str(er)} %/dec")
+    L.append(f"  regional medians above 0: {int((regt.rate_median > 0).sum())} of {len(regt)}; 95 % interval above 0: "
+             f"{int((regt.lo95 > 0).sum())} ({int(((regt.lo95 > 0) & single).sum())} of the {int(single.sum())} "
+             f"single-series regions); 90 % interval above 0: {int((regt.lo90 > 0).sum())} "
+             f"({int(((regt.lo90 > 0) & single).sum())}); P(regional trend > 0): min {regt.p_positive.min():.3f}, "
+             f"median {regt.p_positive.median():.3f}")
     L.append("\nclass counts (same sites):")
     cc = pd.DataFrame({"v5.2_site": counts(res.class_site, ORDER), "v5.2_pooled": counts(res.class_pooled, ORDER),
                        "v6_main": counts(res.class_v6, ORDER)})
@@ -2259,6 +2373,35 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
                                       "tdd_var_explained"]].median().round(2).to_string())
         L.append("\nresidual class by family:")
         L.append(pd.crosstab(b.family, b.class_resid).reindex(columns=RESID_ORDER, fill_value=0).to_string())
+        # added 2026-11-14 (review of draft 2): how well the TDD term and the time trend separate
+        L.append("\nseparation of the TDD term from the time trend (both rise): correlation over the posterior "
+                 "draws of the network means of the expected and residual parts, and per site of k_i and d_i "
+                 "(check variants: other priors or a region-year term; see SETTINGS):")
+        for vn, r in bruns.items():
+            n_ = r["net"]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                c_er = np.corrcoef(n_["expected_mean"], n_["resid_mean"])[0, 1]
+            line = (f"  {vn:14s}{' (check)' if r.get('check') else '        '} expected {np.median(n_['expected_mean']):5.2f}, "
+                    f"residual {np.median(n_['resid_mean']):5.2f} %/dec; corr(expected, residual mean) {c_er:+.2f}")
+            cs = r["s"]["corr_k_d"]
+            if cs.notna().any():
+                line += (f"; corr(k_i, d_i) median {cs.median():+.2f} (IQR {cs.quantile(0.25):+.2f} to "
+                         f"{cs.quantile(0.75):+.2f}), below -0.5 at {int((cs < -0.5).sum())} sites")
+            if "k0" in n_:
+                line += f"; k0 {np.median(n_['k0']):.2f}"
+            L.append(line)
+        dep = [("A main (region-year term)", runs["main"]["innov"]),
+               *[(f"A {nm.replace('_', ' ')}", r["innov"]) for nm, r in runs.items() if nm != "main"],
+               ("A on the site-years of B, no region-year term", innov_AB),
+               *[(f"B {vn}", r["innov"]) for vn, r in bruns.items()]]
+        dpt = pd.DataFrame([{"fit": nm, **iv} for nm, iv in dep])
+        dpt.to_csv(out / f"{pre}_dependence.csv", index=False)
+        L.append("\ndependence left in the residuals (standardized AR(1) innovations of the measured years, posterior "
+                 "means): lag-1 autocorrelation in consecutive years | correlation of two series of one region in the "
+                 "same year (model B has no region-year term: what it leaves is weather shared by a region that its "
+                 "climate terms miss; its intervals of network means ignore it, the region bootstrap above does not):")
+        for _, rw in dpt.iterrows():
+            L.append(f"  {rw.fit:46s} {rw.lag1:+.2f} ({rw.n_lag1} pairs) | {rw.same_region_year:+.2f} ({rw.n_pairs} pairs)")
     L += spatial_lines
     txt = "\n".join(L)
     (out / f"{pre}_summary.txt").write_text(txt)
@@ -2671,6 +2814,9 @@ def sensitivity_figure(tab, out):
 #   aldi_v6_checks_method.csv       agreement of the three methods: within regions and at one place
 #   aldi_v6_checks_cm.csv           rates in cm per decade beside published numbers
 #   aldi_v6_checks_diagnostics.csv  MCMC diagnostics of the fits of the main run
+#   aldi_v6_checks_acceleration.csv change of trend between the halves of the long records
+#   aldi_v6_checks_simulation_networks.csv  simulation: coverage per scenario and method with
+#                                   its spread between networks (needs data/3_aldi_validation)
 #   aldi_v6_checks.txt              the numbers for the text
 #
 # Detection time. A record's trend is classed when its 90 % interval clears zero (or,
@@ -2767,7 +2913,7 @@ def mcmc_table(summary_text):
     return pd.DataFrame(rows)
 
 
-def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
+def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     """The checks described above PART 4c."""
     main_out, out = Path(main_out), Path(out)
     pre = cfg["outputs"]["prefix"]
@@ -2790,6 +2936,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
     d = eligible_sites(data, cfg)
     d = d[d.site_id.isin(set(res.site_id))]
     r = res.set_index("site_id")
+    lb_ = d.groupby("family").censored.agg(["size", "sum"])
+    L.append("site-years by method, all (lower bounds): " + "; ".join(
+        f"{f} {int(lb_.at[f, 'size'])} ({int(lb_.at[f, 'sum'])})" for f in FAMILIES if f in lb_.index))
     rows = []
     for sid, g in d.groupby("site_id"):
         g = g.sort_values("year")
@@ -2938,6 +3087,71 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
         p5 = res.p6_rapid_thickening + res.p6_gradual_thickening
         L.append(f"  P(rate > {margin:g} %/dec) > 0.9 at {int((p5 > 0.9).sum())} sites, > 0.5 at {int((p5 > 0.5).sum())}; "
                  f"P(thickening) > 0.9 at {int((res.p6_thickening > 0.9).sum())}")
+
+    # --- unresolved records: how much of their probability of thickening is their own ---
+    # (added 2026-11-14) the hierarchical probability against the record alone: the per-site
+    # Akritas-Theil-Sen trend with AR(1) correction (v5.2) and per-site OLS
+    un = ck[ck.class_v6 == "indeterminate"].set_index("site_id")
+    if len(un):
+        q_ = stats.t.ppf(0.5 + cfg["trend"]["ci_level"] / 2, un.n_years - 2)
+        se_o = (np.log1p(un.ols_hi / 100) - np.log1p(un.ols_lo / 100)) / (2 * q_)
+        p_ols = stats.t.cdf(np.log1p(un.ols_rate / 100) / se_o, un.n_years - 2)
+        p_ats = stats.norm.cdf(r.loc[un.index, "rate_pct_dec"] / r.loc[un.index, "rate_se"])
+        p_h = r.loc[un.index, "p6_thickening"].to_numpy()
+        L.append(f"\nUNRESOLVED RECORDS ({len(un)}): median P(thickening) {np.median(p_h):.2f} hierarchical, "
+                 f"{np.median(p_ats):.2f} from the record alone (Akritas-Theil-Sen with AR(1)), {np.median(p_ols):.2f} "
+                 f"(OLS); more likely thickening than not at {int((p_h > 0.5).sum())} / {int((p_ats > 0.5).sum())} / "
+                 f"{int((p_ols > 0.5).sum())}; P > 0.9 at {int((p_h > 0.9).sum())} / {int((p_ats > 0.9).sum())} / "
+                 f"{int((p_ols > 0.9).sum())}")
+
+    # --- acceleration: change of the trend between the two halves of the long records ---
+    # (added 2026-11-14; the window comparison of period_check is descriptive) A hinge at the
+    # midpoint of each record of >= period_check_min_span years with >= 8 measured values on
+    # each side, fitted by generalized least squares with the noise model above (the site's
+    # sigma, its method's AR(1) coefficient and the shared region-year SD). delta = trend
+    # after minus trend before the midpoint, in log units x 100 per decade (about %/decade).
+    # Pooled over records with the random-effects model of v5.2 (regions and records), and
+    # as a plain mean with a region bootstrap.
+    acc = []
+    min_span = cfg["outputs"]["period_check_min_span"]
+    for sid, g in d[~d.censored].groupby("site_id"):
+        yrs = g.year.to_numpy(float)
+        if yrs.max() - yrs.min() + 1 < min_span:
+            continue
+        mid = (yrs.min() + yrs.max()) / 2
+        if (yrs < mid).sum() < 8 or (yrs > mid).sum() < 8:
+            continue
+        y = np.log(g.alt_cm.to_numpy(float))
+        tt = (yrs - mid) / 10.0
+        X = np.column_stack([np.ones_like(tt), tt, np.maximum(tt, 0.0)])
+        fam = r.at[sid, "family"]
+        s_i = r.at[sid, "sigma_pct"] / 100 if np.isfinite(r.at[sid, "sigma_pct"]) else sig_f[fam]
+        Ci = np.linalg.inv(noise_cov(yrs, s_i, rho_f[fam], sd_ry))
+        V = np.linalg.inv(X.T @ Ci @ X)
+        bb = V @ X.T @ Ci @ y
+        se_dl = float(np.sqrt(V[2, 2]))
+        acc.append({"site_id": sid, "region_id": r.at[sid, "region_id"], "family": fam,
+                    "span_years": int(yrs.max() - yrs.min() + 1), "n_before": int((yrs < mid).sum()),
+                    "n_after": int((yrs > mid).sum()), "mid_year": mid, "rate_before": pct(bb[1]),
+                    "rate_after": pct(bb[1] + bb[2]), "delta": 100 * bb[2], "delta_se": 100 * se_dl,
+                    "p": float(2 * stats.norm.sf(abs(bb[2] / se_dl)))})
+    ac = pd.DataFrame(acc)
+    if len(ac):
+        ac.to_csv(out / "aldi_v6_checks_acceleration.csv", index=False)
+        try:
+            pl = pool_rates(ac.delta.to_numpy(), ac.delta_se.to_numpy(), ac.region_id.to_numpy())
+        except AssertionError:                  # REML did not converge: report the plain mean only
+            pl = {"mu": np.nan, "se_mu": np.nan}
+        b_lo, b_hi = region_bootstrap(ac.delta.to_numpy(), ac.region_id.to_numpy())
+        n_up, n_dn = int(((ac.p < 0.05) & (ac.delta > 0)).sum()), int(((ac.p < 0.05) & (ac.delta < 0)).sum())
+        L.append(f"\nACCELERATION ({len(ac)} records of >= {min_span} yr with >= 8 measured values in each half; "
+                 f"hinge at the midpoint, GLS with the noise model above; delta = trend after minus before, %/dec):")
+        L.append(f"  median trend before {ac.rate_before.median():.1f}, after {ac.rate_after.median():.1f}; median "
+                 f"delta {ac.delta.median():+.1f}; pooled delta (random effects, regions and records) {pl['mu']:+.1f} "
+                 f"({pl['mu'] - 1.96 * pl['se_mu']:+.1f} to {pl['mu'] + 1.96 * pl['se_mu']:+.1f}); plain mean "
+                 f"{ac.delta.mean():+.1f} (region bootstrap {b_lo:+.1f} to {b_hi:+.1f})")
+        L.append(f"  p < 0.05: faster after the midpoint at {n_up}, slower at {n_dn} of {len(ac)} records "
+                 f"({0.025 * len(ac):.1f} each expected by chance); median midpoint {ac.mid_year.median():.0f}")
 
     # --- TDD: share of the variance vs share of the trend ---
     tf = main_out / "temperature" / "tdd_site_years.csv"
@@ -3118,6 +3332,29 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
     L.append("\nRATES IN CM (site rates times the site's fitted ALT; published values for comparison):")
     L.append(cmt.round(2).to_string(index=False))
 
+    # --- simulation: spread between the simulated networks (added 2026-11-14) ---
+    # The series of one network share regions and hyperparameters, so the standard error of
+    # a mean coverage comes from the spread between networks, not from the pooled series.
+    if val_dir is not None and (Path(val_dir) / "aldi_v6_simulation_reps.csv").exists():
+        rp = pd.read_csv(Path(val_dir) / "aldi_v6_simulation_reps.csv")
+        for f in sorted(Path(val_dir).glob("aldi_v6_simulation_reps_*.csv")):   # scenarios run later
+            extra = pd.read_csv(f)
+            rp = pd.concat([rp, extra[~extra.scenario.isin(set(rp.scenario))]], ignore_index=True)
+        g = rp.groupby(["scenario", "method"], sort=False)
+        sn = g.agg(networks=("rep", "nunique"), coverage90=("coverage90", "mean"),
+                   coverage90_sd=("coverage90", "std"), coverage90_min=("coverage90", "min"),
+                   coverage90_max=("coverage90", "max"), rmse_pct_dec=("rmse_pct_dec", "mean"),
+                   wrong_direction=("wrong_direction", "mean"), called_trend=("called_trend", "mean")).reset_index()
+        sn["coverage90_se"] = sn.coverage90_sd / np.sqrt(sn.networks)
+        for c in ["trend_p05", "network_err", "network_cover95"]:
+            if c in rp:
+                sn[c] = g[c].mean().to_numpy()
+        sn.to_csv(out / "aldi_v6_checks_simulation_networks.csv", index=False)
+        L.append("\nSIMULATION, SPREAD BETWEEN NETWORKS (coverage of the 90 % intervals: mean over networks, SD and "
+                 "standard error from the spread between networks, range):")
+        L.append(sn[["scenario", "method", "networks", "coverage90", "coverage90_sd", "coverage90_se", "coverage90_min",
+                     "coverage90_max", "rmse_pct_dec", "called_trend"]].round(3).to_string(index=False))
+
     # --- MCMC diagnostics and the survey-date drift flag ---
     mt = mcmc_table(summary)
     mt.to_csv(out / "aldi_v6_checks_diagnostics.csv", index=False)
@@ -3148,6 +3385,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None):
 #   A_fit     site slopes from the fitted hierarchy, shared region-year shocks, AR(1)
 #   A_heavy   as A_fit but site deviations from t(3) (heavy tails, misspecified)
 #   A_null    no trend anywhere (mu = tau = 0): every thickening/thinning call is false
+#   A_misspec what model A does not assume (added 2026-11-14): a change of trend in each
+#             record, persistent region-year anomalies and Student-t(4) innovations; the
+#             true trend is the least-squares line of the noise-free trajectory
 #   B_fit     k_i from the fitted family means and spread, residual trends from the fitted
 #             hierarchy
 #   B_climate residual trend 0 everywhere: every "deeper/shallower than TDD" call is false
@@ -3196,10 +3436,15 @@ def with_x(arr, x):
 
 def simulate(arr, truth, rng):
     """New y on the real design. truth: slope (site, log/decade), a, rho_f, sigma, sd_ry,
-    optional k (site) and x_true (obs)."""
+    optional k (site) and x_true (obs). Misspecified networks (A_misspec) add: noise_df
+    (Student-t innovations with these degrees of freedom, unit variance), ry_rho (region-year
+    anomalies persistent from year to year, AR(1), instead of independent) and extra (a
+    term per observation added to the mean, e.g. a change of trend)."""
     d = arr["d"]
     s_idx, f_site = arr["s_idx"], arr["f_idx_site"]
     years = d["year"].to_numpy(int)
+    df_ = truth.get("noise_df")
+    draw = (lambda: rng.standard_t(df_) / np.sqrt(df_ / (df_ - 2))) if df_ else rng.normal
     y = np.empty(len(d))
     for i in range(arr["n_sites"]):
         idx = np.nonzero(s_idx == i)[0]
@@ -3207,14 +3452,27 @@ def simulate(arr, truth, rng):
         full = np.arange(yr.min(), yr.max() + 1)
         rho = truth["rho_f"][f_site[i]]
         e = np.empty(len(full))
-        e[0] = rng.normal()
+        e[0] = draw()
         for k in range(1, len(full)):
-            e[k] = rho * e[k - 1] + np.sqrt(1 - rho ** 2) * rng.normal()
+            e[k] = rho * e[k - 1] + np.sqrt(1 - rho ** 2) * draw()
         y[idx] = truth["sigma"][i] * e[np.searchsorted(full, yr)]
     r_obs = arr["r_idx_site"][s_idx]
-    cells = {}
-    g = np.array([cells.setdefault((r, yy), rng.normal(0, truth["sd_ry"])) for r, yy in zip(r_obs, years)])
+    if truth.get("ry_rho"):
+        yr_all = np.arange(years.min(), years.max() + 1)
+        path = {}
+        for r in np.unique(r_obs):
+            v = np.empty(len(yr_all))
+            v[0] = rng.normal()
+            for k in range(1, len(yr_all)):
+                v[k] = truth["ry_rho"] * v[k - 1] + np.sqrt(1 - truth["ry_rho"] ** 2) * rng.normal()
+            path[r] = truth["sd_ry"] * v
+        g = np.array([path[r][yy - yr_all[0]] for r, yy in zip(r_obs, years)])
+    else:
+        cells = {}
+        g = np.array([cells.setdefault((r, yy), rng.normal(0, truth["sd_ry"])) for r, yy in zip(r_obs, years)])
     mean = truth["a"][s_idx] + truth["slope"][s_idx] * arr["t"] + g
+    if "extra" in truth:
+        mean = mean + truth["extra"]
     if "k" in truth:
         mean = mean + truth["k"][s_idx] * truth["x_true"]
     y = y + mean
@@ -3297,9 +3555,26 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
         else:
             beta = mu + tr_ * rng.normal(size=nr)
             slope = beta[arr["r_idx_site"]] + ts * rng.normal(size=ns)
+        true_slope = slope
+        if scen == "A_misspec":
+            # what model A does not assume: (1) the trend changes at a random year between 30
+            # and 70 % of each record, by N(0, 0.1) log units per decade (about +-10 %/dec);
+            # (2) region-year anomalies persist (AR(1), 0.5); (3) Student-t(4) innovations.
+            # The true trend is then the least-squares line of the noise-free trajectory over
+            # the record's years, the quantity every method here estimates.
+            extra = np.zeros(len(arr["t"]))
+            true_slope = slope.copy()
+            for i in range(ns):
+                idx = arr["s_idx"] == i
+                ti = arr["t"][idx]
+                tb = ti.min() + rng.uniform(0.3, 0.7) * (ti.max() - ti.min())
+                h = rng.normal(0, 0.10) * np.maximum(ti - tb, 0.0)
+                extra[idx] = h
+                true_slope[i] = slope[i] + np.polyfit(ti, h, 1)[0]
+            tr.update(extra=extra, noise_df=4, ry_rho=0.5)
         tr["slope"] = slope
         sim = simulate(arr, tr, rng)
-        true_rate = pct(slope)
+        true_rate = pct(true_slope)
         mu_true = float(np.mean(true_rate))
         for ry in [True, False]:
             mc = fit(sim, "A", region_year=ry, seed=rep, **fit_kw)
@@ -3407,7 +3682,7 @@ def simulation_check(cfg, argv=None):
     ap.add_argument("out_dir")
     ap.add_argument("tdd_file", nargs="?")
     ap.add_argument("--reps", type=int, default=10)
-    ap.add_argument("--scenarios", default="A_fit,A_heavy,A_null,B_fit,B_climate,B_tdderr,B_nok")
+    ap.add_argument("--scenarios", default="A_fit,A_heavy,A_null,A_misspec,B_fit,B_climate,B_tdderr,B_nok")
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--warmup", type=int, default=500)
     ap.add_argument("--draws", type=int, default=500)
@@ -3523,7 +3798,9 @@ def main():
                     help="do not rerun the main fit: --power, --sensitivity, --checks and --validate use the "
                          "existing data/3_aldi (and its temperature folder)")
     ap.add_argument("--reps", type=int, default=8, help="simulated networks per scenario (--validate)")
-    ap.add_argument("--scenarios", default=None, help="simulation scenarios, comma-separated (--validate)")
+    ap.add_argument("--scenarios", default=None,
+                    help="simulation scenarios, comma-separated (--validate): added to the existing "
+                         "data/3_aldi_validation as aldi_v6_simulation*_<scenarios>.csv, the rest is kept")
     ap.add_argument("--annual", type=Path, default=ANNUAL, help="ALT input (default: step 1 output)")
     ap.add_argument("--ee-dir", type=Path, default=EE_DIR, help="Earth Engine files (default: step 2 output)")
     ap.add_argument("--out", type=Path, default=OUT, help="output folder (default data/3_aldi)")
@@ -3587,19 +3864,25 @@ def main():
 
     if a.checks:
         def checks_run(work):
-            paper_checks(cfg, a.annual, a.out, work, a.out.with_name(a.out.name + "_sensitivity"))
+            paper_checks(cfg, a.annual, a.out, work, a.out.with_name(a.out.name + "_sensitivity"),
+                         a.out.with_name(a.out.name + "_validation"))
         stage(a.out.with_name(a.out.name + "_checks"), checks_run)
 
     if a.validate:
         temp = a.out / "temperature"
         argv = [str(a.annual), "", str(temp / "tdd_site_years.csv"), "--reps", str(a.reps)]
+        final_v = a.out.with_name(a.out.name + "_validation")
         if a.scenarios:
-            argv += ["--scenarios", a.scenarios]
+            argv += ["--scenarios", a.scenarios, "--tag", "_" + a.scenarios.replace(",", "_")]
 
         def validate_run(work):
             argv[1] = str(work)
+            if a.scenarios and final_v.exists():       # a subset adds to the simulation already there
+                for f in final_v.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, work / f.name)
             simulation_check(cfg, argv)
-        stage(a.out.with_name(a.out.name + "_validation"), validate_run)
+        stage(final_v, validate_run)
 
     print(f"\nDone. Start with {a.out / 'aldi_v6_summary.txt'}")
 

@@ -29,18 +29,21 @@
 %   Fig 5  Expected from air temperature vs residual trend, per site       (Results 3)
 %   Table 1  Data sources of the analysed series
 %   Table 2  Model A: network rates and class counts, three methods
-%   Table 3  Model B: expected and residual trend for three climate inputs
+%   Table 3  Model B: expected and residual trend for every climate input and check
+%            (supplement Table S10 in the draft of 14 November 2026)
 % Supplement
 %   Fig S1  Site-years per year by measurement method
 %   Fig S2  Sensitivity runs, Models A and B
 %   Fig S3  Residual trend, low minus high ground ice within regions
 %   Fig S4  Site rate on its own (per-site OLS) vs in the hierarchical model
+%   Fig S5  Regional trends of all regions with their 90 and 95 % intervals (Table S12)
 %   Table S1  Sensitivity runs   Table S2  By measurement method   Table S3  Simulation check
 %   Table S4  Years of record a site needs, per method    Table S5  By record length:
 %             observed and expected shares, the standard per-site test
 %   Table S6  Residual trend by ground ice and method     Table S7  Rates in cm per decade
 %             beside published values                     Table S8  MCMC diagnostics
 %   Table S9  Agreement of the three methods (within regions and at one place)
+%   Table S12 Regional trends: median, 90 and 95 % intervals, P(trend > 0)
 
 clear; close all;
 
@@ -63,8 +66,8 @@ CLS   = ["rapid_thickening" "gradual_thickening" "stable" "gradual_thinning" "ra
 CLS_L = ["Rapid thickening" "Gradual thickening" "Stable" "Gradual thinning" "Rapid thinning" "Not yet resolved"];
 CLS_C = [0.70 0.09 0.17; 0.96 0.55 0.33; 0.36 0.62 0.36; 0.47 0.67 0.86; 0.13 0.30 0.62; 0.82 0.82 0.82];
 RES   = ["deeper_than_TDD" "consistent_with_TDD" "shallower_than_TDD" "not_resolved"];
-RES_L = ["Deeper than temperature explains" "Consistent with temperature" ...
-         "Shallower than temperature explains" "Not resolved"];
+RES_L = ["Positive residual after TDD" "Residual within ±5 % per decade" ...
+         "Negative residual after TDD" "Residual not resolved"];
 RES_C = [0.70 0.09 0.17; 0.36 0.62 0.36; 0.13 0.30 0.62; 0.75 0.75 0.75];
 FAM   = ["probe" "thaw_tube" "temperature"];
 FAM_L = ["Probing" "Thaw tube" "Ground temperature"];
@@ -286,7 +289,8 @@ fig = new_figure(14, 12.5);
 ax = axes(fig); hold(ax, 'on');
 plot(ax, [res.expected_lo res.expected_hi]', [rs rs]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
 plot(ax, [ex ex]', [res.resid_lo res.resid_hi]', '-', 'Color', [0.85 0.85 0.85], 'LineWidth', 0.4);
-xline(ax, 0, ':', 'Color', [0.4 0.4 0.4]); yline(ax, 0, ':', 'Color', [0.4 0.4 0.4]);
+xline(ax, 0, ':', 'Color', [0.4 0.4 0.4]);
+yline(ax, 0, '-', 'Color', [0.3 0.3 0.3], 'LineWidth', 0.8);          % zero residual
 h = gobjects(0); lab = strings(0);
 for c = numel(RES):-1:1
     k = res.class_resid == RES(c);
@@ -308,7 +312,7 @@ if have_sens
     if sum(tf) >= 2
         h(end+1) = plot(ax, sens.B_mean_expected(loc(tf)), sens.B_mean_residual(loc(tf)), '-^', 'Color', 'k', ...
             'MarkerFaceColor', [0.6 0.6 0.6], 'MarkerSize', 5, 'LineWidth', 0.8);
-        lab(end+1) = "Mean with thaw subsidence added";
+        lab(end+1) = "Mean with hypothetical subsidence (0.2, 0.5, 1.0 cm/yr)";
         for r = find(tf & sub_runs ~= "main")
             text(ax, sens.B_mean_expected(loc(r)) + 2, sens.B_mean_residual(loc(r)), ...
                 "+" + erase(sub_runs(r), "subsidence_") + " cm/yr", 'FontSize', FONT - 1, ...
@@ -319,14 +323,23 @@ end
 if ~isnan(bk(1, 1))
     h(end+1) = plot(ax, bk(1, 1), bk(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
         'LineWidth', 1);
-    lab(end+1) = "Mean with k fixed at 0.5";
+    lab(end+1) = "Mean, k fixed at Stefan's 0.5";
+end
+bw = [net_value(net, 'B_weather_memory_mean_expected_pct_dec'); net_value(net, 'B_weather_memory_mean_residual_pct_dec')];
+if ~isnan(bw(1, 1))
+    h(end+1) = plot(ax, bw(1, 1), bw(2, 1), 's', 'Color', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
+        'LineWidth', 1);
+    lab(end+1) = "Mean, all weather terms + 2-year memory";
 end
 h(end+1) = plot(ax, bm(1, 1), bm(2, 1), 'd', 'Color', 'k', 'MarkerFaceColor', 'k', 'MarkerSize', 7);
-lab(end+1) = "Mean of sites (main fit)";
+lab(end+1) = "Mean, summer TDD (main fit)";
 xlim(ax, [floor(min(res.expected_lo)) - 0.5, ceil(max(res.expected_hi)) + 0.5]);
 ylim(ax, [floor(min(res.resid_lo)) - 1, ceil(max(res.resid_hi)) + 1]);
-xlabel(ax, 'Expected from air temperature (% per decade)');
-ylabel(ax, 'Residual trend (% per decade)');
+xl = xlim(ax);
+text(ax, xl(2), 0, 'zero residual ', 'HorizontalAlignment', 'right', 'VerticalAlignment', 'bottom', ...
+    'FontSize', FONT - 1, 'Color', [0.3 0.3 0.3]);
+xlabel(ax, 'Trend associated with summer air temperature, TDD (% per decade)');
+ylabel(ax, 'Residual trend after TDD (% per decade)');
 legend(ax, h, lab, 'Location', 'southoutside', 'NumColumns', 2, 'Box', 'off', 'FontSize', FONT - 1);
 save_figure(fig, OUT, 'Fig5_expected_vs_residual');
 
@@ -366,18 +379,35 @@ end
 T2 = cell2table(rows, 'VariableNames', {'quantity', 'per_site_Sen_AR1', 'pooled_REML', 'hierarchical_v6'});
 writetable(T2, fullfile(OUT, 'Table2_modelA_network_and_classes.csv'));
 
-%% Table 3: Model B decomposition for three climate inputs
+%% Table 3 (Table S10 of the draft): Model B decomposition for every climate input and check
 if ~have_power, pnet = []; end
-B = b_inputs(net, have_power, pnet);
-cls_cols = {'class_resid', 'class_resid_weather_memory', 'class_resid'};
-tabs = {res, res, []}; if have_power, tabs{3} = pres; end
+B = b_inputs(net, have_power, pnet);                      % used in key_numbers below
+VAR_ID = ["main" "kfixed" "lag" "memory" "air" "weather" "weather_memory" ...
+          "kprior_zero" "kprior_wide" "dprior_wide" "region_year"];
+VAR_L  = ["Summer TDD (main)" "k fixed at 0.5 (Stefan)" "+ previous summer's TDD" ...
+          "+ TDD of the two previous summers" "+ previous summer's TDD and winter freezing index" ...
+          "+ winter freezing index, winter snow and summer rain" "All weather terms + 2-year memory" ...
+          "Check: k prior centred on 0" "Check: k prior SD 1.0 (four times wider)" ...
+          "Check: wider priors of the residual-trend hierarchy" "Check: with a region-year term"];
 T3 = table();
-for i = 1:numel(B)
-    t = tabs{i}; cc = t.(cls_cols{i});
-    T3 = [T3; table(string(B(i).name), string(ci(B(i).exp)), string(ci(B(i).res)), string(ci(B(i).tot)), ...
-        B(i).k(1), sum(cc == RES(1)), sum(cc == RES(2)), sum(cc == RES(3)), sum(cc == RES(4)), height(t), ...
-        'VariableNames', {'climate_input', 'expected_pct_dec', 'residual_pct_dec', 'total_pct_dec', ...
-        'k_this_summer', 'deeper', 'consistent', 'shallower', 'not_resolved', 'sites'})]; %#ok<AGROW>
+for i = 1:numel(VAR_ID) + have_power
+    if i <= numel(VAR_ID)
+        tb = net; pre = "B_" + VAR_ID(i); lab3 = VAR_L(i); src3 = "ERA5-Land"; tres = res;
+        col = "class_resid"; if VAR_ID(i) ~= "main", col = "class_resid_" + VAR_ID(i); end
+    else
+        tb = pnet; pre = "B_main"; lab3 = "Summer TDD (main)"; src3 = "NASA POWER"; tres = pres; col = "class_resid";
+    end
+    e3 = net_value(tb, char(pre + "_mean_expected_pct_dec"));
+    if isnan(e3(1)), continue; end
+    r3 = net_value(tb, char(pre + "_mean_residual_pct_dec"));
+    t3 = net_value(tb, char(pre + "_mean_total_pct_dec"));
+    k3 = net_value(tb, char(pre + "_k0"));
+    if ismember(col, tres.Properties.VariableNames), cc = tres.(col); else, cc = strings(0, 1); end
+    T3 = [T3; table(lab3, src3, string(ci(e3)), string(ci(r3)), string(ci(t3)), round(100 * e3(1) / t3(1)), ...
+        k3(1), sum(cc == RES(1)), sum(cc == RES(2)), sum(cc == RES(3)), sum(cc == RES(4)), ...
+        'VariableNames', {'climate_input', 'temperature', 'expected_pct_dec', 'residual_pct_dec', ...
+        'total_pct_dec', 'expected_share_pct', 'k_this_summer', 'positive_residual', 'residual_within_5', ...
+        'negative_residual', 'not_resolved'})]; %#ok<AGROW>
 end
 writetable(T3, fullfile(OUT, 'Table3_modelB_decomposition.csv'));
 
@@ -543,7 +573,61 @@ if have_sim
     keep = intersect({'scenario', 'method', 'coverage90', 'rmse_pct_dec', 'wrong_direction', 'resolved', ...
         'called_trend', 'trend_p05', 'network_err', 'network_cover95', 'expected_coverage90', 'resid_bias', ...
         'false_deeper'}, sim.Properties.VariableNames, 'stable');
-    writetable(sim(:, keep), fullfile(OUT, 'TableS3_simulation.csv'));
+    TS3 = sim(:, keep);
+    % standard error of the mean coverage from the spread between the simulated networks, and
+    % the scenarios run later (A_misspec), from the paper checks
+    nf = fullfile(CK, 'aldi_v6_checks_simulation_networks.csv');
+    if have_ck && isfile(nf)
+        sn = rd(nf);
+        TS3.networks = nan(height(TS3), 1); TS3.coverage90_se = nan(height(TS3), 1);
+        for i = 1:height(TS3)
+            k = sn.scenario == TS3.scenario(i) & sn.method == TS3.method(i);
+            if any(k), TS3.networks(i) = sn.networks(k); TS3.coverage90_se(i) = sn.coverage90_se(k); end
+        end
+        later = sn(~ismember(sn.scenario, TS3.scenario), :);
+        for i = 1:height(later)
+            r = TS3(1, :);
+            for v = string(r.Properties.VariableNames)
+                if isnumeric(r.(v)), r.(v) = NaN; end
+            end
+            r.scenario = later.scenario(i); r.method = later.method(i);
+            for v = intersect(string(r.Properties.VariableNames), string(later.Properties.VariableNames))'
+                if v ~= "scenario" && v ~= "method", r.(v) = later.(v)(i); end
+            end
+            TS3 = [TS3; r]; %#ok<AGROW>
+        end
+    end
+    writetable(TS3, fullfile(OUT, 'TableS3_simulation.csv'));
+end
+
+%% Supplement: Fig S5 and Table S12, trends of all regions with their intervals
+% (review of 14 November 2026: Fig 2 pools the 32 regions with fewer than four series)
+reg_f = fullfile(DATA, '3_aldi', 'aldi_v6_regions.csv');
+if isfile(reg_f)
+    rg = rd(reg_f);
+    rg.name = strings(height(rg), 1);
+    for i = 1:height(rg), rg.name(i) = region_name(rg.lat(i), rg.lon(i)); end
+    rg = sortrows(rg, 'rate_median');
+    writetable(rg(:, [{'region_id', 'name'}, setdiff(rg.Properties.VariableNames, {'region_id', 'name'}, 'stable')]), ...
+        fullfile(OUT, 'TableS12_regions.csv'));
+    nrg = height(rg); yy = (1:nrg)';
+    fig = new_figure(12, 4 + 0.33 * nrg);
+    ax = axes(fig); hold(ax, 'on');
+    patch(ax, [nw(2) nw(3) nw(3) nw(2)], [0.4 0.4 nrg + 0.6 nrg + 0.6], CLS_C(1, :), 'FaceAlpha', 0.12, ...
+        'EdgeColor', 'none');
+    xline(ax, 0, '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.4);
+    hN = xline(ax, nw(1), '-', 'Color', CLS_C(1, :), 'LineWidth', 1);
+    plot(ax, [rg.lo95 rg.hi95]', [yy yy]', '-', 'Color', [0.6 0.6 0.6], 'LineWidth', 0.6);
+    plot(ax, [rg.lo90 rg.hi90]', [yy yy]', '-', 'Color', [0.15 0.15 0.15], 'LineWidth', 1.6);
+    one = rg.n_series == 1;
+    h1 = plot(ax, rg.rate_median(~one), yy(~one), 'o', 'MarkerSize', 4, 'MarkerFaceColor', 'k', 'MarkerEdgeColor', 'k');
+    h2 = plot(ax, rg.rate_median(one), yy(one), 'o', 'MarkerSize', 4, 'MarkerFaceColor', 'w', 'MarkerEdgeColor', 'k');
+    yticks(ax, yy); yticklabels(ax, rg.name + " (" + rg.n_series + ")"); ylim(ax, [0.4 nrg + 0.6]);
+    xlabel(ax, 'Regional trend of ALT (% per decade)');
+    legend(ax, [h1 h2 hN], {'Two or more series: median, 90 % (thick) and 95 % (thin) interval', ...
+        'One series', sprintf('Network rate, %.1f (%.1f to %.1f)', nw)}, 'Location', 'southoutside', ...
+        'Box', 'off', 'FontSize', FONT - 1);
+    save_figure(fig, OUT, 'FigS5_regional_trends');
 end
 
 %% Supplement: Tables S4-S9 from the paper checks (copied from data\3_aldi_checks)
@@ -683,7 +767,9 @@ if have_ck
         sum(~sig & contains(cks.class_v6, "thickening")), sum(~sig & cks.class_v6 == "stable"));
     p('  shrinkage toward the region (median): %s', strjoin(compose('%s yr %.2f', cksp.span, cksp.median_shrinkage)', ', '));
     keys = ["share that is regional" "class of a site with NO data" "POSTERIOR EXPECTED CLASS COUNTS" ...
-            "P(rate >" "with site fixed effects R2" "share of the TREND" "MCMC:" "survey date drift"];
+            "P(rate >" "with site fixed effects R2" "share of the TREND" "MCMC:" "survey date drift" ...
+            "site-years by method, all" "UNRESOLVED RECORDS" "ACCELERATION" "median trend before" ...
+            "p < 0.05: faster"];
     lines = splitlines(string(ck_txt));
     for kk = keys
         for ln = lines(contains(lines, kk))'
@@ -738,6 +824,58 @@ if have_ck
             p('    %s: %.2f %s', cm.what(i), cm.value(i), cm.unit(i));
         end
     end
+end
+% --- checks added after the review of 14 November 2026 ---
+p('');
+p('REVIEW CHECKS (14 November 2026)');
+erm = net_value(net, 'A_main_equal_region_mean_pct_dec');
+p('  network mean mu %s; equal-weight mean of the fitted regional trends %s %%/dec', ci(nw), ci(erm));
+if isfile(reg_f)
+    one = rg.n_series == 1;
+    p('  regions: median above 0 at %d of %d; 95 %% interval above 0 at %d (%d of the %d single-series regions); 90 %% interval above 0 at %d (%d); P(trend > 0) min %.3f, median %.3f', ...
+        sum(rg.rate_median > 0), height(rg), sum(rg.lo95 > 0), sum(rg.lo95 > 0 & one), sum(one), ...
+        sum(rg.lo90 > 0), sum(rg.lo90 > 0 & one), min(rg.p_positive), median(rg.p_positive));
+    k0 = rg.lo95 <= 0;
+    p('  regions whose 95 %% interval reaches 0: %s', strjoin(compose('%s (%d series, %.1f, %.1f to %.1f)', ...
+        rg.name(k0), rg.n_series(k0), rg.rate_median(k0), rg.lo95(k0), rg.hi95(k0)), '; '));
+end
+lines = splitlines(string(summ));
+for ln = lines(contains(lines, "corr(expected, residual mean)") | contains(lines, "site-years by method family"))'
+    p('  %s', strtrim(ln));
+end
+dep_f = fullfile(DATA, '3_aldi', 'aldi_v6_dependence.csv');
+if isfile(dep_f)
+    dp = rd(dep_f);
+    p('  dependence left in the residuals: lag-1 autocorrelation of innovations | same-year correlation of two series of a region');
+    for i = 1:height(dp)
+        p('    %s: %+.2f (%d pairs) | %+.2f (%d pairs)', dp.fit(i), dp.lag1(i), dp.n_lag1(i), dp.same_region_year(i), dp.n_pairs(i));
+    end
+end
+nf = fullfile(CK, 'aldi_v6_checks_simulation_networks.csv');
+if have_ck && isfile(nf)
+    sn = rd(nf);
+    p('  simulation, coverage of 90 %% intervals: mean over networks (SE from the spread between networks; range)');
+    for i = 1:height(sn)
+        p('    %s %s: %.3f (SE %.3f; %.2f to %.2f; %d networks), RMSE %.1f, trend called %.3f', sn.scenario(i), ...
+            sn.method(i), sn.coverage90(i), sn.coverage90_se(i), sn.coverage90_min(i), sn.coverage90_max(i), ...
+            sn.networks(i), sn.rmse_pct_dec(i), sn.called_trend(i));
+    end
+end
+kp = fullfile(DATA, '3_aldi_keep_pinned');
+if isfile(fullfile(kp, 'aldi_v6_network.csv'))
+    kn = rd(fullfile(kp, 'aldi_v6_network.csv')); kr = rd(fullfile(kp, 'aldi_v6_results.csv'));
+    p('  with the series pinned to a sensor kept (data\\3_aldi_keep_pinned): %d series; network %s; equal-weight regions %s; mean of sites %s %%/dec', ...
+        height(kr), ci(net_value(kn, 'A_main_network_rate_pct_dec')), ci(net_value(kn, 'A_main_equal_region_mean_pct_dec')), ...
+        ci(net_value(kn, 'A_main_mean_site_rate_pct_dec')));
+    p('    classes: %s', strjoin(compose('%s %d', CLS_L', arrayfun(@(c) sum(kr.class_v6 == c), CLS)'), ', '));
+    new_s = setdiff(kr.site_id, res.site_id);
+    for sid = new_s'
+        k = kr.site_id == sid;
+        p('    added: %s (%s, %d values, %d-%d): %.1f %%/dec (%.1f to %.1f), %s', sid, kr.family(k), kr.n_obs(k), ...
+            kr.year_min(k), kr.year_max(k), kr.rate_v6(k), kr.rate_v6_lo(k), kr.rate_v6_hi(k), kr.class_v6(k));
+    end
+    p('    model B main: expected %s, residual %s %%/dec', ci(net_value(kn, 'B_main_mean_expected_pct_dec')), ...
+        ci(net_value(kn, 'B_main_mean_residual_pct_dec')));
 end
 fclose(fid);
 fprintf('Done: figures and tables in %s\n', OUT);
@@ -879,7 +1017,9 @@ function name = region_name(lat, lon)
 P = {69.3 -134.3 'Mackenzie Delta and coast'; 64.9 -148.2 'Fairbanks'; 69.7 -149.0 'North Slope foothills';
      68.4 -149.6 'Toolik and Imnavait'; 70.7 -155.8 'Utqiagvik and coastal plain'; 69.1 160.4 'Lower Kolyma';
      68.0 -133.5 'Inuvik uplands'; 62.8 -122.9 'Southern Mackenzie Valley'; 65.5 -127.5 'Central Mackenzie Valley';
-     70.2 68.5 'Yamal'; 78.0 15.1 'Svalbard'; 73.0 -80.0 'Bylot Island and Borden'};
+     70.2 68.5 'Yamal'; 78.0 15.1 'Svalbard'; 73.0 -80.0 'Bylot Island and Borden';
+     67.3 63.6 'Vorkuta'; 65.3 72.7 'Nadym'; 66.9 76.8 'Urengoy'; 68.5 87.5 'Norilsk-Igarka';
+     68.3 18.9 'Abisko'; 74.5 -20.6 'Zackenberg'; 62.1 129.6 'Yakutsk'};
 dkm = 6371 * acos(min(1, sind(lat) * sind([P{:, 1}]) + cosd(lat) * cosd([P{:, 1}]) .* cosd(lon - [P{:, 2}])));
 [dmin, i] = min(dkm);
 if dmin < 150
