@@ -2582,6 +2582,11 @@ SENSITIVITY = [
              "-0.1 C (open above when that is below the deepest sensor) instead of points"),
     dict(name="temp_interval_all", set={"sample.temp_interval": "all"},
          why="every temperature year as such an interval (sensor accuracy as observation error)"),
+    # Added 2026-11-14 (fifth review): the same fits with another seed of the sampler, so the
+    # classes that change by Monte Carlo error alone can be told from those a choice changes.
+    dict(name="mcmc_seed", seed_offset=1,
+         why="main settings, another random seed of the sampler (seed + 1): the Monte Carlo variation of the "
+             "rates and classes, against which the class changes of the other runs are read"),
 ]
 SENS_MARGINS = [(2.5, 10.0), (5.0, 15.0)]     # (stable margin, rapid threshold), %/dec
 DISTURBED_NOTE = re.compile(r"burned|fire line|safety region", re.I)
@@ -2720,13 +2725,15 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
         if n_subsided:
             row["n_subsidence_series"] = n_subsided
         diags = []
+        # another sampler seed for run mcmc_seed, the main one for all others
+        kw = dict(fit_kw, seed=fit_kw.get("seed", 0) + sc["seed_offset"]) if sc.get("seed_offset") else fit_kw
         # A
         if sc.get("skip_A") and main_A is not None:
             sA, netA = main_A
         else:
             arr = build_arrays(d, c)
             mc = fit(arr, "A", region_year=c["model"]["region_year"], slope_dist=c["model"]["slope_dist"],
-                     priors=pri, survey_doy=c["model"]["survey_doy"], **fit_kw)
+                     priors=pri, survey_doy=c["model"]["survey_doy"], **kw)
             sA, netA, rateA = summarise_A(mc, arr, c)
             diags.append(diagnostics(mc))
             if c["model"]["survey_doy"]:
@@ -2759,7 +2766,7 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
         # B main and B weather_memory
         arrB = build_arrays(d, c, t)
         p2 = dict(pri, k_fixed=c["climate"]["k_fixed"])
-        mcB = fit(arrB, "B", k_mode="hierarchical", region_year=c["climate"]["region_year"], priors=p2, **fit_kw)
+        mcB = fit(arrB, "B", k_mode="hierarchical", region_year=c["climate"]["region_year"], priors=p2, **kw)
         sB, netB = summarise_B(mcB, arrB, c, "hierarchical")
         diags.append(diagnostics(mcB))
         del mcB
@@ -2767,7 +2774,7 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
         ex = extra_climate(tdd_all, wm["extra"], weather) if weather is not None else None
         if ex is not None:
             arrW = build_arrays(d, c, t, ex, wm["extra"])
-            mcW = fit(arrW, "B", k_mode=wm["k_mode"], region_year=c["climate"]["region_year"], priors=p2, **fit_kw)
+            mcW = fit(arrW, "B", k_mode=wm["k_mode"], region_year=c["climate"]["region_year"], priors=p2, **kw)
             sW, netW = summarise_B(mcW, arrW, c, wm["k_mode"])
             diags.append(diagnostics(mcW))
             del mcW
@@ -2924,7 +2931,16 @@ def sensitivity_figure(tab, out):
 #   aldi_v6_checks_diagnostics.csv  MCMC diagnostics of the fits of the main run
 #   aldi_v6_checks_acceleration.csv change of trend between the halves of the long records
 #   aldi_v6_checks_simulation_networks.csv  simulation: coverage per scenario and method with
-#                                   its spread between networks (needs data/3_aldi_validation)
+#                                   its spread between networks (needs data/3_aldi_validation);
+#                                   since 2026-11-14 also by record length (coverage, RMSE)
+#   aldi_v6_checks_series_mean.csv  simulation: the interval of the mean of the series trends
+#                                   by scenario, and pooled (descriptive) with the test that it
+#                                   is nominal in every scenario pooled
+#   aldi_v6_checks_pooling_vs_noise.csv  simulation: per-site methods, the trend-unpooled fit
+#                                   and model A on the same networks (fifth review)
+#   aldi_v6_checks_class_changes.csv  classes that change in each sensitivity run, against
+#                                   the class margins of its main fit (fifth review), and
+#                                   aldi_v6_checks_class_changes_sites.csv the series concerned
 #   aldi_v6_checks.txt              the numbers for the text
 #
 # Detection time. A record's trend is classed when its 90 % interval clears zero (or,
@@ -3023,15 +3039,73 @@ def mcmc_table(summary_text):
 
 def read_sim_reps(val_dir):
     """All simulated networks in data/3_aldi_validation: the main file and the scenarios run
-    later (aldi_v6_simulation_reps_<scenarios>.csv); a scenario is taken from the first file
-    that holds it."""
+    later (aldi_v6_simulation_reps_<scenarios>.csv). Each scenario is taken whole from one
+    file, so that all methods of a scenario are scored on the same networks: from a file run
+    later rather than from the main file, and from the most recently written of two such
+    files. Column source_file names it. (Until 2026-11-14 the first file that held a scenario
+    won, so a rerun of A_fit with an added method would have been ignored.)"""
     if val_dir is None or not (Path(val_dir) / "aldi_v6_simulation_reps.csv").exists():
         return None
-    rp = pd.read_csv(Path(val_dir) / "aldi_v6_simulation_reps.csv")
-    for f in sorted(Path(val_dir).glob("aldi_v6_simulation_reps_*.csv")):   # scenarios run later
-        extra = pd.read_csv(f)
-        rp = pd.concat([rp, extra[~extra.scenario.isin(set(rp.scenario))]], ignore_index=True)
-    return rp
+    later = sorted(Path(val_dir).glob("aldi_v6_simulation_reps_*.csv"), key=lambda f: (f.stat().st_mtime, f.name))
+    src = {}
+    for f in [Path(val_dir) / "aldi_v6_simulation_reps.csv"] + later:   # later files override, scenario by scenario
+        x = pd.read_csv(f)
+        for sc_ in x.scenario.unique():
+            src[sc_] = x[x.scenario == sc_].assign(source_file=f.name)
+    return pd.concat(list(src.values()), ignore_index=True)
+
+
+# Classes that change between runs (added 2026-11-14, fifth review of the paper). The network
+# rate holds across the processing choices; single classes need not, because a class is a
+# threshold decision on an interval. For every run that refits model A with one choice changed
+# (data/3_aldi_sensitivity, data/3_aldi_sensitivity_runs, and data/3_aldi_keep_pinned, which
+# keeps the low-variability temperature series), the classes of the series that the run shares
+# with its own main fit are compared. Each change is set against the margin of the main fit:
+# how far the end of the interval that decided the class (for an unresolved series, the end
+# nearest to a decision) lies from its class boundary, in %/dec. A change between groups
+# (thickening, stable, unresolved, thinning) at a series whose margin is below CLASS_BORDER is
+# called borderline. Run mcmc_seed (main settings, another seed of the sampler) gives the
+# changes that Monte Carlo error alone makes.
+CLASS_GROUP = {"rapid_thickening": "thickening", "gradual_thickening": "thickening", "stable": "stable",
+               "indeterminate": "unresolved", "gradual_thinning": "thinning", "rapid_thinning": "thinning"}
+CLASS_BORDER = 1.0                                   # %/dec
+OTHER_PERIOD_RUNS = ("window_2000_2024",)            # a different period, not a processing choice of the same trend
+CLASS_REFERENCE_RUNS = ("mcmc_seed", "keep_low_variability")   # reported apart from the processing runs
+
+
+def class_margin(cls, lo, hi, stable_margin):
+    """Distance (%/dec) of the deciding end of the interval from its class boundary."""
+    g = CLASS_GROUP.get(cls, "unresolved")
+    if g == "thickening":
+        return lo
+    if g == "thinning":
+        return -hi
+    if g == "stable":
+        return min(lo + stable_margin, stable_margin - hi)
+    return min(-lo, hi, max(-stable_margin - lo, hi - stable_margin, 0.0))
+
+
+def compare_classes(ref, alt, run, source, stable_margin):
+    """Classes of the series in both ref (a main fit) and alt (a run): one summary row and
+    the changed series. Both tables need site_id, rate_v6, rate_v6_lo, rate_v6_hi, class_v6."""
+    cols = ["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6"]
+    j = ref[cols].merge(alt[cols], on="site_id", suffixes=("_main", "_run"))
+    g0 = j.class_v6_main.map(CLASS_GROUP).fillna("unresolved").to_numpy()
+    g1 = j.class_v6_run.map(CLASS_GROUP).fillna("unresolved").to_numpy()
+    marg = np.array([class_margin(c, lo, hi, stable_margin) for c, lo, hi in
+                     zip(j.class_v6_main, j.rate_v6_lo_main, j.rate_v6_hi_main)])
+    ch = (j.class_v6_main != j.class_v6_run).to_numpy()
+    gch = g0 != g1
+    d = (j.rate_v6_run - j.rate_v6_main).to_numpy()
+    tr = pd.Series(list(zip(j.class_v6_main[ch], j.class_v6_run[ch])), dtype=object).value_counts()
+    row = {"run": run, "source": source, "shared_series": len(j), "class_changes": int(ch.sum()),
+           "group_changes": int(gch.sum()), "rapid_gradual_changes": int((ch & ~gch).sum()),
+           "group_changes_borderline": int((gch & (marg < CLASS_BORDER)).sum()),
+           "median_abs_rate_change_of_group_changes": float(np.median(np.abs(d[gch]))) if gch.any() else np.nan,
+           "rms_rate_change_all_shared": float(np.sqrt(np.mean(d ** 2))) if len(d) else np.nan,
+           "transitions": "; ".join(f"{a} -> {b} {n}" for (a, b), n in tr.items())}
+    sites = j.loc[ch].assign(run=run, margin_main=marg[ch], group_change=gch[ch])
+    return row, sites
 
 
 def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
@@ -3648,6 +3722,73 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     L.append("\nRATES IN CM (site rates times the site's fitted ALT; published values for comparison):")
     L.append(cmt.round(2).to_string(index=False))
 
+    # --- classes that change between runs (added 2026-11-14, fifth review; see class_changes above) ---
+    cc_rows, cc_sites, seen = [], [], set()
+    if sens_dir:
+        for d_ in [Path(sens_dir), Path(sens_dir).with_name(Path(sens_dir).name + "_runs")]:
+            f_ = d_ / "aldi_v6_sensitivity_sites.csv"
+            if not f_.exists():
+                continue
+            ss_ = pd.read_csv(f_)
+            if "main" not in set(ss_.run):
+                continue
+            ref_ = ss_[ss_.run == "main"]            # each table is compared with its own main fit
+            for run_ in ss_.run.unique():
+                # the subsidence scenarios estimate another quantity; undated_doy_243 does not refit A
+                if run_ == "main" or run_ in seen or run_.startswith("subsidence") or run_ == "undated_doy_243":
+                    continue
+                seen.add(run_)
+                r_, s_ = compare_classes(ref_, ss_[ss_.run == run_], run_, d_.name, margin)
+                cc_rows.append(r_)
+                cc_sites.append(s_)
+    kp_ = Path(main_out).with_name(Path(main_out).name + "_keep_pinned") / f"{pre}_results.csv"
+    if kp_.exists():
+        kpr = pd.read_csv(kp_)
+        r_, s_ = compare_classes(res, kpr, "keep_low_variability", kp_.parent.name, margin)
+        r_["series_added"] = int((~kpr.site_id.isin(res.site_id)).sum())
+        cc_rows.append(r_)
+        cc_sites.append(s_)
+    if cc_rows:
+        cc = pd.DataFrame(cc_rows)
+        cc["kind"] = np.where(cc.run.isin(OTHER_PERIOD_RUNS), "other period",
+                              np.where(cc.run.isin(CLASS_REFERENCE_RUNS), "reference", "processing choice"))
+        cc.to_csv(out / "aldi_v6_checks_class_changes.csv", index=False)
+        ccs = pd.concat(cc_sites, ignore_index=True)
+        ccs.to_csv(out / "aldi_v6_checks_class_changes_sites.csv", index=False)
+        mg = np.array([class_margin(c, lo, hi, margin) for c, lo, hi in zip(res.class_v6, res.rate_v6_lo, res.rate_v6_hi)])
+        grp0 = res.class_v6.map(CLASS_GROUP).fillna("unresolved")
+        thick0 = grp0 == "thickening"
+        L.append(f"\nCLASS CHANGES BETWEEN RUNS (series a run shares with its own main fit; groups: thickening, stable, "
+                 f"unresolved, thinning; borderline: the end of the main fit's 90 % interval that decided the class "
+                 f"lies within {CLASS_BORDER:g} %/dec of its class boundary):")
+        L.append(f"  class margins of the main fit: {int((mg < CLASS_BORDER).sum())} of {len(res)} series are borderline "
+                 f"({int((thick0 & (res.rate_v6_lo < CLASS_BORDER)).sum())} of {int(thick0.sum())} thickening series "
+                 f"with a lower end below {CLASS_BORDER:g}; {int(((grp0 == 'unresolved') & (res.rate_v6_lo > -CLASS_BORDER)).sum())} "
+                 f"of {int((grp0 == 'unresolved').sum())} unresolved series with a lower end above -{CLASS_BORDER:g}); "
+                 f"{int((thick0 & ((res.rate_v6 - rapid).abs() < 0.5)).sum())} thickening series have a median within "
+                 f"0.5 %/dec of the rapid threshold")
+        for r_ in cc_rows:
+            L.append(f"  class changes, {r_['run']} ({r_['source']}): {r_['class_changes']} of {r_['shared_series']} "
+                     f"(between groups {r_['group_changes']}, {r_['group_changes_borderline']} of them borderline; "
+                     f"rapid/gradual {r_['rapid_gradual_changes']}); median |rate change| of the group changes "
+                     f"{r_['median_abs_rate_change_of_group_changes']:.2f} %/dec; RMS rate change of all shared series "
+                     f"{r_['rms_rate_change_all_shared']:.2f}" + (f"; series added {r_['series_added']}" if "series_added" in r_ else ""))
+        pc_ = cc[cc.kind == "processing choice"]
+        if len(pc_):
+            sel = ccs[ccs.run.isin(pc_.run) & ccs.group_change]
+            L.append(f"  class changes over the {len(pc_)} processing runs with the same period: median "
+                     f"{pc_.class_changes.median():g} series (range {pc_.class_changes.min()}-{pc_.class_changes.max()}), "
+                     f"between groups median {pc_.group_changes.median():g} ({pc_.group_changes.min()}-"
+                     f"{pc_.group_changes.max()}); {int(pc_.group_changes_borderline.sum())} of the "
+                     f"{int(pc_.group_changes.sum())} changes between groups are borderline; {sel.site_id.nunique()} "
+                     f"series change group in at least one run")
+        for run_ in ["survey_doy", "keep_low_variability", "mcmc_seed"]:
+            x_ = ccs[ccs.run == run_]
+            if len(x_):
+                L.append(f"    changed in {run_}: " + "; ".join(
+                    f"{w.site_id} ({w.class_v6_main} -> {w.class_v6_run}; rate {w.rate_v6_main:.2f} -> {w.rate_v6_run:.2f}, "
+                    f"lower end {w.rate_v6_lo_main:.2f} -> {w.rate_v6_lo_run:.2f})" for w in x_.itertuples()))
+
     # --- simulation: spread between the simulated networks (added 2026-11-14) ---
     # The series of one network share regions and hyperparameters, so the standard error of
     # a mean coverage comes from the spread between networks, not from the pooled series.
@@ -3659,9 +3800,15 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                    coverage90_max=("coverage90", "max"), rmse_pct_dec=("rmse_pct_dec", "mean"),
                    wrong_direction=("wrong_direction", "mean"), called_trend=("called_trend", "mean")).reset_index()
         sn["coverage90_se"] = sn.coverage90_sd / np.sqrt(sn.networks)
-        for c in ["trend_p05", "network_err", "network_cover95"]:
+        # resolved share, coverage and RMSE by record length (fifth review: Fig 4 and Table S8
+        # read them from here, so that they use the same files as the checks), and the file
+        # each scenario was read from
+        for c in (["trend_p05", "network_err", "network_cover95", "resolved"] + [f"coverage_{b}" for b in CHECK_SPANS]
+                  + [f"rmse_{b}" for b in CHECK_SPANS]):
             if c in rp:
                 sn[c] = g[c].mean().to_numpy()
+        if "source_file" in rp:
+            sn["source_file"] = g["source_file"].first().to_numpy()
         if "network_cover95" in sn:
             # one network interval per simulated network, so its coverage is k of n: exact
             # (Clopper-Pearson) 95 % interval, to show how little 8 networks can tell
@@ -3691,48 +3838,87 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         # planted local thinning). Where the runs hold them: its mean width and the error over
         # the posterior SD it implies, the interval of mu against the true network rate, and
         # the region bootstrap of the series mean (Table 2) against the true series mean.
+        # Fifth review: the scenarios need not share one coverage, so a count pooled over
+        # scenarios is descriptive, and its Clopper-Pearson interval would assume one common
+        # coverage. Without that assumption the pooled count still tests that the coverage is
+        # at least nominal in every scenario pooled: a sum of independent binomial counts whose
+        # probabilities are all >= 0.95 is stochastically at least Binomial(n, 0.95), so
+        # P(Binomial(n, 0.95) <= k) bounds the p value of that hypothesis
+        # (p_nominal_in_every_scenario; for one scenario it is the exact one-sided test). The
+        # same interval of the trend-unpooled fit (v6_unpooled, where the runs hold it) shows
+        # whether pooling the trends is behind a shortfall.
         if "network_cover95" in rp:
             v6r = rp[(rp.method == "v6_ry") & rp.network_cover95.notna()]
-            grp_m = {sc_: [sc_] for sc_ in v6r.scenario.unique()}
-            grp_m["drawn from model A (A_fit, A_null, A_ppc)"] = ["A_fit", "A_null", "A_ppc"]
-            grp_m["misspecified (A_heavy, A_misspec, A_thin)"] = ["A_heavy", "A_misspec", "A_thin"]
-            grp_m["all"] = list(v6r.scenario.unique())
+            unp = rp[(rp.method == "v6_unpooled") & rp.network_cover95.notna()]
+            grp_m = {sc_: ("scenario", [sc_]) for sc_ in v6r.scenario.unique()}
+            grp_m["pooled: drawn from model A (A_fit, A_null, A_ppc)"] = ("pooled, descriptive", ["A_fit", "A_null", "A_ppc"])
+            grp_m["pooled: misspecified (A_heavy, A_misspec, A_thin)"] = ("pooled, descriptive",
+                                                                         ["A_heavy", "A_misspec", "A_thin"])
+            grp_m["pooled: all"] = ("pooled, descriptive", list(v6r.scenario.unique()))
             rows_m = []
-            for gname, scs in grp_m.items():
+            for gname, (kind, scs) in grp_m.items():
                 x_ = v6r[v6r.scenario.isin(scs)]
                 if not len(x_):
                     continue
                 k_, n_ = int(x_.network_cover95.sum()), len(x_)
-                r_ = {"group": gname, "networks": n_, "covered": k_, "coverage95": k_ / n_,
+                r_ = {"group": gname, "kind": kind, "networks": n_, "covered": k_, "coverage95": k_ / n_,
                       "cp_lo": stats.beta.ppf(0.025, k_, n_ - k_ + 1) if k_ > 0 else 0.0,
                       "cp_hi": stats.beta.ppf(0.975, k_ + 1, n_ - k_) if k_ < n_ else 1.0,
+                      "p_nominal_in_every_scenario": float(stats.binom.cdf(k_, n_, 0.95)),
                       "bias_pct_dec": float(x_.network_err.mean()),
                       "rmse_pct_dec": float(np.sqrt(np.mean(x_.network_err ** 2)))}
-                if "network_width95" in x_ and x_.network_width95.notna().all():
-                    r_["mean_width95"] = float(x_.network_width95.mean())
-                    r_["rmse_over_posterior_sd"] = r_["rmse_pct_dec"] / (r_["mean_width95"] / (2 * 1.959964))
+                if "network_width95" in x_ and x_.network_width95.notna().any():
+                    w_ = x_.network_width95.notna()
+                    r_["width_networks"] = int(w_.sum())
+                    r_["mean_width95"] = float(x_.network_width95[w_].mean())
+                    r_["rmse_over_posterior_sd"] = (float(np.sqrt(np.mean(x_.network_err[w_] ** 2)))
+                                                    / (r_["mean_width95"] / (2 * 1.959964)))
                 for c_ in ["mu", "boot"]:
-                    if f"{c_}_cover95" in x_ and x_[f"{c_}_cover95"].notna().all():
-                        r_[f"{c_}_covered"] = int(x_[f"{c_}_cover95"].sum())
-                        r_[f"{c_}_mean_width95"] = float(x_[f"{c_}_width95"].mean())
+                    if f"{c_}_cover95" in x_ and x_[f"{c_}_cover95"].notna().any():
+                        v_ = x_[f"{c_}_cover95"].notna()
+                        r_[f"{c_}_networks"] = int(v_.sum())
+                        r_[f"{c_}_covered"] = int(x_.loc[v_, f"{c_}_cover95"].sum())
+                        r_[f"{c_}_mean_width95"] = float(x_.loc[v_, f"{c_}_width95"].mean())
+                        r_[f"{c_}_p_nominal"] = float(stats.binom.cdf(r_[f"{c_}_covered"], r_[f"{c_}_networks"], 0.95))
+                u_ = unp[unp.scenario.isin(scs)]
+                if len(u_):
+                    r_["unpooled_networks"] = len(u_)
+                    r_["unpooled_covered"] = int(u_.network_cover95.sum())
+                    r_["unpooled_bias_pct_dec"] = float(u_.network_err.mean())
+                    r_["unpooled_rmse_pct_dec"] = float(np.sqrt(np.mean(u_.network_err ** 2)))
+                    if "network_width95" in u_ and u_.network_width95.notna().all():
+                        r_["unpooled_mean_width95"] = float(u_.network_width95.mean())
                 rows_m.append(r_)
             mt_ = pd.DataFrame(rows_m)
             mt_.to_csv(out / "aldi_v6_checks_series_mean.csv", index=False)
             L.append("\nSERIES MEAN: 95 % interval of the mean of the series trends of model A (v6_ry), one per "
-                     "simulated network, against the true mean of that network (exact 95 % interval of the share):")
+                     "simulated network, against the true mean of that network. By scenario with the exact "
+                     "(Clopper-Pearson) 95 % interval of the share; pooled over scenarios as a descriptive count, "
+                     "since the scenarios need not share one coverage, with p = P(Binomial(n, 0.95) <= k), which "
+                     "tests without that assumption that the coverage is at least 95 % in every scenario pooled:")
             for r_ in rows_m:
-                ln = (f"  series-mean interval, {r_['group']}: {r_['covered']} of {r_['networks']} networks "
-                      f"({r_['cp_lo']:.2f} to {r_['cp_hi']:.2f}); bias {r_['bias_pct_dec']:+.2f}, RMSE "
-                      f"{r_['rmse_pct_dec']:.2f} %/dec")
+                if r_["kind"] == "scenario":
+                    ln = (f"  series-mean interval, {r_['group']}: {r_['covered']} of {r_['networks']} networks "
+                          f"({r_['cp_lo']:.2f} to {r_['cp_hi']:.2f}; p {r_['p_nominal_in_every_scenario']:.3f})")
+                else:
+                    ln = (f"  series-mean interval, {r_['group']}: {r_['covered']} of {r_['networks']} networks "
+                          f"({100 * r_['coverage95']:.1f} %, descriptive; p {r_['p_nominal_in_every_scenario']:.3f} "
+                          f"if it were at least 95 % in every scenario)")
+                ln += f"; bias {r_['bias_pct_dec']:+.2f}, RMSE {r_['rmse_pct_dec']:.2f} %/dec"
                 if "mean_width95" in r_:
-                    ln += (f"; mean width {r_['mean_width95']:.2f}, so RMSE / posterior SD "
-                           f"{r_['rmse_over_posterior_sd']:.2f}")
+                    ln += (f"; mean width {r_['mean_width95']:.2f} ({r_['width_networks']} networks), so RMSE / "
+                           f"posterior SD {r_['rmse_over_posterior_sd']:.2f}")
                 if "mu_covered" in r_:
-                    ln += (f"; interval of mu covers the true network rate in {r_['mu_covered']} of {r_['networks']} "
-                           f"(mean width {r_['mu_mean_width95']:.1f})")
+                    ln += (f"; interval of mu covers the true network rate in {r_['mu_covered']} of {r_['mu_networks']} "
+                           f"(mean width {r_['mu_mean_width95']:.1f}; p {r_['mu_p_nominal']:.3f})")
                 if "boot_covered" in r_:
                     ln += (f"; region bootstrap covers the true series mean in {r_['boot_covered']} of "
-                           f"{r_['networks']} (mean width {r_['boot_mean_width95']:.1f})")
+                           f"{r_['boot_networks']} (mean width {r_['boot_mean_width95']:.1f})")
+                if "unpooled_covered" in r_:
+                    ln += (f"; trend-unpooled fit covers it in {r_['unpooled_covered']} of {r_['unpooled_networks']} "
+                           f"(bias {r_['unpooled_bias_pct_dec']:+.2f}"
+                           + (f", mean width {r_['unpooled_mean_width95']:.2f}" if "unpooled_mean_width95" in r_ else "")
+                           + ")")
                 L.append(ln)
 
         # --- trend targets under a change of trend (added 2026-11-14, fourth review) ---
@@ -3768,6 +3954,78 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                          f"{r_['coverage90_gls_ar1']:.3f}; RMSE {r_['rmse_least_squares']:.2f} / "
                          f"{r_['rmse_theil_sen']:.2f} / {r_['rmse_gls_ar1']:.2f}; wrong direction "
                          f"{r_['wrong_least_squares']:.3f} / {r_['wrong_theil_sen']:.3f} / {r_['wrong_gls_ar1']:.3f}")
+
+        # --- pooling against the noise model (added 2026-11-14, fifth review of the paper) ---
+        # Model A differs from the per-site methods in its noise model (AR(1) per method,
+        # region-year anomalies, lower bounds as censored values) and in pooling the trends.
+        # The trend-unpooled fit keeps the first and drops the second, on the same networks, so
+        # per scenario: per-site OLS or Akritas-Theil-Sen -> trend-unpooled is what the noise
+        # model (and the Bayesian fit) changes, trend-unpooled -> model A what pooling changes.
+        # Differences are paired by network (same simulated data), with their standard error
+        # from the spread between networks. share_of_rmse_gain_from_pooling: the part of the
+        # RMSE reduction from per-site OLS to model A that comes after the trend-unpooled fit.
+        meths = ["ols_site", "v5.2_site", "v6_unpooled", "v6_ry"]
+        mlab = {"ols_site": "OLS", "v5.2_site": "Akritas-Theil-Sen", "v6_unpooled": "trend-unpooled",
+                "v6_ry": "model A"}
+        cols_p = (["coverage90", "rmse_pct_dec", "wrong_direction", "resolved", "called_trend"]
+                  + [f"coverage_{b}" for b in CHECK_SPANS] + [f"rmse_{b}" for b in CHECK_SPANS])
+        rows_p = []
+        for sc_ in rp.scenario.unique():
+            x_ = rp[(rp.scenario == sc_) & rp.method.isin(meths)]
+            if not {"v6_unpooled", "v6_ry"} <= set(x_.method):
+                continue
+            piv = {c_: x_.pivot_table(index="rep", columns="method", values=c_) for c_ in cols_p if c_ in x_}
+            r_ = {"scenario": sc_, "networks": int(x_.rep.nunique())}
+            for c_, pv in piv.items():
+                for m_ in meths:
+                    if m_ in pv:
+                        r_[f"{c_}_{m_}"] = float(pv[m_].mean())
+            for c_, a_, b_ in [("rmse_pct_dec", "v6_unpooled", "v6_ry"), ("rmse_pct_dec", "ols_site", "v6_unpooled"),
+                               ("coverage90", "v6_unpooled", "ols_site"), ("coverage90", "v6_unpooled", "v5.2_site"),
+                               ("coverage90", "v6_ry", "v6_unpooled")]:
+                pv = piv.get(c_)
+                if pv is not None and a_ in pv and b_ in pv:
+                    d_ = (pv[a_] - pv[b_]).dropna()
+                    r_[f"{c_}_{a_}_minus_{b_}"] = float(d_.mean())
+                    r_[f"{c_}_{a_}_minus_{b_}_se"] = float(d_.std(ddof=1) / np.sqrt(len(d_))) if len(d_) > 1 else np.nan
+            if {"rmse_pct_dec_ols_site", "rmse_pct_dec_v6_unpooled", "rmse_pct_dec_v6_ry"} <= set(r_):
+                gain = r_["rmse_pct_dec_ols_site"] - r_["rmse_pct_dec_v6_ry"]
+                r_["share_of_rmse_gain_from_pooling"] = ((r_["rmse_pct_dec_v6_unpooled"] - r_["rmse_pct_dec_v6_ry"]) / gain
+                                                         if gain > 0 else np.nan)
+            if {"coverage90_ols_site", "coverage90_v6_unpooled", "coverage90_v6_ry"} <= set(r_):
+                gain = r_["coverage90_v6_ry"] - r_["coverage90_ols_site"]
+                r_["share_of_coverage_gain_from_noise_model"] = ((r_["coverage90_v6_unpooled"] - r_["coverage90_ols_site"])
+                                                                 / gain if gain > 0 else np.nan)
+            rows_p.append(r_)
+        if rows_p:
+            pn_ = pd.DataFrame(rows_p)
+            pn_.to_csv(out / "aldi_v6_checks_pooling_vs_noise.csv", index=False)
+            L.append("\nPOOLING AGAINST THE NOISE MODEL (same simulated networks; per-site OLS and Akritas-Theil-Sen, "
+                     "the trend-unpooled fit with the noise model of model A but no pooling of trends, and model A; "
+                     "differences paired by network, SE from the spread between networks):")
+            for r_ in rows_p:
+                have = [m_ for m_ in meths if f"coverage90_{m_}" in r_]
+                ln = (f"  pooling vs noise model, {r_['scenario']} ({r_['networks']} networks): coverage of 90 % intervals "
+                      + ", ".join(f"{mlab[m_]} {r_[f'coverage90_{m_}']:.3f}" for m_ in have)
+                      + "; RMSE " + ", ".join(f"{mlab[m_]} {r_[f'rmse_pct_dec_{m_}']:.2f}" for m_ in have) + " %/dec")
+                if "rmse_pct_dec_v6_unpooled_minus_v6_ry" in r_:
+                    ln += (f"; RMSE trend-unpooled minus model A {r_['rmse_pct_dec_v6_unpooled_minus_v6_ry']:+.2f} "
+                           f"(SE {r_['rmse_pct_dec_v6_unpooled_minus_v6_ry_se']:.2f})")
+                for a_, b_ in [("v6_unpooled", "ols_site"), ("v6_unpooled", "v5.2_site"), ("v6_ry", "v6_unpooled")]:
+                    k_ = f"coverage90_{a_}_minus_{b_}"
+                    if k_ in r_:
+                        ln += f"; coverage {mlab[a_]} minus {mlab[b_]} {r_[k_]:+.3f} (SE {r_[k_ + '_se']:.3f})"
+                if np.isfinite(r_.get("share_of_rmse_gain_from_pooling", np.nan)):
+                    ln += f"; share of the RMSE gain over OLS after the trend-unpooled fit {r_['share_of_rmse_gain_from_pooling']:.2f}"
+                if np.isfinite(r_.get("share_of_coverage_gain_from_noise_model", np.nan)):
+                    ln += (f"; share of the coverage gain over OLS reached by the trend-unpooled fit "
+                           f"{r_['share_of_coverage_gain_from_noise_model']:.2f}")
+                L.append(ln)
+                if all(f"rmse_{b}_v6_unpooled" in r_ and f"rmse_{b}_v6_ry" in r_ for b in CHECK_SPANS):
+                    L.append("    by record length, RMSE trend-unpooled / model A: " + ", ".join(
+                        f"{b} yr {r_[f'rmse_{b}_v6_unpooled']:.1f} / {r_[f'rmse_{b}_v6_ry']:.1f}" for b in CHECK_SPANS)
+                        + "; coverage " + ", ".join(
+                        f"{b} yr {r_[f'coverage_{b}_v6_unpooled']:.2f} / {r_[f'coverage_{b}_v6_ry']:.2f}" for b in CHECK_SPANS))
 
     # --- rare local thinning among thickening neighbours (scenario A_thin, third review) ---
     th = None if rp_all is None else rp_all[rp_all.scenario == "A_thin"]
@@ -3980,12 +4238,14 @@ def score(name, method, est, lo, hi, cls, true_rate, bins, mu_hat=None, mu_lo=No
            "called_trend": (thick | thin).mean(),
            "stable_when_|true|<2.5": float(np.mean(np.asarray(cls)[np.abs(true_rate) < 2.5] == "stable"))
            if (np.abs(true_rate) < 2.5).any() else np.nan}
+    err = np.asarray(est, float) - np.asarray(true_rate, float)
     for b in ["12-15", "16-20", "21-25", "26+"]:
         m = np.asarray(bins == b)
         if m.any():
             row[f"rapid_{b}"] = np.mean(np.asarray(cls)[m] == "rapid_thickening")
             row[f"resolved_{b}"] = resolved[m].mean()
             row[f"coverage_{b}"] = cover[m].mean()
+            row[f"rmse_{b}"] = float(np.sqrt(np.mean(err[m] ** 2)))   # added 2026-11-14 (fifth review)
     if mu_hat is not None:
         row["network_err"] = mu_hat - mu_true
         row["network_cover95"] = float(mu_lo <= mu_true <= mu_hi)
@@ -4116,6 +4376,27 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
             rows.append(row)
             del mc
             free_jit()
+        # Trend-unpooled fit (added 2026-11-14, fifth review of the paper): the noise model,
+        # lower bounds and region-year term of model A without the pooling of trends (each
+        # series trend has its own N(0, 1) prior, as in the site_only run of the real data and
+        # in A_thin). Fitted to the same networks, it splits the gain of model A over the
+        # per-site methods into the part that comes from the noise model (per-site method ->
+        # trend-unpooled) and the part that comes from pooling the trends (trend-unpooled ->
+        # model A). It has no mu; its network_* columns score its interval of the mean of the
+        # series trends. Fits draw no numbers from rng, so the networks stay those of earlier runs.
+        mc = fit(sim, "A", region_year=True, slope_dist="none", seed=rep, target_accept=0.95, **fit_kw)
+        s, net, rate = summarise_A(mc, sim, cfg)
+        mu_draw = rate.mean(1)
+        row = score(scen, "v6_unpooled", s.rate_v6.to_numpy(), s.rate_v6_lo.to_numpy(), s.rate_v6_hi.to_numpy(),
+                    s.class_v6.to_numpy(), true_rate, bins, np.median(mu_draw),
+                    *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
+        if targets:
+            score_targets(row, s.rate_v6, s.rate_v6_lo, s.rate_v6_hi, s.class_v6, targets)
+            row.update(tstats)
+        row.update(rep=rep, **diagnostics(mc))
+        rows.append(row)
+        del mc
+        free_jit()
         res, net = v52(sim, cfg)
         z = 1.959964
         rows.append({**score(scen, "v5.2_site", res.rate_pct_dec.to_numpy(), res.rate_lo.to_numpy(),
@@ -4147,7 +4428,7 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
             score_targets(rows[-1], est, lo, hi, cls, targets)
             rows[-1].update(tstats)
         print(f"{scen} rep {rep}: " + "; ".join(f"{r['method']} cov {r['coverage90']:.2f} wrong {r['wrong_direction']:.3f} "
-                                                f"resolved {r['resolved']:.2f}" for r in rows[-5:]), flush=True)
+                                                f"resolved {r['resolved']:.2f}" for r in rows[-6:]), flush=True)
     return rows
 
 

@@ -66,17 +66,20 @@ step, with its settings at the top.
   residuals); model B also runs four checks of its split (other priors of k and of the residual
   trend, and a region-year term). Options: `--power` (NASA POWER temperature, robustness run),
   `--validate` (simulation check, 1-2 h; `--scenarios A_misspec` adds one scenario to the
-  existing simulation), `--sensitivity` (seventeen runs that each change one choice:
-  censored prior, undated surveys, site quality, disturbed plots, one series per place,
-  2000-2024 window, record length, region size, and three thaw-subsidence bounds; about
-  1 h), `--checks` (the paper checks: years of record a site needs, the standard per-site
-  test on the same series, shrinkage, residual by ground ice and method, rates in cm, a test
-  for acceleration in the long records, the simulation's spread between networks; about a
-  minute, no refit), `--spatial` (only the spatial checks on the existing results, about
+  existing simulation), `--sensitivity` (the runs that each change one choice: censored
+  prior, undated surveys, site quality, disturbed plots, one series per place, 2000-2024
+  window, record length, region size, survey day, temperature intervals and three
+  thaw-subsidence bounds, plus `mcmc_seed`, the main settings with another sampler seed as a
+  Monte Carlo reference; about 1 h; `--runs a,b` runs only those, into
+  `data/3_aldi_sensitivity_runs`), `--checks` (the paper checks: years of record a site
+  needs, the standard per-site test on the same series, shrinkage, residual by ground ice
+  and method, rates in cm, a test for acceleration in the long records, the simulation's
+  spread between networks, pooling against the noise model, the classes that change between
+  runs; about a minute, no refit), `--spatial` (only the spatial checks on the existing results, about
   a minute; needs geopandas for the permafrost-map part). `--no-main` skips the main fit
   and adds the other runs to the existing `data/3_aldi`. Everything at once:
   `py -3.12 3_aldi.py --power --sensitivity --checks --validate`.
-- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-4 and S1-S4 of the
+- **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-4 and S1-S5 of the
   Results (PNG and PDF) and writes Tables 2 and S1-S10 (CSV) and `key_numbers.txt` (the
   numbers quoted in the text). It uses the outputs of `3_aldi.py --power --sensitivity
   --checks --validate`; a missing run only drops its figure, table or markers.

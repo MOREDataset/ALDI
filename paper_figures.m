@@ -32,7 +32,8 @@
 %   Fig 2  Regional and network rates of ALT change                         (Results 3.2)
 %   Fig 3  Site classes by record length: per-site Sen + AR(1), trend-unpooled and
 %          hierarchical                                                    (Results 3.3)
-%   Fig 4  Simulation: coverage of 90 % intervals by record length          (Results 3.3)
+%   Fig 4  Simulation: coverage of 90 % intervals by record length, per-site methods,
+%          trend-unpooled fit and hierarchical model                       (Results 3.3)
 %   Table 2  Summaries of the network trend: mu, mean of the regions, means over equal-area
 %            cells, places and series, from the posterior draws (Table 1, published
 %            studies, is not made here)
@@ -41,12 +42,16 @@
 %   Fig S2  Sensitivity runs: network rate of each run (without the subsidence scenarios)
 %   Fig S3  Regional trends of all regions with their 90 and 95 % intervals
 %   Fig S4  Site rate on its own (per-site OLS) vs in the hierarchical model
+%   Fig S5  Planted local thinning (simulation A_thin): share classed as thinning by record
+%           length, per method (fifth review, 14 November 2026)
 %   Table S1  Data sources of the analysed series
 %   Table S2  MCMC diagnostics of the fits of Model A
 %   Table S3  Agreement of the three methods: within regions (with each shared region left
 %             out in turn) and at one place (TableS3_method_agreement, TableS3_method_loro),
 %             and the series of each method (TableS3_by_method)
-%   Table S4  Sensitivity runs and class margins (without the subsidence scenarios)
+%   Table S4  Sensitivity runs and class margins (without the subsidence scenarios), and the
+%             classes that change in each run (TableS4_class_changes, by series
+%             TableS4_class_changes_by_series; fifth review)
 %   Table S5  Years of record a site needs, per method
 %   Table S6  By record length: observed and expected shares, the standard per-site test
 %   Table S7  Rates in cm per decade beside published values
@@ -54,7 +59,8 @@
 %             thickening neighbours (TableS8_simulation_local_thinning; scenario A_thin), the
 %             interval of the series mean by scenario (TableS8_simulation_series_mean) and the
 %             scores against other definitions of the true trend (TableS8_simulation_trend_targets;
-%             scenario A_misspec)
+%             scenario A_misspec), and pooling against the noise model: per-site methods, the
+%             trend-unpooled fit and Model A on the same networks (TableS8_simulation_pooling_vs_noise)
 %   Table S9  Regional trends: median, 90 and 95 % intervals, P(trend > 0)
 %   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), trend-unpooled
 %             Bayesian fit) and from the hierarchical model (TableS10_rates_and_classes_by_method),
@@ -96,9 +102,9 @@ FAM_L = ["Probing" "Thaw tube" "Ground temperature"];
 FAM_M = ['o' 's' '^'];
 FAM_C = [0.27 0.45 0.70; 0.90 0.60 0.20; 0.40 0.66 0.40];
 SPAN_L = ["12-15" "16-20" "21-25" "26+"];
-METH   = ["ols_site" "v5.2_site" "v6_ry"];                  % simulation methods
-METH_L = ["Per-site OLS" "Per-site Sen + AR(1)" "Hierarchical (this study)"];
-METH_C = [0.15 0.15 0.15; 0.62 0.62 0.62; 0.70 0.09 0.17];
+METH   = ["ols_site" "v5.2_site" "v6_unpooled" "v6_ry"];    % simulation methods (Fig 4)
+METH_L = ["Per-site OLS" "Per-site Sen + AR(1)" "Trend-unpooled (noise model of Model A)" "Hierarchical (this study)"];
+METH_C = [0.15 0.15 0.15; 0.62 0.62 0.62; 0.27 0.45 0.70; 0.70 0.09 0.17];
 
 %% Read the results
 rd = @(f) readtable(f, 'TextType', 'string', 'VariableNamingRule', 'preserve', 'Delimiter', ',');
@@ -300,20 +306,30 @@ save_figure(fig, OUT, 'Fig3_classes_by_record_length');
 
 %% Figure 4: simulation check, coverage of 90 % intervals by record length
 % The rates of false and wrong-sign trends of the same simulation are quoted in the text
-% (key_numbers.txt) and listed in Table S8.
-if have_sim
+% (key_numbers.txt) and listed in Table S8. Read from the paper checks
+% (aldi_v6_checks_simulation_networks.csv), which take each scenario from its latest run, so
+% that the trend-unpooled fit, added to the main scenarios on 14 November 2026 (fifth review),
+% is scored on the same networks as the others; the main simulation file is the fallback.
+sim4 = [];
+nf4 = fullfile(CK, 'aldi_v6_checks_simulation_networks.csv');
+if have_ck && isfile(nf4)
+    sim4 = rd(nf4);
+    if ~ismember('coverage_12-15', sim4.Properties.VariableNames), sim4 = []; end
+end
+if isempty(sim4) && have_sim, sim4 = sim; end
+if ~isempty(sim4)
     fig = new_figure(W1, 8);
     ax = axes(fig); hold(ax, 'on');
     yline(ax, 90, '--', 'Nominal 90 %', 'Color', [0.4 0.4 0.4], 'LabelHorizontalAlignment', 'left', ...
         'FontSize', FONT - 1);
     hm = gobjects(0); ml = strings(0);
     for m = 1:numel(METH)
-        k = sim.scenario == "A_fit" & sim.method == METH(m);
+        k = sim4.scenario == "A_fit" & sim4.method == METH(m);
         if ~any(k), continue; end
-        cov = arrayfun(@(b) sim.(char("coverage_" + SPAN_L(b)))(k), 1:4);
+        cov = arrayfun(@(b) sim4.(char("coverage_" + SPAN_L(b)))(k), 1:4);
         hm(end+1) = plot(ax, 1:4, 100 * cov, '-o', 'Color', METH_C(m, :), 'MarkerFaceColor', METH_C(m, :), ...
             'MarkerSize', 4, 'LineWidth', 1); %#ok<SAGROW>
-        ml(end+1) = sprintf('%s: %.0f %% overall', METH_L(m), 100 * sim.coverage90(k)); %#ok<SAGROW>
+        ml(end+1) = sprintf('%s: %.0f %% overall', METH_L(m), 100 * sim4.coverage90(k)); %#ok<SAGROW>
     end
     xticks(ax, 1:4); xticklabels(ax, SPAN_L); xlim(ax, [0.6 4.4]); ylim(ax, [50 100]);
     xlabel(ax, 'Record length (years)'); ylabel(ax, 'Coverage of 90 % intervals (%)');
@@ -523,14 +539,15 @@ if have_sens
     RUN_ID = ["main" "cens_sd_0.5" "cens_sd_1.0" "no_censored" "undated_doy_243" "drop_site_quality" ...
               "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km" ...
               "subsidence_0.2" "subsidence_0.5" "subsidence_1.0" ...
-              "survey_doy" "temp_interval_flagged" "temp_interval_all" "margins_2.5_10" "margins_5_15"];
+              "survey_doy" "temp_interval_flagged" "temp_interval_all" "mcmc_seed" "margins_2.5_10" "margins_5_15"];
     RUN_L  = ["Main run" "Censored years: HalfNormal(0.5)" "Censored years: HalfNormal(1.0)" ...
               "Censored years left out" "Undated surveys on 31 August" "Without imprecise locations" ...
               "Without fire-disturbed plots" "One series per place" "2000-2024 only" ...
               "At least 8 years (not 10)" "Regions of 150 km" "Regions of 500 km" ...
               "Subsidence 0.2 cm/yr, ice-rich" "Subsidence 0.5 cm/yr, ice-rich" "Subsidence 1.0 cm/yr, ice-rich" ...
               "Probe survey day as covariate" "Flagged temperature years as intervals" ...
-              "All temperature years as intervals" "Class margins 2.5 / 10 (no refit)" ...
+              "All temperature years as intervals" "Another sampler seed (Monte Carlo reference)" ...
+              "Class margins 2.5 / 10 (no refit)" ...
               "Class margins 5 / 15 (no refit)"];
     % Table S4 with a readable label beside each run id
     T_s1 = sens(:, keep);
@@ -679,7 +696,25 @@ for f = 1:numel(FAM)
     T = [T; Tf]; %#ok<AGROW>
 end
 writetable(T, fullfile(OUT, 'TableS3_by_method.csv'));
-if have_sim
+nf = fullfile(CK, 'aldi_v6_checks_simulation_networks.csv');
+if have_ck && isfile(nf)
+    % fifth review (14 November 2026): Table S8 straight from the paper checks, which take every
+    % scenario from its latest run, so the main scenarios carry the trend-unpooled fit as well;
+    % by record length, coverage and RMSE; source_file names the run each scenario comes from
+    sn = rd(nf);
+    cols_m = [{'scenario', 'method', 'networks', 'coverage90', 'coverage90_se', 'coverage90_min', ...
+        'coverage90_max', 'rmse_pct_dec', 'wrong_direction', 'resolved', 'called_trend', 'trend_p05', ...
+        'network_err', 'network_cover95'}, strcat('coverage_', cellstr(SPAN_L)), strcat('rmse_', cellstr(SPAN_L)), ...
+        {'source_file'}];
+    TS3 = sn(:, intersect(cols_m, sn.Properties.VariableNames, 'stable'));
+    if MODEL_B && have_sim
+        bcols = intersect({'scenario', 'method', 'expected_coverage90', 'resid_bias', 'false_deeper'}, ...
+            sim.Properties.VariableNames, 'stable');
+        TS3 = outerjoin(TS3, sim(:, bcols), 'Keys', {'scenario', 'method'}, 'MergeKeys', true, 'Type', 'left');
+    end
+    if ~MODEL_B, TS3 = TS3(~startsWith(TS3.scenario, "B_"), :); end
+    writetable(TS3, fullfile(OUT, 'TableS8_simulation.csv'));
+elseif have_sim
     cols_m = {'scenario', 'method', 'coverage90', 'rmse_pct_dec', 'wrong_direction', 'resolved', ...
         'called_trend', 'trend_p05', 'network_err', 'network_cover95', 'expected_coverage90'};
     if MODEL_B, cols_m = [cols_m, {'resid_bias', 'false_deeper'}]; end
@@ -713,6 +748,40 @@ if have_sim
         end
     end
     writetable(TS3, fullfile(OUT, 'TableS8_simulation.csv'));
+end
+
+%% Supplement: Fig S5, planted local thinning by record length (simulation A_thin)
+% Fifth review (14 November 2026): the share of the planted thinning series (true rate -10 %
+% per decade among thickening neighbours) that each method classes as thinning, by record
+% length, with the coverage of its 90 % intervals at these series and its mean estimate in
+% the legend. One panel; from the paper checks (Table S8, local thinning).
+f_lt5 = fullfile(CK, 'aldi_v6_checks_local_thinning.csv');
+if have_ck && isfile(f_lt5)
+    lt5 = read_text_cols(f_lt5, {'method', 'record_length'});
+    M5   = ["v6_ry" "v6_student" "v6_unpooled" "v5.2_site" "ols_site"];
+    M5_L = ["Hierarchical (this study)" "Hierarchical, Student-t series trends" "Trend-unpooled" ...
+            "Per-site Sen + AR(1)" "Per-site OLS"];
+    M5_C = [0.70 0.09 0.17; 0.90 0.60 0.20; 0.27 0.45 0.70; 0.62 0.62 0.62; 0.15 0.15 0.15];
+    fig = new_figure(W1, 9);
+    ax = axes(fig); hold(ax, 'on');
+    h5 = gobjects(0); l5 = strings(0);
+    for m = 1:numel(M5)
+        ka = lt5.method == M5(m) & lt5.record_length == "all";
+        if ~any(ka), continue; end
+        y5 = nan(1, 4);
+        for b = 1:4
+            k = lt5.method == M5(m) & lt5.record_length == SPAN_L(b);
+            if any(k), y5(b) = lt5.thinning_pct(k); end
+        end
+        h5(end+1) = plot(ax, 1:4, y5, '-o', 'Color', M5_C(m, :), 'MarkerFaceColor', M5_C(m, :), ...
+            'MarkerSize', 4, 'LineWidth', 1); %#ok<SAGROW>
+        l5(end+1) = sprintf('%s: coverage %.0f %%, mean estimate %.1f %% per decade', M5_L(m), ...
+            lt5.coverage90_pct(ka), lt5.mean_estimate_pct_dec(ka)); %#ok<SAGROW>
+    end
+    xticks(ax, 1:4); xticklabels(ax, SPAN_L); xlim(ax, [0.6 4.4]); ylim(ax, [0 100]);
+    xlabel(ax, 'Record length (years)'); ylabel(ax, 'Planted thinning series classed as thinning (%)');
+    legend(ax, h5, l5, 'Location', 'southoutside', 'Box', 'off', 'FontSize', FONT - 1);
+    save_figure(fig, OUT, 'FigS5_local_thinning');
 end
 
 %% Supplement: Fig S3 and Table S9, trends of all regions with their intervals
@@ -753,7 +822,10 @@ if have_ck
               'aldi_v6_checks_method_loro.csv', 'TableS3_method_loro.csv'
               'aldi_v6_checks_local_thinning.csv', 'TableS8_simulation_local_thinning.csv'
               'aldi_v6_checks_series_mean.csv', 'TableS8_simulation_series_mean.csv'
-              'aldi_v6_checks_trend_targets.csv', 'TableS8_simulation_trend_targets.csv'};
+              'aldi_v6_checks_trend_targets.csv', 'TableS8_simulation_trend_targets.csv'
+              'aldi_v6_checks_pooling_vs_noise.csv', 'TableS8_simulation_pooling_vs_noise.csv'
+              'aldi_v6_checks_class_changes.csv', 'TableS4_class_changes.csv'
+              'aldi_v6_checks_class_changes_sites.csv', 'TableS4_class_changes_by_series.csv'};
     if MODEL_B
         copies = [copies; {'aldi_v6_checks_ice_method.csv', 'B_Table_residual_by_ice_and_method.csv'}];
     end
@@ -928,7 +1000,9 @@ if have_ck
             "wide_sensor_spacing: " "profile_inversion: " "analysed series with" ...
             "coverage of the 95 % interval of the" "POSTERIOR PREDICTIVE CHECK" ...
             " yr: unresolved observed" "RECORDS THAT THIN ON THEIR OWN" "series, regional rate" ...
-            "unresolved in Model A: records of" "series-mean interval, " "trend target"];
+            "unresolved in Model A: records of" "series-mean interval, " "trend target" ...
+            "pooling vs noise model, " "by record length, RMSE trend-unpooled" "class margins of the main fit" ...
+            "class changes, " "class changes over the" "changed in "];
     if MODEL_B, keys = [keys "with site fixed effects R2" "share of the TREND"]; end
     lines = splitlines(string(ck_txt));
     for kk = keys
