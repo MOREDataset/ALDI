@@ -226,7 +226,14 @@ another seed of the sampler (seed + 1), so that the classes that change by Monte
 alone can be told from those a choice changes (paper checks, block "CLASS CHANGES BETWEEN
 RUNS"). It is run on its own: `py -3.12 3_aldi.py --no-main --sensitivity --runs mcmc_seed`
 (written to `data/3_aldi_sensitivity_runs/`, which the paper checks read beside the full
-table).
+table). Result of the PC run of 14 November 2026: R-hat 1.005, no divergences; 7 of the 230
+classes change, all at a class boundary. Five move between groups, all borderline (CALM_U10,
+CALM_U11C, CALM_U13, BNZ_WCM1 and HPW_Shakwak_orig_natural from gradual thickening to
+indeterminate, their lower ends moving from 0.02-0.23 to -0.23 to -0.05 %/dec), and two cross
+the rapid threshold (CALM_U27 9.99 -> 10.01, GSC_90TT08 9.98 -> 10.06). The median |rate
+change| of the group changes is 0.05 %/dec and the RMS rate change over all series 0.10.
+Three of the four class changes of the run with the low-variability series kept (CALM_U27,
+BNZ_WCM1, HPW_Shakwak_orig_natural) also change here, so those are of Monte Carlo size.
 
 Class margins without refit (main draws): stable +/-2.5 %/dec leaves no stable site (the
 13 become indeterminate: no record is precise enough to show a change below 2.5 %/dec);
@@ -281,13 +288,19 @@ the true site rates, for v5.2 pooled its pooled mean against the same truth (the
 `network_err` and `network_cover95` of the simulation files keep their names). With 8
 networks its coverage is known only coarsely (7 of 8: Clopper-Pearson 47-100 %). By
 scenario (paper checks, block "SERIES MEAN", `aldi_v6_checks_series_mean.csv`; 14 November
-2026): `A_fit` 7 of 8, `A_null` 8 of 8 and `A_ppc` 7 of 10, so 22 of 26 networks drawn from
-Model A (85 %, 65-96 %); `A_heavy` 7 of 8, `A_misspec` 7 of 8 and `A_thin` 9 of 10, so 23 of
-26 misspecified networks (88 %, 70-98 %); 45 of 52 in all (87 %, 74-94 %). The shortfall is
-not caused by the misspecified scenarios, and the interval is probably somewhat too narrow:
-in `A_misspec`, the only scenario that stores its width so far, the RMSE of the mean site
-rate (0.74 %/dec) is 1.42 times the posterior SD implied by the width (mean width 2.03).
-Bias -0.51 (`A_ppc`) to +0.29 %/dec. The cause is open.
+2026): `A_fit` 7 of 8, `A_null` 8 of 8 and `A_ppc` 7 of 10 (one-sided p 0.012), so 22 of 26
+networks drawn from Model A; `A_heavy` 7 of 8, `A_misspec` 7 of 8 and `A_thin` 9 of 10, so 23
+of 26 misspecified networks; 45 of 52 in all (87 %). Since the fifth review the pooled counts
+are descriptive, because the scenarios need not share one coverage (a Clopper-Pearson
+interval would assume they do); p = P(Binomial(n, 0.95) <= k), 0.039, 0.139 and 0.014, tests
+without that assumption that the coverage is at least 95 % in every scenario pooled. The
+shortfall is not caused by the misspecified scenarios, and the interval is probably somewhat
+too narrow: the RMSE of the mean site rate over the posterior SD implied by the width is
+1.06 (`A_fit`), 1.02 (`A_null`), 1.16 (`A_heavy`) and 1.42 (`A_misspec`; RMSE 0.74 %/dec,
+mean width 2.03), the four scenarios that store the width since the rerun after PR #42
+(below). Bias -0.51 (`A_ppc`) to +0.29 %/dec. It does not come from the pooling: the same
+interval of the trend-unpooled fit covers 22 of 32 networks (bias +0.96, because 100 (e^b - 1)
+of imprecise trends has a mean above the truth), while the interval of mu covers 31 of 32.
 
 Per-site OLS (added 9 November 2026, same simulated networks) is the method of recent
 syntheses: a linear trend per site tested at p < 0.05 (e.g. Streletskiy et al. 2026), with
@@ -431,6 +444,42 @@ Rerun of `A_misspec` on the PC on 14 November 2026 after PR #40 (`py -3.12 3_ald
 - Sampling as in the first run: on average the worst parameter of a network has R-hat
   1.010 (v6) and 1.013 (without region-year) and an effective sample size of 476 and 344;
   no divergent transitions.
+
+Rerun of the main scenarios on the PC on 14 November 2026 after PR #42 (fifth review): `py
+-3.12 3_aldi.py --no-main --validate --scenarios A_fit,A_heavy,A_null` (writes
+`aldi_v6_simulation*_A_fit_A_heavy_A_null*`) and `--scenarios A_misspec`, each now with the
+trend-unpooled fit (`v6_unpooled`), then `--checks` and `paper_figures`. Every network and
+every earlier score was reproduced exactly (Model A coverage 0.900 / 0.905 / 0.980 / 0.878 in
+`A_fit` / `A_heavy` / `A_null` / `A_misspec`). New:
+
+- **Pooling against the noise model** (block "POOLING AGAINST THE NOISE MODEL",
+  `aldi_v6_checks_pooling_vs_noise.csv`, Table S8). Coverage of the 90 % intervals / RMSE
+  (%/dec):
+
+  | scenario | per-site OLS | Akritas-Theil-Sen | trend-unpooled | Model A |
+  |---|---|---|---|---|
+  | `A_fit` | 0.728 / 10.15 | 0.855 / 9.43 | 0.882 / 9.57 | 0.900 / 4.40 |
+  | `A_heavy` | 0.732 / 10.55 | 0.864 / 9.97 | 0.882 / 9.76 | 0.905 / 4.59 |
+  | `A_null` | 0.750 / 8.73 | 0.885 / 9.37 | 0.879 / 8.53 | 0.980 / 0.58 |
+  | `A_misspec` | 0.665 / 10.92 | 0.920 / 10.22 | 0.890 / 9.91 | 0.878 / 5.44 |
+  | `A_thin` | 0.731 / 10.30 | 0.862 / 9.57 | 0.883 / 9.56 | 0.891 / 4.97 |
+
+  In `A_fit` the trend-unpooled fit reaches 90 % of Model A's coverage gain over OLS (Model A
+  minus trend-unpooled +0.018, SE 0.009), but 90 % of the RMSE gain comes after it (RMSE
+  trend-unpooled minus Model A +5.17, SE 0.45): the calibration comes mostly from the noise
+  model, the precision from pooling. RMSE by record length, trend-unpooled / Model A: 14.8 /
+  5.2 (12-15 yr), 11.0 / 5.3, 7.0 / 4.3 and 4.1 / 3.1 (26+ yr). With no trend (`A_null`) the
+  trend-unpooled fit calls 12.0 % of the series trending (nominal 10 %), Model A none.
+- **Series mean, mu and bootstrap** in the four scenarios (`A_fit`, `A_heavy`, `A_null`,
+  `A_misspec`): the interval of mu covers 31 of 32 networks (mean width 5.4, 4.6, 1.7, 5.1);
+  the region bootstrap of the series mean covers 26 of 32, all 24 with a trend (mean width
+  5.6, 4.6 and 5.2, about that of mu) but only 2 of 8 in `A_null` (width 0.4: it resamples
+  estimated trends, so it misses their estimation error when the true trends do not differ
+  between regions); the trend-unpooled series mean covers 7, 6, 5 and 4 of 8 (bias +0.89,
+  +1.03, +0.68, +1.25).
+- Sampling as in the first runs: largest R-hat 1.016 and smallest ESS 263 (Model A in
+  `A_null`); on average 0.375 divergent transitions per network for Model A in `A_fit` and
+  0.125 in `A_null`, none in any other fit.
 
 ### Thaw-subsidence bounds (sensitivity runs `subsidence_0.2`, `_0.5`, `_1.0`; added 2026-11-09)
 
@@ -677,6 +726,20 @@ Results of the 12 November 2026 run (PC; `data/3_aldi_checks/aldi_v6_checks.txt`
   predicts.
 - **MCMC**: 10 fits of the main run, max R-hat 1.007, min ESS 831, no divergences. Survey
   date drifts by more than 14 days at 12 of the 39 sites with dates (median +6 days).
+- **Class changes between runs** (run of 14 November 2026 after PR #42; block "CLASS CHANGES
+  BETWEEN RUNS", Table S4): 54 of the 230 series are borderline in the main fit (21 of the 120
+  thickening series with a lower end below 1 %/dec, 23 of the 96 indeterminate ones with a
+  lower end above -1), and 12 thickening series have a median within 0.5 of the rapid
+  threshold. Over the 12 processing runs with the main period a median of 9 classes change
+  (4-22), 7 between groups (2-15); 69 of the 85 group changes are at borderline series, and 37
+  series change group in at least one run. Most changes: `drop_site_quality` 22 of 170,
+  `region_500km` 20 of 230, `one_per_place` 15 of 174 and `survey_doy` 13 of 230 (the nine BNZ
+  plots, rates -0.9 to -3.0 %/dec: six to indeterminate, three rapid to gradual; plus four at
+  a boundary); `window_2000_2024` changes 64 of 204 but also changes the period. Reference
+  runs: `mcmc_seed` 7, all at a boundary (sensitivity section); `keep_low_variability` 4
+  (CALM_U27 gradual to rapid; BNZ_BFCONTROL, BNZ_WCM1 and HPW_Shakwak_orig_natural gradual to
+  indeterminate), with rates moving by less than 0.1 and three of the four also changing in
+  `mcmc_seed`. A network rate that holds across choices does not make every class robust.
 
 ## Spatial checks (`spatial_checks`, also `--spatial`)
 
