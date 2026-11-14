@@ -345,8 +345,9 @@ accounting) into numbers a reader can compare with the usual analysis:
   fixed effects (mostly differences between sites, the number reported as about 92 % by
   Streletskiy et al. 2026), within sites, and year to year (each site detrended), beside
   the share of the trend that TDD explains (B main expected / total). The k = 0.5 run (B
-  kfixed) is the bound for an attenuated k: errors in TDD pull a fitted k toward 0, and
-  Stefan's exponent is about the most the expected part can take.
+  kfixed) is a theory-informed sensitivity scenario, not a bound: errors in TDD pull a
+  fitted k toward 0, but 0.5 is the Stefan value for the thawing index of the ground
+  surface, which air TDD is not.
 - **Residual by ground ice and method** (`aldi_v6_checks_ice_method.csv`, Table S6): the
   low-minus-high ice contrast within regions, per method family, since probes and
   surface-referenced tubes carry the subsidence bias and ground temperatures do not.
@@ -365,6 +366,16 @@ accounting) into numbers a reader can compare with the usual analysis:
   `aldi_v6_checks_method_loro.csv`): the thaw-tube contrast rests on four regions, and a
   bootstrap of four regions cannot show that it generalizes. The pairs at one place share
   series and places, so their medians describe the data; they are not a test.
+  Unpooled trends are noisy and, as percentages, skewed to the right (100 (e^b - 1)
+  stretches large b), so a few short records with extreme rates dominate the unweighted
+  contrast of the site-only trends. The row "site-only Bayesian rate, precision-weighted"
+  makes the same contrast on the log scale with each series weighted by
+  1 / (its posterior variance + tau_site^2), as in a random-effects meta-analysis, and turns
+  the differences back into % per decade (its `mean` is the weighted mean).
+- **Classes against the record alone**: how many rapid series have their whole 90 %
+  interval above the rapid threshold (the rapid / gradual split uses the median only), and
+  how many stable series are stable on their own record (site-only fit, same noise model)
+  and by the per-site Akritas-Theil-Sen method.
 - **Excluded years that mark a lost active layer** (added 2026-11-14): site-years flagged
   no_refreeze (the deepest thawed sensor did not refreeze the next winter) or talik /
   possible_talik (thaw reached unfrozen ground; every later year of the site), in the ALT

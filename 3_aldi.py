@@ -1913,24 +1913,31 @@ def permafrost_zone(lat, lon, shapefile=PF_MAP, max_snap_km=20.0):
 def _fe_point(dd, levels, base):
     """Difference of each level from `base` within regions: region fixed effects by the
     within transformation (demean inside each region). NaN for a level that shares no
-    region with the base level (only shared regions inform a within-region difference)."""
+    region with the base level (only shared regions inform a within-region difference).
+    With a column w in dd (added 2026-11-14, second review: precision weights for noisy
+    unpooled trends), each region is demeaned with weighted means and the differences are
+    fitted by weighted least squares; w = 1 gives the unweighted estimate."""
     with_base = set(dd.r[dd.g == base])
     ok = {g for g in levels if ((dd.g == g) & dd.r.isin(with_base)).any()}
     X = pd.DataFrame({g: (dd.g == g).astype(float) for g in levels}, index=dd.index)
-    Xw = (X - X.groupby(dd.r).transform("mean")).to_numpy()
-    yw = (dd.y - dd.y.groupby(dd.r).transform("mean")).to_numpy()
-    b = np.linalg.lstsq(Xw, yw, rcond=None)[0]
+    w = dd["w"].astype(float) if "w" in dd else pd.Series(1.0, index=dd.index)
+    wsum = w.groupby(dd.r).transform("sum")
+    Xw = (X - X.mul(w, axis=0).groupby(dd.r).transform("sum").div(wsum, axis=0)).to_numpy()
+    yw = (dd.y - (dd.y * w).groupby(dd.r).transform("sum") / wsum).to_numpy()
+    sw = np.sqrt(w.to_numpy())
+    b = np.linalg.lstsq(Xw * sw[:, None], yw * sw, rcond=None)[0]
     return {g: (b[k] if g in ok else np.nan) for k, g in enumerate(levels)}
 
 
-def _region_fe_loro(y, group, region, base, lat=None, lon=None):
+def _region_fe_loro(y, group, region, base, lat=None, lon=None, w=None):
     """The within-region differences of _region_fe_contrast recomputed with each region that
     holds both the level and the base left out in turn (added 2026-11-14, second review of
     the paper: the thaw-tube contrast rests on four regions, and a bootstrap of four regions
     cannot show that it generalizes). One row per level and left-out region."""
     df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region),
+                       "w": 1.0 if w is None else np.asarray(w, float),
                        "lat": np.nan if lat is None else np.asarray(lat, float),
-                       "lon": np.nan if lon is None else np.asarray(lon, float)}).dropna(subset=["y", "g", "r"])
+                       "lon": np.nan if lon is None else np.asarray(lon, float)}).dropna(subset=["y", "g", "r", "w"])
     levels = [g for g in sorted(df.g.unique()) if g != base]
     rows = []
     for g in levels:
@@ -1946,12 +1953,13 @@ def _region_fe_loro(y, group, region, base, lat=None, lon=None):
     return pd.DataFrame(rows)
 
 
-def _region_fe_contrast(y, group, region, base, n_boot=2000, seed=0):
-    """Difference of each group from `base` WITHIN regions (OLS with region fixed effects),
-    with a 95 % interval from resampling whole regions. Regions holding one group only
-    add nothing, so the contrast is not the difference between, say, Fairbanks and
-    the Mackenzie Delta."""
-    df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region)}).dropna()
+def _region_fe_contrast(y, group, region, base, n_boot=2000, seed=0, w=None):
+    """Difference of each group from `base` WITHIN regions (OLS with region fixed effects;
+    weighted least squares with weights w), with a 95 % interval from resampling whole
+    regions. Regions holding one group only add nothing, so the contrast is not the
+    difference between, say, Fairbanks and the Mackenzie Delta."""
+    df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region),
+                       "w": 1.0 if w is None else np.asarray(w, float)}).dropna()
     levels = [g for g in sorted(df.g.unique()) if g != base]
 
     def est(dd):
@@ -3214,6 +3222,23 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         p5 = res.p6_rapid_thickening + res.p6_gradual_thickening
         L.append(f"  P(rate > {margin:g} %/dec) > 0.9 at {int((p5 > 0.9).sum())} sites, > 0.5 at {int((p5 > 0.5).sum())}; "
                  f"P(thickening) > 0.9 at {int((res.p6_thickening > 0.9).sum())}")
+    # (added 2026-11-14, second review) the interval decides thickening; rapid / gradual uses the
+    # median only, so how many rapid series are shown to exceed the rapid threshold, and how many
+    # stable series are stable on their own record (site-only fit, same noise model) or by the
+    # per-site Akritas-Theil-Sen method
+    if {"p6_rapid_thickening", "rate_v6_lo"} <= set(res):
+        rp_ = res[res.class_v6 == "rapid_thickening"]
+        if len(rp_):
+            L.append(f"  rapid thickening (median >= {rapid:g} %/dec): whole {100 * cfg['trend']['ci_level']:.0f} % "
+                     f"interval above {rapid:g} at {int((rp_.rate_v6_lo >= rapid).sum())} of {len(rp_)}; median "
+                     f"P(rate >= {rapid:g}) {rp_.p6_rapid_thickening.median():.2f}, > 0.9 at "
+                     f"{int((rp_.p6_rapid_thickening > 0.9).sum())}")
+    st_ = res[res.class_v6 == "stable"]
+    if len(st_) and "class_v6_site_only" in res:
+        L.append(f"  stable series also stable on their own record: {int((st_.class_v6_site_only == 'stable').sum())} "
+                 f"of {len(st_)} in the site-only fit (same noise model), "
+                 f"{int((st_.class_site == 'stable').sum()) if 'class_site' in st_ else 'n/a'} of {len(st_)} by the "
+                 f"per-site Akritas-Theil-Sen method")
 
     # --- unresolved records: how much of their probability of thickening is their own ---
     # (added 2026-11-14) the hierarchical probability against the record alone: the per-site
@@ -3334,8 +3359,8 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         if f"B_{vn}_mean_expected_pct_dec" in net.index:
             L.append(f"  B {vn}: expected {nv(f'B_{vn}_mean_expected_pct_dec'):.2f}, residual "
                      f"{nv(f'B_{vn}_mean_residual_pct_dec'):.2f} %/dec"
-                     + (" (k = 0.5, Stefan: the most the expected part can take if the fitted k is attenuated"
-                        " by errors in TDD)" if vn == "kfixed" else ""))
+                     + (" (k = 0.5, the Stefan value: a theory-informed sensitivity scenario, not a bound on the"
+                        " expected part)" if vn == "kfixed" else ""))
 
     # --- residual by ground ice and method ---
     rows = []
@@ -3373,20 +3398,42 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     mrows, loro_all = [], []
     cm_ = ck.merge(res[["site_id", "lat", "lon"] + (["location_id"] if "location_id" in res else [])],
                    on="site_id", how="left")
-    measures = [("rate_v6", "hierarchical rate"), ("rate_v6_site_only", "site-only Bayesian rate"),
-                ("ols_rate", "per-site OLS rate"), ("resid_rate", "model B residual trend")]
-    for col, what in [(c, w) for c, w in measures if c in cm_]:
+    # Unpooled trends are noisy and, as percentages, skewed to the right (100 (e^b - 1)
+    # stretches large b), so in the unweighted contrast of the site-only trends a few short
+    # records with extreme rates dominate. The precision-weighted row (added 2026-11-14, second
+    # review) makes the same within-region contrast on the log scale (log units x 100), each
+    # series weighted by 1 / (its posterior variance + tau_site^2), as in a random-effects
+    # meta-analysis, and turns the differences back into % per decade.
+    measures = [("rate_v6", "hierarchical rate", False), ("rate_v6_site_only", "site-only Bayesian rate", False),
+                ("rate_v6_site_only", "site-only Bayesian rate, precision-weighted", True),
+                ("ols_rate", "per-site OLS rate", False), ("resid_rate", "model B residual trend", False)]
+    zq = stats.norm.ppf(0.5 + cfg["trend"]["ci_level"] / 2)
+    back = lambda x: 100 * np.expm1(np.asarray(x, float) / 100)   # log units x 100 -> % per decade
+    for col, what, weighted in measures:
+        if col not in cm_ or (weighted and not {"rate_v6_lo_site_only", "rate_v6_hi_site_only"} <= set(cm_)):
+            continue
         v = cm_.dropna(subset=[col])
-        con = _region_fe_contrast(v[col], v.family, v.region_id, "probe")
-        lo_t = _region_fe_loro(v[col], v.family, v.region_id, "probe", v.lat, v.lon)
+        if weighted:
+            se_ = (np.log1p(v.rate_v6_hi_site_only / 100) - np.log1p(v.rate_v6_lo_site_only / 100)) / (2 * zq)
+            yv, wv = 100 * np.log1p(v[col] / 100), (1.0 / (se_ ** 2 + tau ** 2)).to_numpy()
+        else:
+            yv, wv = v[col], None
+        con = _region_fe_contrast(yv, v.family, v.region_id, "probe", w=wv)
+        lo_t = _region_fe_loro(yv, v.family, v.region_id, "probe", v.lat, v.lon, w=wv)
+        if weighted:
+            con = {g: (*back(c_[:3]), c_[3]) for g, c_ in con.items()}
+            if len(lo_t):
+                lo_t["estimate"] = back(lo_t.estimate)
         if len(lo_t):
             loro_all.append(lo_t.assign(measure=what))
         for f in FAMILIES:
-            k = v.family == f
+            k = (v.family == f).to_numpy()
             c_ = con.get(f, (np.nan, np.nan, np.nan, np.nan))
             lf = lo_t[lo_t.group == f].dropna(subset=["estimate"]) if len(lo_t) else lo_t
+            mean_f = (float(back(np.average(np.asarray(yv)[k], weights=wv[k]))) if weighted and k.any()
+                      else float(v[col][k].mean()))
             mrows.append({"measure": what, "group": f, "n": int(k.sum()),
-                          "mean": float(v[col][k].mean()), "median": float(v[col][k].median()),
+                          "mean": mean_f, "median": float(v[col][k].median()),
                           "minus_probe_within_regions": c_[0], "lo95": c_[1], "hi95": c_[2],
                           "shared_regions": c_[3],
                           "loro_min": float(lf.estimate.min()) if len(lf) else np.nan,
@@ -3429,7 +3476,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
              f"same regions, region fixed effects, 95 % from resampling regions; loro_min / loro_max = the same "
              f"difference with one shared region left out, smallest and largest; {int((nfam >= 2).sum())} of "
              f"{len(nfam)} regions hold two or more methods, {n_mixed_places} places {n_mixed_series} series; "
-             f"pair rows: n = pairs of series, which share series and places, so a description, not a test):")
+             f"pair rows: n = pairs of series, which share series and places, so a description, not a test; "
+             f"precision-weighted: site-only trends on the log scale, weights 1 / (posterior variance + tau_site^2), "
+             f"mean = weighted mean):")
     L.append(ma.round(2).to_string(index=False))
     if loro_all:
         L.append("  leave-one-region-out (difference from the probes without that region; region: id, centre, series "
