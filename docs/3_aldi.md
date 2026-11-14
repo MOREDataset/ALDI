@@ -266,7 +266,15 @@ so a coverage has a Monte Carlo SE of about 0.007):
 | rate RMSE, %/dec | 4.4 | 9.4 | 4.8 | 10.1 |
 | wrong-direction calls | 0.8 % | 1.5 % | 1.1 % | 3.6 % |
 | false trend calls when no trend anywhere | 0 % | 11.5 % | 0.2 % | 24.2 % (16.6 % at p < 0.05) |
-| network-rate bias, %/dec (95 % interval covers the truth) | +0.2 (7 of 8) | | -0.7 (7 of 8) | |
+| mean site rate: bias, %/dec (95 % interval covers the truth) | +0.2 (7 of 8) | | -0.7 (7 of 8) | |
+
+The last row scores the mean of the site rates of each network, not mu: for v6 the
+posterior of the mean of the site rates (`rate.mean(1)` in each draw) against the mean of
+the true site rates, for v5.2 pooled its pooled mean against the same truth (the columns
+`network_err` and `network_cover95` of the simulation files keep their names). With 8
+networks its coverage is known only coarsely (7 of 8: Clopper-Pearson 47-100 %). Over the
+28 networks of `A_fit`, `A_thin` and `A_ppc` the v6 interval covers the truth 23 times
+(82 %, 63-94 %; added 14 November 2026), so it is probably somewhat too narrow.
 
 Per-site OLS (added 9 November 2026, same simulated networks) is the method of recent
 syntheses: a linear trend per site tested at p < 0.05 (e.g. Streletskiy et al. 2026), with
@@ -306,6 +314,41 @@ checks read both files (a scenario is taken from the first file that holds it).
   "POSTERIOR PREDICTIVE CHECK" of `aldi_v6_checks.txt`). The expected shares of the
   detectability check take the hierarchical rates as true and leave the pooling out; this
   check runs the whole model. Both are conditional on Model A.
+
+Results of the PC run of 14 November 2026 (10 networks per scenario, so 2,300 series
+intervals per method; `aldi_v6_simulation_A_thin_A_ppc.txt`, `aldi_v6_checks.txt`, Tables S6
+and S8 of the paper):
+
+- `A_thin`, the 120 planted series. Model A calls 27.5 % thinning, 70.0 % unresolved, 2.5 %
+  thickening (3 series, 2 of them of 12-15 years) and none stable; it resolves the thinning
+  at 0, 6.7, 30 and 73.3 % of the planted series of 12-15, 16-20, 21-25 and 26+ years. Its
+  estimates of them average -2.1 %/dec (true -10), and its 90 % intervals cover 50.8 % of
+  them against 91.2 % of the other series. Student-t trends: 30.8 % thinning, 65.8 %
+  unresolved, 3.3 % thickening, coverage 61.7 %, mean -2.4. Trend-unpooled fit: 56.7 %
+  thinning (30, 47, 60 and 90 % by record length), 43.3 % unresolved, none thickening,
+  coverage 92.5 %, mean -8.4. Akritas-Theil-Sen 50 % thinning (coverage 86.7 %), OLS 66.7 %
+  (80 %).
+- `A_thin`, the other series (218 per network): false thinning (classed thinning with a true
+  rate >= 0) at 0.09 % of them for Model A, 0.83 % for the trend-unpooled fit, 1.15 % for
+  Akritas-Theil-Sen and 2.39 % for OLS. The trend-unpooled fit classes 6.7 of them per
+  network as thinning, 1.8 of them falsely: the fitted spread of trends gives about one
+  series in nine a negative rate (P(b < 0) = 0.11), so the 7 thinning series of the
+  trend-unpooled fit of the real data are about what that spread predicts.
+- `A_thin`, all 230 series: coverage 0.891 for Model A (SE about 0.006), 0.889 with Student-t
+  trends, 0.883 for the trend-unpooled fit, 0.862 for Akritas-Theil-Sen and 0.731 for OLS.
+- `A_ppc`: series coverage 0.881. Unresolved series by record length, simulated mean (range)
+  against observed: 28.6 (13-33) against 26, 28.4 (18-34) against 32, 14.7 (6-19) against
+  17, 22.3 (16-28) against 21, and 94.0 (53-111) against 96 in all; stable series of 26+
+  years 12.1 (6-15) against 13. Every observed count lies inside the simulated range.
+- Mean site rate: its 95 % interval covers the truth in 9 of 10 `A_thin` networks (bias
+  +0.28 %/dec) and 7 of 10 `A_ppc` networks (bias -0.51); with the 7 of 8 of `A_fit`, 23
+  of 28 (see above). The paper therefore also gives the region-bootstrap interval of the
+  series mean (Table 2). The cause is open: the simulation stores whether the interval
+  covers the truth, not its width.
+- Sampling: the largest R-hat over the 10 `A_thin` networks is 1.03 with normal, 1.04 with
+  Student-t and 1.01 with unpooled series trends; on average the worst parameter of a
+  network has R-hat 1.010-1.018 and an effective sample size of 300-414 (`A_ppc` 1.014 and
+  337); the Student-t and trend-unpooled refits had one divergent transition each.
 
 ### Thaw-subsidence bounds (sensitivity runs `subsidence_0.2`, `_0.5`, `_1.0`; added 2026-11-09)
 
