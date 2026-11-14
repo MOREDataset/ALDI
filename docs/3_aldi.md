@@ -315,6 +315,33 @@ checks read both files (a scenario is taken from the first file that holds it).
   detectability check take the hierarchical rates as true and leave the pooling out; this
   check runs the whole model. Both are conditional on Model A.
 
+- **What Model A does not assume (`A_misspec`, added 14 November 2026, first review of the
+  paper).** Run on its own (`--scenarios A_misspec`, which writes
+  `aldi_v6_simulation_reps_A_misspec.csv`). Trends drawn as in `A_fit`; then in each record
+  the trend changes at a random year between 30 and 70 % of the record by N(0, 0.1) log
+  units per decade (about +-10 %/dec), region-year anomalies persist (AR(1), 0.5) and the
+  innovations are Student-t(4). The reference trend of a record is the least-squares line
+  through its noise-free trajectory over the record's years. That is what every method is
+  scored against, but not exactly what each estimates once the trend changes: the
+  Akritas-Theil-Sen method estimates the median of the pairwise slopes, and a fit with AR(1)
+  noise approaches the generalized-least-squares (GLS) line under its noise covariance (the
+  fitted AR(1) coefficient of the record's method and the record's SD, plus the region-year
+  variance in region-years shared with another series). Since 14 November (fourth review)
+  every method is also scored against those two lines of the same noise-free trajectory:
+  columns `coverage90_ts`, `rmse_ts`, `wrong_ts` (Theil-Sen) and `coverage90_gls`,
+  `rmse_gls`, `wrong_gls` (GLS), and `target_ts_*`, `target_gls_*` give how far each target
+  lies from the least-squares line (RMS, mean and 95th percentile of the absolute difference
+  over the series of a network). No random numbers are drawn for these, so a rerun of the
+  scenario reproduces the networks of the first run.
+
+Columns added on 14 November 2026 (fourth review) to every A scenario run since then:
+`network_width95` (width of the 95 % interval of the mean site rate), `mu_err`, `mu_cover95`
+and `mu_width95` (the 95 % interval of mu, the mean of the distribution of the regional
+trends, against the mu the network was drawn from, 0 in `A_null`), and `boot_cover95`,
+`boot_width95` (the region bootstrap of the mean site rate, as in Table 2, against the true
+mean site rate of the network). The bootstrap also resamples which regions are monitored,
+so for the mean of this network's own sites it should be conservative.
+
 Results of the PC run of 14 November 2026 (10 networks per scenario, so 2,300 series
 intervals per method; `aldi_v6_simulation_A_thin_A_ppc.txt`, `aldi_v6_checks.txt`, Tables S6
 and S8 of the paper):
@@ -468,6 +495,19 @@ accounting) into numbers a reader can compare with the usual analysis:
   Model A, and thinning by Akritas-Theil-Sen, and in which regions they lie.
 - **Rare local thinning** (`aldi_v6_checks_local_thinning.csv`, second file of Table S8;
   added 2026-11-14): the `A_thin` simulation summarized by method and record length.
+- **Series mean by scenario** (`aldi_v6_checks_series_mean.csv`, Table S8
+  `TableS8_simulation_series_mean.csv`; added 2026-11-14, fourth review): the 95 % interval
+  of the mean site rate of Model A, one per simulated network, per scenario and pooled over
+  the scenarios drawn from Model A (`A_fit`, `A_null`, `A_ppc`), over the misspecified ones
+  (`A_heavy`, `A_misspec`, `A_thin`) and over all; the share it covers with its exact
+  (Clopper-Pearson) 95 % interval, bias and RMSE, and, where the runs hold the columns, its
+  mean width, the RMSE over the posterior SD that width implies, and the coverage and width
+  of the interval of mu and of the region bootstrap.
+- **Trend targets** (`aldi_v6_checks_trend_targets.csv`, Table S8
+  `TableS8_simulation_trend_targets.csv`; added 2026-11-14, fourth review): for scenario
+  `A_misspec`, per method, the coverage of the 90 % intervals, RMSE and wrong-direction
+  share against the least-squares, Theil-Sen and GLS lines of the noise-free trajectory,
+  and how far the targets lie apart.
 - **Excluded years that mark a lost active layer** (added 2026-11-14): site-years flagged
   no_refreeze (the deepest thawed sensor did not refreeze the next winter) or talik /
   possible_talik (thaw reached unfrozen ground; every later year of the site), in the ALT

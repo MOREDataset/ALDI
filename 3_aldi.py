@@ -3683,6 +3683,92 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                          f"{w.scenario} {w.method} {int(round(w.network_cover95 * w.networks))} of {int(w.networks)} "
                          f"({w.network_cover95_lo:.2f} to {w.network_cover95_hi:.2f})" for w in nc.itertuples()))
 
+        # --- series mean by scenario (added 2026-11-14, fourth review of the paper) ---
+        # The 95 % interval of the mean of the series trends of model A (v6_ry) in each simulated
+        # network, by scenario and pooled over the scenarios drawn from model A (fitted
+        # hyperparameters, no trend anywhere, posterior draws) and over the deliberately
+        # misspecified ones (heavy-tailed trends, changes of trend with persistent anomalies,
+        # planted local thinning). Where the runs hold them: its mean width and the error over
+        # the posterior SD it implies, the interval of mu against the true network rate, and
+        # the region bootstrap of the series mean (Table 2) against the true series mean.
+        if "network_cover95" in rp:
+            v6r = rp[(rp.method == "v6_ry") & rp.network_cover95.notna()]
+            grp_m = {sc_: [sc_] for sc_ in v6r.scenario.unique()}
+            grp_m["drawn from model A (A_fit, A_null, A_ppc)"] = ["A_fit", "A_null", "A_ppc"]
+            grp_m["misspecified (A_heavy, A_misspec, A_thin)"] = ["A_heavy", "A_misspec", "A_thin"]
+            grp_m["all"] = list(v6r.scenario.unique())
+            rows_m = []
+            for gname, scs in grp_m.items():
+                x_ = v6r[v6r.scenario.isin(scs)]
+                if not len(x_):
+                    continue
+                k_, n_ = int(x_.network_cover95.sum()), len(x_)
+                r_ = {"group": gname, "networks": n_, "covered": k_, "coverage95": k_ / n_,
+                      "cp_lo": stats.beta.ppf(0.025, k_, n_ - k_ + 1) if k_ > 0 else 0.0,
+                      "cp_hi": stats.beta.ppf(0.975, k_ + 1, n_ - k_) if k_ < n_ else 1.0,
+                      "bias_pct_dec": float(x_.network_err.mean()),
+                      "rmse_pct_dec": float(np.sqrt(np.mean(x_.network_err ** 2)))}
+                if "network_width95" in x_ and x_.network_width95.notna().all():
+                    r_["mean_width95"] = float(x_.network_width95.mean())
+                    r_["rmse_over_posterior_sd"] = r_["rmse_pct_dec"] / (r_["mean_width95"] / (2 * 1.959964))
+                for c_ in ["mu", "boot"]:
+                    if f"{c_}_cover95" in x_ and x_[f"{c_}_cover95"].notna().all():
+                        r_[f"{c_}_covered"] = int(x_[f"{c_}_cover95"].sum())
+                        r_[f"{c_}_mean_width95"] = float(x_[f"{c_}_width95"].mean())
+                rows_m.append(r_)
+            mt_ = pd.DataFrame(rows_m)
+            mt_.to_csv(out / "aldi_v6_checks_series_mean.csv", index=False)
+            L.append("\nSERIES MEAN: 95 % interval of the mean of the series trends of model A (v6_ry), one per "
+                     "simulated network, against the true mean of that network (exact 95 % interval of the share):")
+            for r_ in rows_m:
+                ln = (f"  series-mean interval, {r_['group']}: {r_['covered']} of {r_['networks']} networks "
+                      f"({r_['cp_lo']:.2f} to {r_['cp_hi']:.2f}); bias {r_['bias_pct_dec']:+.2f}, RMSE "
+                      f"{r_['rmse_pct_dec']:.2f} %/dec")
+                if "mean_width95" in r_:
+                    ln += (f"; mean width {r_['mean_width95']:.2f}, so RMSE / posterior SD "
+                           f"{r_['rmse_over_posterior_sd']:.2f}")
+                if "mu_covered" in r_:
+                    ln += (f"; interval of mu covers the true network rate in {r_['mu_covered']} of {r_['networks']} "
+                           f"(mean width {r_['mu_mean_width95']:.1f})")
+                if "boot_covered" in r_:
+                    ln += (f"; region bootstrap covers the true series mean in {r_['boot_covered']} of "
+                           f"{r_['networks']} (mean width {r_['boot_mean_width95']:.1f})")
+                L.append(ln)
+
+        # --- trend targets under a change of trend (added 2026-11-14, fourth review) ---
+        tg_ = rp[rp.scenario == "A_misspec"]
+        if "coverage90_ts" in tg_ and tg_.coverage90_ts.notna().any():
+            rows_g = []
+            for m_, g_ in tg_.groupby("method", sort=False):
+                r_ = {"method": m_, "networks": int(g_.rep.nunique())}
+                for nm, cov_, rm_, wr_ in [("least_squares", "coverage90", "rmse_pct_dec", "wrong_direction"),
+                                           ("theil_sen", "coverage90_ts", "rmse_ts", "wrong_ts"),
+                                           ("gls_ar1", "coverage90_gls", "rmse_gls", "wrong_gls")]:
+                    r_[f"coverage90_{nm}"] = float(g_[cov_].mean())
+                    r_[f"rmse_{nm}"] = float(g_[rm_].mean())
+                    r_[f"wrong_{nm}"] = float(g_[wr_].mean())
+                for c_ in ["target_ts_rms", "target_ts_mean", "target_ts_p95abs", "target_gls_rms",
+                           "target_gls_mean", "target_gls_p95abs"]:
+                    r_[c_] = float(g_[c_].mean())
+                rows_g.append(r_)
+            tt_ = pd.DataFrame(rows_g)
+            tt_.to_csv(out / "aldi_v6_checks_trend_targets.csv", index=False)
+            t0_ = rows_g[0]
+            L.append("\nTREND TARGETS UNDER A CHANGE OF TREND (scenario A_misspec): the reference trend is the "
+                     "least-squares line through the noise-free trajectory over the record's years; the "
+                     "Akritas-Theil-Sen method estimates the median of the pairwise slopes and a fit with AR(1) noise "
+                     "approaches the generalized-least-squares line, so each method is also scored against both:")
+            L.append(f"  trend target differences (mean over networks): Theil-Sen minus least squares RMS "
+                     f"{t0_['target_ts_rms']:.2f} %/dec (mean {t0_['target_ts_mean']:+.2f}, 95 % of series within "
+                     f"{t0_['target_ts_p95abs']:.2f}); GLS (AR(1)) minus least squares RMS {t0_['target_gls_rms']:.2f} "
+                     f"(mean {t0_['target_gls_mean']:+.2f}, 95 % within {t0_['target_gls_p95abs']:.2f})")
+            for r_ in rows_g:
+                L.append(f"  trend target scores, {r_['method']}: coverage of 90 % intervals least squares "
+                         f"{r_['coverage90_least_squares']:.3f}, Theil-Sen {r_['coverage90_theil_sen']:.3f}, GLS "
+                         f"{r_['coverage90_gls_ar1']:.3f}; RMSE {r_['rmse_least_squares']:.2f} / "
+                         f"{r_['rmse_theil_sen']:.2f} / {r_['rmse_gls_ar1']:.2f}; wrong direction "
+                         f"{r_['wrong_least_squares']:.3f} / {r_['wrong_theil_sen']:.3f} / {r_['wrong_gls_ar1']:.3f}")
+
     # --- rare local thinning among thickening neighbours (scenario A_thin, third review) ---
     th = None if rp_all is None else rp_all[rp_all.scenario == "A_thin"]
     if th is not None and len(th) and "planted_n" in th:
@@ -3749,7 +3835,8 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
 #   A_null    no trend anywhere (mu = tau = 0): every thickening/thinning call is false
 #   A_misspec what model A does not assume (added 2026-11-14): a change of trend in each
 #             record, persistent region-year anomalies and Student-t(4) innovations; the
-#             true trend is the least-squares line of the noise-free trajectory
+#             reference trend is the least-squares line of the noise-free trajectory, and
+#             each method is also scored against its Theil-Sen and GLS (AR(1)) lines
 #   A_thin    as A_fit, but 12 series per network thin at -10 %/dec among thickening
 #             neighbours (third review, 2026-11-14): refitted with model A, model A with
 #             Student-t trends, the trend-unpooled fit, Akritas-Theil-Sen and OLS
@@ -3902,6 +3989,48 @@ def score(name, method, est, lo, hi, cls, true_rate, bins, mu_hat=None, mu_lo=No
     if mu_hat is not None:
         row["network_err"] = mu_hat - mu_true
         row["network_cover95"] = float(mu_lo <= mu_true <= mu_hi)
+        row["network_width95"] = float(mu_hi - mu_lo)      # added 2026-11-14 (fourth review)
+    return row
+
+
+# Other definitions of the true trend of a record that is not a straight line (added
+# 2026-11-14, fourth review of the paper). Scenario A_misspec scores every method against
+# the least-squares line through the noise-free trajectory over the record's years. Under a
+# change of trend the methods do not all estimate that line: the Akritas-Theil-Sen method
+# estimates the median of the pairwise slopes, and a fit with AR(1) noise approaches the
+# generalized-least-squares line. These give the noise-free value of both, so that each
+# method can also be scored against its own target.
+def theil_sen_slope(t, y):
+    """Median of the pairwise slopes (Sen 1968): what the Akritas-Theil-Sen method
+    estimates when no value is censored."""
+    i, j = np.triu_indices(len(t), k=1)
+    dt = t[j] - t[i]
+    ok = dt != 0
+    return float(np.median((y[j] - y[i])[ok] / dt[ok]))
+
+
+def gls_slope(t, years, y, sigma, rho, var_shared):
+    """Slope of the generalized-least-squares line through y under the noise of model A for
+    one record: AR(1) in years (coefficient rho, SD sigma) plus, in region-years shared
+    with another series, the variance of the region-year term (var_shared, per value).
+    This is the line that a fit of model A to this record alone approaches."""
+    lag = np.abs(years[:, None] - years[None, :])
+    v = sigma ** 2 * rho ** lag + np.diag(var_shared)
+    x = np.column_stack([np.ones(len(t)), t])
+    vx = np.linalg.solve(v, x)
+    return float(np.linalg.solve(x.T @ vx, vx.T @ y)[1])
+
+
+def score_targets(row, est, lo, hi, cls, targets):
+    """The scores of `score` against other true trends ({name: rate}); adds columns
+    coverage90_<name>, rmse_<name> and wrong_<name>."""
+    est, lo, hi, cls = np.asarray(est, float), np.asarray(lo, float), np.asarray(hi, float), np.asarray(cls)
+    thick = np.isin(cls, ["rapid_thickening", "gradual_thickening"])
+    thin = np.isin(cls, ["rapid_thinning", "gradual_thinning"])
+    for name, tr_ in targets.items():
+        row[f"coverage90_{name}"] = float(((lo <= tr_) & (tr_ <= hi)).mean())
+        row[f"rmse_{name}"] = float(np.sqrt(np.mean((est - tr_) ** 2)))
+        row[f"wrong_{name}"] = float(((thick & (tr_ <= 0)) | (thin & (tr_ >= 0))).mean())
     return row
 
 
@@ -3927,8 +4056,11 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
             # what model A does not assume: (1) the trend changes at a random year between 30
             # and 70 % of each record, by N(0, 0.1) log units per decade (about +-10 %/dec);
             # (2) region-year anomalies persist (AR(1), 0.5); (3) Student-t(4) innovations.
-            # The true trend is then the least-squares line of the noise-free trajectory over
-            # the record's years, the quantity every method here estimates.
+            # The true trend is then taken as the least-squares line of the noise-free
+            # trajectory over the record's years: the reference every method is scored
+            # against, not exactly what each estimates (Akritas-Theil-Sen the median of the
+            # pairwise slopes, a fit with AR(1) noise the generalized-least-squares line), so
+            # the scores against those two targets are added below (fourth review).
             extra = np.zeros(len(arr["t"]))
             true_slope = slope.copy()
             for i in range(ns):
@@ -3943,6 +4075,26 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
         sim = simulate(arr, tr, rng)
         true_rate = pct(true_slope)
         mu_true = float(np.mean(true_rate))
+        # other true trends of the same records (fourth review; no random numbers are drawn
+        # here, so the simulated networks stay those of the earlier runs)
+        targets, tstats = {}, {}
+        if scen == "A_misspec":
+            years_all = arr["d"]["year"].to_numpy(float)
+            shared = (arr["ry_idx"] >= 0) * fitted["sd_ry"] ** 2
+            ts_, gls_ = slope.copy(), slope.copy()
+            for i in range(ns):
+                idx = arr["s_idx"] == i
+                ti, hi_ = arr["t"][idx], tr["extra"][idx]
+                ts_[i] = slope[i] + theil_sen_slope(ti, hi_)
+                gls_[i] = slope[i] + gls_slope(ti, years_all[idx], hi_, fitted["sigma"][i],
+                                               fitted["rho_f"][arr["f_idx_site"][i]], shared[idx])
+            targets = {"ts": pct(ts_), "gls": pct(gls_)}
+            for name, tr_ in targets.items():
+                dlt = tr_ - true_rate
+                tstats[f"target_{name}_rms"] = float(np.sqrt(np.mean(dlt ** 2)))
+                tstats[f"target_{name}_mean"] = float(np.mean(dlt))
+                tstats[f"target_{name}_p95abs"] = float(np.quantile(np.abs(dlt), 0.95))
+        mu_true_net = 0.0 if scen == "A_null" else float(pct(fitted["mu"]))   # the network rate mu
         for ry in [True, False]:
             mc = fit(sim, "A", region_year=ry, seed=rep, **fit_kw)
             s, net, rate = summarise_A(mc, sim, cfg)
@@ -3950,6 +4102,16 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
             row = score(scen, f"v6{'_ry' if ry else '_nory'}", s.rate_v6.to_numpy(), s.rate_v6_lo.to_numpy(),
                         s.rate_v6_hi.to_numpy(), s.class_v6.to_numpy(), true_rate, bins,
                         np.median(mu_draw), *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
+            # fourth review: the interval of mu (the network rate), and the region bootstrap of
+            # the series mean that Table 2 gives beside its posterior interval
+            m_lo, m_hi = np.quantile(net["mu"], [0.025, 0.975])
+            b_lo, b_hi = region_bootstrap(s.rate_v6.to_numpy(), s.region_id.to_numpy(), seed=rep)
+            row.update(mu_err=float(np.median(net["mu"]) - mu_true_net), mu_cover95=float(m_lo <= mu_true_net <= m_hi),
+                       mu_width95=float(m_hi - m_lo), boot_cover95=float(b_lo <= mu_true <= b_hi),
+                       boot_width95=float(b_hi - b_lo))
+            if targets:
+                score_targets(row, s.rate_v6, s.rate_v6_lo, s.rate_v6_hi, s.class_v6, targets)
+                row.update(tstats)
             row.update(rep=rep, **diagnostics(mc))
             rows.append(row)
             del mc
@@ -3958,6 +4120,9 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
         z = 1.959964
         rows.append({**score(scen, "v5.2_site", res.rate_pct_dec.to_numpy(), res.rate_lo.to_numpy(),
                              res.rate_hi.to_numpy(), res.class_site.to_numpy(), true_rate, bins), "rep": rep})
+        if targets:
+            score_targets(rows[-1], res.rate_pct_dec, res.rate_lo, res.rate_hi, res.class_site, targets)
+            rows[-1].update(tstats)
         zz = 1.644854
         rows.append({**score(scen, "v5.2_pooled", res.rate_pooled.to_numpy(),
                              (res.rate_pooled - zz * res.rate_pooled_sd).to_numpy(),
@@ -3965,6 +4130,10 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
                              res.class_pooled.to_numpy(), true_rate, bins,
                              net["mu"], net["mu"] - z * net["se_mu"], net["mu"] + z * net["se_mu"], mu_true),
                      "rep": rep})
+        if targets:
+            score_targets(rows[-1], res.rate_pooled, res.rate_pooled - zz * res.rate_pooled_sd,
+                          res.rate_pooled + zz * res.rate_pooled_sd, res.class_pooled, targets)
+            rows[-1].update(tstats)
         # per-site OLS, the method of recent syntheses: scored with its 90 % interval like
         # the others, plus the share of sites with a trend at p < 0.05 (95 % interval
         # excludes 0), the test those papers report
@@ -3974,6 +4143,9 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
                      "trend_p05": float(np.mean((lo95 > 0) | (hi95 < 0))),
                      "wrong_p05": float(np.mean(((lo95 > 0) & (true_rate <= 0)) | ((hi95 < 0) & (true_rate >= 0)))),
                      "rep": rep})
+        if targets:
+            score_targets(rows[-1], est, lo, hi, cls, targets)
+            rows[-1].update(tstats)
         print(f"{scen} rep {rep}: " + "; ".join(f"{r['method']} cov {r['coverage90']:.2f} wrong {r['wrong_direction']:.3f} "
                                                 f"resolved {r['resolved']:.2f}" for r in rows[-5:]), flush=True)
     return rows
