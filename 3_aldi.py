@@ -29,6 +29,8 @@ Writes  data/3_aldi/
                                  expected and residual trends per variant (B)
           aldi_v6_summary.txt    counts, network rates, B variants, diagnostics
           aldi_v6_network.csv    network parameters (median and 95 % interval)
+          aldi_v6_network_summaries.csv  mu, mean of the regions and means over cells, places
+                                 and series, from the posterior draws (Table 2 of the paper)
           aldi_v6_regions.csv    regional trends (median, 90 and 95 % intervals, P > 0)
           aldi_v6_dependence.csv dependence left in the residuals of each fit
           aldi_v6_fig_*.png      figures
@@ -178,6 +180,11 @@ model:
     # at SALTSIL 2017-2022 and Parks Canada C28 2015, where ALT is 90-190 cm), which
     # turned SALTSIL's +26 %/dec into +3. Sensitivity runs keep 0.5 and 1.0.
     cens_sd: null
+    # Site-only fit of A (added 2026-11-14, second review of the paper): no pooling of
+    # trends, each series' trend has its own N(0, free_slope_sd^2) prior (log units per
+    # decade; 1.0 is flat over any plausible rate). Everything else is model A. Against
+    # the main fit it shows what pooling the trends adds to a site's interval.
+    free_slope_sd: 1.0
 
 climate:
   # Variants of the climate-expected part. main: Stefan with this year's TDD and k per
@@ -1164,18 +1171,24 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
     gap = jnp.asarray(arr["gap"])
 
     # trend hierarchy (log units per decade; 0.1 ~ 10.5 %/dec)
-    mu = numpyro.sample("mu", dist.Normal(0.0, p.get("mu_sd", 0.2)))
-    tau_r = numpyro.sample("tau_region", dist.HalfNormal(p.get("tau_sd", 0.1)))
-    tau_s = numpyro.sample("tau_site", dist.HalfNormal(p.get("tau_sd", 0.1)))
-    z_r = numpyro.sample("z_region", dist.Normal(0, 1).expand([nr]))
-    if slope_dist == "student":
-        # t(4) as a normal scale mixture (samples better than a direct Student-t)
-        lam = numpyro.sample("lambda_site", dist.Gamma(2.0, 2.0).expand([ns]))
-        z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns])) / jnp.sqrt(lam)
-    else:
+    if slope_dist == "none":
+        # site-only trends (free_slope_sd in SETTINGS): no network or regional trend, each
+        # series' trend from its own record; noise, censoring and region-year term as below
         z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns]))
-    beta_r = numpyro.deterministic("beta_region", mu + tau_r * z_r)
-    slope = numpyro.deterministic("slope_site", beta_r[r_site] + tau_s * z_s)
+        slope = numpyro.deterministic("slope_site", p.get("free_slope_sd", 1.0) * z_s)
+    else:
+        mu = numpyro.sample("mu", dist.Normal(0.0, p.get("mu_sd", 0.2)))
+        tau_r = numpyro.sample("tau_region", dist.HalfNormal(p.get("tau_sd", 0.1)))
+        tau_s = numpyro.sample("tau_site", dist.HalfNormal(p.get("tau_sd", 0.1)))
+        z_r = numpyro.sample("z_region", dist.Normal(0, 1).expand([nr]))
+        if slope_dist == "student":
+            # t(4) as a normal scale mixture (samples better than a direct Student-t)
+            lam = numpyro.sample("lambda_site", dist.Gamma(2.0, 2.0).expand([ns]))
+            z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns])) / jnp.sqrt(lam)
+        else:
+            z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns]))
+        beta_r = numpyro.deterministic("beta_region", mu + tau_r * z_r)
+        slope = numpyro.deterministic("slope_site", beta_r[r_site] + tau_s * z_s)
 
     za = numpyro.sample("z_a", dist.Normal(0, 1).expand([ns]))
     a = numpyro.deterministic("a_site", jnp.asarray(arr["ybar"]) + p.get("a_sd", 0.5) * za)
@@ -1329,9 +1342,14 @@ def summarise_A(mcmc, arr, cfg):
     for k, v in band_probs(rate, m, rp, prefix="p6_").items():
         s[k] = v
     s["sigma_pct"] = 100 * np.asarray(smp["sigma_site"]).mean(0)
+    net = {"rho_family": np.asarray(smp["rho_family"]) * 0.95,
+           "sigma_family": 100 * np.exp(np.asarray(smp["log_sigma_family"]))}
+    if "beta_region" not in smp:             # site-only fit: no regional or network trend
+        s["region_rate_v6"] = np.nan
+        return s, net, rate
     reg = pct(np.asarray(smp["beta_region"]))
     s["region_rate_v6"] = np.median(reg, 0)[arr["r_idx_site"]]
-    net = {
+    net.update({
         "mu": pct(np.asarray(smp["mu"])),
         # mu is the mean of the distribution the regional trends are drawn from; the
         # equal-weight mean of the fitted regional trends is a different estimand (the
@@ -1340,9 +1358,7 @@ def summarise_A(mcmc, arr, cfg):
         "region_draws": reg,
         "tau_region": 100 * np.asarray(smp["tau_region"]),
         "tau_site": 100 * np.asarray(smp["tau_site"]),
-        "rho_family": np.asarray(smp["rho_family"]) * 0.95,
-        "sigma_family": 100 * np.exp(np.asarray(smp["log_sigma_family"])),
-    }
+    })
     return s, net, rate
 
 
@@ -1413,7 +1429,7 @@ def resid_var_site(mcmc, arr, mode="A", max_draws=1000):
     years. A and B on the same site-years give the share of the year-to-year variance
     that the climate terms explain: 1 - var_B / var_A."""
     smp = mcmc.get_samples()
-    nd = len(np.asarray(smp["mu"]))
+    nd = len(np.asarray(smp["slope_site"]))
     idx = np.unique(np.linspace(0, nd - 1, min(nd, max_draws)).astype(int))
     s = arr["s_idx"]
     mean = np.asarray(smp["a_site"])[idx][:, s] + np.asarray(smp["slope_site"])[idx][:, s] * arr["t"][None, :]
@@ -1446,7 +1462,7 @@ def innovation_checks(mcmc, arr, mode="A", max_draws=500):
     shows how much weather shared by a region TDD misses (B's intervals of network means
     ignore it; the region bootstrap does not)."""
     smp = mcmc.get_samples()
-    nd = len(np.asarray(smp["mu"]))
+    nd = len(np.asarray(smp["slope_site"]))
     idx = np.unique(np.linspace(0, nd - 1, min(nd, max_draws)).astype(int))
     s = arr["s_idx"]
     mean = np.asarray(smp["a_site"])[idx][:, s] + np.asarray(smp["slope_site"])[idx][:, s] * arr["t"][None, :]
@@ -1894,6 +1910,42 @@ def permafrost_zone(lat, lon, shapefile=PF_MAP, max_snap_km=20.0):
                          "pf_ice": ice.fillna("unknown").to_numpy()})
 
 
+def _fe_point(dd, levels, base):
+    """Difference of each level from `base` within regions: region fixed effects by the
+    within transformation (demean inside each region). NaN for a level that shares no
+    region with the base level (only shared regions inform a within-region difference)."""
+    with_base = set(dd.r[dd.g == base])
+    ok = {g for g in levels if ((dd.g == g) & dd.r.isin(with_base)).any()}
+    X = pd.DataFrame({g: (dd.g == g).astype(float) for g in levels}, index=dd.index)
+    Xw = (X - X.groupby(dd.r).transform("mean")).to_numpy()
+    yw = (dd.y - dd.y.groupby(dd.r).transform("mean")).to_numpy()
+    b = np.linalg.lstsq(Xw, yw, rcond=None)[0]
+    return {g: (b[k] if g in ok else np.nan) for k, g in enumerate(levels)}
+
+
+def _region_fe_loro(y, group, region, base, lat=None, lon=None):
+    """The within-region differences of _region_fe_contrast recomputed with each region that
+    holds both the level and the base left out in turn (added 2026-11-14, second review of
+    the paper: the thaw-tube contrast rests on four regions, and a bootstrap of four regions
+    cannot show that it generalizes). One row per level and left-out region."""
+    df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region),
+                       "lat": np.nan if lat is None else np.asarray(lat, float),
+                       "lon": np.nan if lon is None else np.asarray(lon, float)}).dropna(subset=["y", "g", "r"])
+    levels = [g for g in sorted(df.g.unique()) if g != base]
+    rows = []
+    for g in levels:
+        for rr in sorted(set(df.r[df.g == g]) & set(df.r[df.g == base])):
+            k = df.r == rr
+            lo_ = np.radians(df.lon[k].to_numpy(float))
+            rows.append({"group": g, "left_out_region": rr, "n_left_out": int(k.sum()),
+                         "n_group_left_out": int((k & (df.g == g)).sum()),
+                         "n_base_left_out": int((k & (df.g == base)).sum()),
+                         "region_lat": float(df.lat[k].mean()),
+                         "region_lon": float(np.degrees(np.arctan2(np.sin(lo_).mean(), np.cos(lo_).mean()))),
+                         "estimate": _fe_point(df[~k], levels, base)[g]})
+    return pd.DataFrame(rows)
+
+
 def _region_fe_contrast(y, group, region, base, n_boot=2000, seed=0):
     """Difference of each group from `base` WITHIN regions (OLS with region fixed effects),
     with a 95 % interval from resampling whole regions. Regions holding one group only
@@ -1902,20 +1954,8 @@ def _region_fe_contrast(y, group, region, base, n_boot=2000, seed=0):
     df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region)}).dropna()
     levels = [g for g in sorted(df.g.unique()) if g != base]
 
-    def identified(dd):
-        """Levels that share at least one region with the base level (only those regions
-        inform a within-region difference)."""
-        with_base = set(dd.r[dd.g == base])
-        return {g for g in levels if ((dd.g == g) & dd.r.isin(with_base)).any()}
-
     def est(dd):
-        # region fixed effects by the within transformation (demean inside each region)
-        ok = identified(dd)
-        X = pd.DataFrame({g: (dd.g == g).astype(float) for g in levels}, index=dd.index)
-        Xw = (X - X.groupby(dd.r).transform("mean")).to_numpy()
-        yw = (dd.y - dd.y.groupby(dd.r).transform("mean")).to_numpy()
-        b = np.linalg.lstsq(Xw, yw, rcond=None)[0]
-        return {g: (b[k] if g in ok else np.nan) for k, g in enumerate(levels)}
+        return _fe_point(dd, levels, base)
 
     point = est(df)
     n_shared = {g: df[df.g == g].r.isin(set(df.r[df.g == base])).groupby(df[df.g == g].r).any().sum()
@@ -2105,7 +2145,8 @@ def figures(res, out, prefix, have_b):
 
 
 def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_file=None):
-    """v5.2 (reference), A (three fits) and B (every climate variant); writes the outputs."""
+    """v5.2 (reference), A (four fits: main, without the region-year term, Student-t trends, site-only
+    trends) and B (every climate variant); writes the outputs."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     mc_cfg, pri = cfg["model"], cfg["model"]["priors"]
@@ -2130,9 +2171,11 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
     # --- A: main and sensitivity fits ---
     arr = build_arrays(d, cfg)
     runs = {}
+    # site_only (added 2026-11-14): the trends without pooling, everything else as main
     for name, ry, sd in [("main", mc_cfg["region_year"], mc_cfg["slope_dist"]),
                          ("no_region_year" if mc_cfg["region_year"] else "region_year", not mc_cfg["region_year"], mc_cfg["slope_dist"]),
-                         ("student_slopes", mc_cfg["region_year"], "student")]:
+                         ("student_slopes", mc_cfg["region_year"], "student"),
+                         ("site_only", mc_cfg["region_year"], "none")]:
         t0 = time.time()
         mc = fit(arr, "A", slope_dist=sd, region_year=ry, priors=pri, **fit_kw)
         s, net, rate = summarise_A(mc, arr, cfg)
@@ -2149,6 +2192,10 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
         if name != "main":
             res[f"class_v6_{name}"] = res.site_id.map(runs[name]["s"].set_index("site_id")["class_v6"])
             res[f"rate_v6_{name}"] = res.site_id.map(runs[name]["s"].set_index("site_id")["rate_v6"])
+    if "site_only" in runs:              # interval and P(thickening) from the record alone
+        so = runs["site_only"]["s"].set_index("site_id")
+        for c in ["rate_v6_lo", "rate_v6_hi", "p6_thickening"]:
+            res[f"{c}_site_only"] = res.site_id.map(so[c])
 
     # --- B ---
     have_b = tdd_file is not None
@@ -2224,12 +2271,28 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
         v = np.asarray(v)
         return pd.Series({"median": np.median(v), "lo95": np.quantile(v, 0.025), "hi95": np.quantile(v, 0.975)})
     netrows = {}
+    # weights of the declustered means (added 2026-11-14, second review: their intervals come
+    # from the posterior draws, not from the medians): each equal-area cell, and each place
+    # (series within 1 km joined), counts once
+    xs, ys = laea_north_km(arr["sites"]["lat"], arr["sites"]["lon"])
+    wts, nunits = {}, {}
+    for cs in DECLUSTER_KM:
+        cell = pd.Series(np.floor(xs / cs).astype(int).astype(str)) + "_" + np.floor(ys / cs).astype(int).astype(str)
+        wts[f"cell{cs}km"] = 1.0 / cell.map(cell.value_counts()).to_numpy()
+        nunits[f"cell{cs}km"] = cell.nunique()
+    loc_ = pd.Series(location_ids(arr["sites"]["lat"].to_numpy(float), arr["sites"]["lon"].to_numpy(float)))
+    wts["place"] = 1.0 / loc_.map(loc_.value_counts()).to_numpy()
+    nunits["place"] = loc_.nunique()
     for name, r in runs.items():
-        netrows[f"A_{name}_network_rate_pct_dec"] = q(r["net"]["mu"])
-        netrows[f"A_{name}_equal_region_mean_pct_dec"] = q(r["net"]["equal_region_mean"])
+        if "mu" in r["net"]:                 # not in the site-only fit
+            netrows[f"A_{name}_network_rate_pct_dec"] = q(r["net"]["mu"])
+            netrows[f"A_{name}_equal_region_mean_pct_dec"] = q(r["net"]["equal_region_mean"])
         netrows[f"A_{name}_mean_site_rate_pct_dec"] = q(r["rate"].mean(1))
-        netrows[f"A_{name}_tau_region_pct"] = q(r["net"]["tau_region"])
-        netrows[f"A_{name}_tau_site_pct"] = q(r["net"]["tau_site"])
+        for k_, w_ in wts.items():
+            netrows[f"A_{name}_mean_{k_}_pct_dec"] = q(r["rate"] @ w_ / w_.sum())
+        if "tau_region" in r["net"]:
+            netrows[f"A_{name}_tau_region_pct"] = q(r["net"]["tau_region"])
+            netrows[f"A_{name}_tau_site_pct"] = q(r["net"]["tau_site"])
         for i, f in enumerate(FAMILIES):
             netrows[f"A_{name}_rho_{f}"] = q(r["net"]["rho_family"][:, i])
             netrows[f"A_{name}_sigma_{f}_pct"] = q(r["net"]["sigma_family"][:, i])
@@ -2255,6 +2318,27 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
                     netrows[f"B_{km}_k_{f}"] = q(n["k_family"][:, i])
     nett = pd.DataFrame(netrows).T
     nett.to_csv(out / f"{pre}_network.csv")
+
+    # --- summaries of the network trend, main fit (Table 2 of the paper; added 2026-11-14) ---
+    # mu is the mean of the distribution of regional trends; the others are means over the
+    # units named, each computed in every posterior draw. The region bootstrap resamples
+    # whole regions of the posterior median series trends (which places are monitored).
+    rm_, sm_ = runs["main"], runs["main"]["s"]
+    b_lo, b_hi = region_bootstrap(sm_["rate_v6"].to_numpy(float), sm_["region_id"].to_numpy())
+    srows = [("network trend mu (mean of the distribution of regional trends)", "regions", arr["n_regions"],
+              rm_["net"]["mu"], (np.nan, np.nan)),
+             ("equal-weight mean of the regional trends", "regions", arr["n_regions"],
+              rm_["net"]["equal_region_mean"], (np.nan, np.nan))]
+    srows += [(f"mean over equal-area cells of {cs} km", "cells", nunits[f"cell{cs}km"],
+               rm_["rate"] @ wts[f"cell{cs}km"] / wts[f"cell{cs}km"].sum(), (np.nan, np.nan)) for cs in DECLUSTER_KM]
+    srows += [("mean over places (series within 1 km joined)", "places", nunits["place"],
+               rm_["rate"] @ wts["place"] / wts["place"].sum(), (np.nan, np.nan)),
+              ("mean of the series trends", "series", len(sm_), rm_["rate"].mean(1), (b_lo, b_hi))]
+    summ_t = pd.DataFrame([{"summary": a_, "unit": u_, "n_units": n_, "median": float(np.median(v_)),
+                            "lo95": float(np.quantile(v_, 0.025)), "hi95": float(np.quantile(v_, 0.975)),
+                            "region_bootstrap_lo95": bb_[0], "region_bootstrap_hi95": bb_[1]}
+                           for a_, u_, n_, v_, bb_ in srows])
+    summ_t.to_csv(out / f"{pre}_network_summaries.csv", index=False)
 
     # --- regional trends of the main fit (added 2026-11-14): one row per region ---
     rd_ = runs["main"]["net"]["region_draws"]
@@ -2288,6 +2372,20 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
              f"single-series regions); 90 % interval above 0: {int((regt.lo90 > 0).sum())} "
              f"({int(((regt.lo90 > 0) & single).sum())}); P(regional trend > 0): min {regt.p_positive.min():.3f}, "
              f"median {regt.p_positive.median():.3f}")
+    L.append(f"\nsummaries of the network trend, model A main ({pre}_network_summaries.csv; per posterior draw, "
+             f"%/dec, median and 95 % interval; region bootstrap of the series mean):")
+    L.append(summ_t.round(2).to_string(index=False))
+    if "site_only" in runs:
+        so_ = res.dropna(subset=["p6_thickening_site_only"])
+        un_ = res.class_v6 == "indeterminate"
+        L.append(f"\nsite-only fit (no pooling of trends, same noise model; {runs['site_only']['diag']}): median width of "
+                 f"the 90 % interval {np.median(res.rate_v6_hi_site_only - res.rate_v6_lo_site_only):.1f} against "
+                 f"{np.median(res.rate_v6_hi - res.rate_v6_lo):.1f} %/dec in the main fit; P(thickening) > 0.9 at "
+                 f"{int((so_.p6_thickening_site_only > 0.9).sum())} series (main {int((res.p6_thickening > 0.9).sum())}); "
+                 f"the {int(un_.sum())} series not resolved in the main fit: median P(thickening) "
+                 f"{res.p6_thickening_site_only[un_].median():.2f} site-only against {res.p6_thickening[un_].median():.2f}, "
+                 f"more likely thickening than not at {int((res.p6_thickening_site_only[un_] > 0.5).sum())} against "
+                 f"{int((res.p6_thickening[un_] > 0.5).sum())}")
     L.append("\nclass counts (same sites):")
     cc = pd.DataFrame({"v5.2_site": counts(res.class_site, ORDER), "v5.2_pooled": counts(res.class_pooled, ORDER),
                        "v6_main": counts(res.class_v6, ORDER)})
@@ -2939,6 +3037,33 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     lb_ = d.groupby("family").censored.agg(["size", "sum"])
     L.append("site-years by method, all (lower bounds): " + "; ".join(
         f"{f} {int(lb_.at[f, 'size'])} ({int(lb_.at[f, 'sum'])})" for f in FAMILIES if f in lb_.index))
+
+    # --- excluded years that mark a lost active layer (added 2026-11-14, second review) ---
+    # A year flagged no_refreeze (the deepest thawed sensor did not refreeze the next winter)
+    # or talik / possible_talik (thaw reached unfrozen ground; every later year of the site)
+    # has no valid ALT. That is not the same as no degradation: these exclusions remove the
+    # strongest change, so they are counted here, with the other temperature rules beside them.
+    fl_ = annual["flag"].fillna("").astype(str)
+    has_ = lambda nm: fl_.str.contains(rf"(?:^|;){nm}(?:;|$)", regex=True)  # noqa: E731
+    in_ = annual.site_id.isin(set(res.site_id))
+    L.append("\nEXCLUDED YEARS THAT MARK A LOST ACTIVE LAYER (site-years of the ALT target; in brackets those of "
+             "the analysed series):")
+    for nm, k_ in [("no_refreeze", has_("no_refreeze")), ("talik or possible_talik", has_("talik") | has_("possible_talik")),
+                   ("for comparison, wide_sensor_spacing", has_("wide_sensor_spacing")),
+                   ("for comparison, profile_inversion", has_("profile_inversion"))]:
+        L.append(f"  {nm}: {int(k_.sum())} site-years at {annual.site_id[k_].nunique()} series "
+                 f"({int((k_ & in_).sum())} at {annual.site_id[k_ & in_].nunique()}); methods "
+                 + ", ".join(f"{m} {n}" for m, n in annual.method[k_].value_counts().items()))
+    for nm, k_ in [("no_refreeze", has_("no_refreeze")), ("talik", has_("talik") | has_("possible_talik"))]:
+        parts = []
+        for sid, g in annual[k_ & in_].groupby("site_id"):
+            yrs_ = sorted(set(g.year.astype(int)))
+            after = [y_ for y_ in yrs_ if y_ > r.at[sid, "year_max"]]
+            parts.append(f"{sid} ({r.at[sid, 'family']}, {r.at[sid, 'class_v6']}, record {int(r.at[sid, 'year_min'])}-"
+                         f"{int(r.at[sid, 'year_max'])}): {len(yrs_)} years " + (f"{yrs_[0]}-{yrs_[-1]}" if len(yrs_) > 1
+                         else f"{yrs_[0]}") + (f", {len(after)} after the record ends" if after else ""))
+        if parts:
+            L.append(f"  analysed series with {nm} years: " + "; ".join(parts))
     rows = []
     for sid, g in d.groupby("site_id"):
         g = g.sort_values("year")
@@ -2977,8 +3102,10 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                      "ols_false_pos": fp})
     ck = pd.DataFrame(rows)
     ck["ols_q"] = bh_qvalues(ck.ols_p.to_numpy())
+    so_cols = [c for c in ["rate_v6_site_only", "rate_v6_lo_site_only", "rate_v6_hi_site_only",
+                           "p6_thickening_site_only", "class_v6_site_only"] if c in res]
     ck = res[["site_id", "family", "region_id", "span_years", "rate_v6", "rate_v6_sd", "region_rate_v6",
-              "class_v6", "class_site", "alt_ref_cm", "pf_ice", "resid_rate"]].merge(ck, on="site_id", how="inner")
+              "class_v6", "class_site", "alt_ref_cm", "pf_ice", "resid_rate"] + so_cols].merge(ck, on="site_id", how="inner")
     ck["span_bin"] = span_bins(ck.span_years).astype(str)
     # shrinkage toward the region: 0 = the site's own OLS rate, 1 = the region rate
     gap = ck.ols_rate - ck.region_rate_v6
@@ -3096,13 +3223,27 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         q_ = stats.t.ppf(0.5 + cfg["trend"]["ci_level"] / 2, un.n_years - 2)
         se_o = (np.log1p(un.ols_hi / 100) - np.log1p(un.ols_lo / 100)) / (2 * q_)
         p_ols = stats.t.cdf(np.log1p(un.ols_rate / 100) / se_o, un.n_years - 2)
+        # Akritas-Theil-Sen and OLS give no posterior: Phi(rate / SE) and the t distribution of
+        # the OLS slope are normal (t) approximations, probability-like measures only
         p_ats = stats.norm.cdf(r.loc[un.index, "rate_pct_dec"] / r.loc[un.index, "rate_se"])
         p_h = r.loc[un.index, "p6_thickening"].to_numpy()
         L.append(f"\nUNRESOLVED RECORDS ({len(un)}): median P(thickening) {np.median(p_h):.2f} hierarchical, "
-                 f"{np.median(p_ats):.2f} from the record alone (Akritas-Theil-Sen with AR(1)), {np.median(p_ols):.2f} "
-                 f"(OLS); more likely thickening than not at {int((p_h > 0.5).sum())} / {int((p_ats > 0.5).sum())} / "
+                 f"{np.median(p_ats):.2f} from the record alone (Akritas-Theil-Sen with AR(1); normal approximation "
+                 f"Phi(rate/SE), not a posterior), {np.median(p_ols):.2f} (OLS, t approximation); more likely thickening "
+                 f"than not at {int((p_h > 0.5).sum())} / {int((p_ats > 0.5).sum())} / "
                  f"{int((p_ols > 0.5).sum())}; P > 0.9 at {int((p_h > 0.9).sum())} / {int((p_ats > 0.9).sum())} / "
                  f"{int((p_ols > 0.9).sum())}")
+        if "p6_thickening_site_only" in r:
+            p_so = r.loc[un.index, "p6_thickening_site_only"].to_numpy(float)
+            cso = r.loc[un.index, "class_v6_site_only"].astype(str)
+            L.append(f"  site-only Bayesian fit (same noise model, no pooling of trends; a posterior): median "
+                     f"P(thickening) {np.median(p_so):.2f}; more likely thickening than not at {int((p_so > 0.5).sum())}; "
+                     f"P > 0.9 at {int((p_so > 0.9).sum())}; its classes of these records: "
+                     + ", ".join(f"{c} {int((cso == c).sum())}" for c in ORDER if (cso == c).any()))
+            all_so = r["class_v6_site_only"].astype(str)
+            L.append(f"  site-only fit, classes of all {len(r)} series: " + ", ".join(
+                f"{c} {int((all_so == c).sum())}" for c in ORDER) + f"; P(thickening) > 0.9 at "
+                f"{int((r.p6_thickening_site_only > 0.9).sum())} (hierarchical {int((r.p6_thickening > 0.9).sum())})")
 
     # --- acceleration: change of the trend between the two halves of the long records ---
     # (added 2026-11-14; the window comparison of period_check is descriptive) A hinge at the
@@ -3137,6 +3278,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                     "p": float(2 * stats.norm.sf(abs(bb[2] / se_dl)))})
     ac = pd.DataFrame(acc)
     if len(ac):
+        ac["q"] = bh_qvalues(ac.p.to_numpy())      # 84 tests: Benjamini-Hochberg (second review)
         ac.to_csv(out / "aldi_v6_checks_acceleration.csv", index=False)
         try:
             pl = pool_rates(ac.delta.to_numpy(), ac.delta_se.to_numpy(), ac.region_id.to_numpy())
@@ -3152,6 +3294,12 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                  f"{ac.delta.mean():+.1f} (region bootstrap {b_lo:+.1f} to {b_hi:+.1f})")
         L.append(f"  p < 0.05: faster after the midpoint at {n_up}, slower at {n_dn} of {len(ac)} records "
                  f"({0.025 * len(ac):.1f} each expected by chance); median midpoint {ac.mid_year.median():.0f}")
+        L.append("  after the false-discovery-rate correction (Benjamini-Hochberg over the records): " + "; ".join(
+            f"q < {a_:.2f} faster {int(((ac.q < a_) & (ac.delta > 0)).sum())}, slower {int(((ac.q < a_) & (ac.delta < 0)).sum())}"
+            for a_ in (0.05, 0.10)) + f"; smallest q {ac.q.min():.3f}")
+        for fam_, g_ in ac.groupby("family"):
+            L.append(f"    {fam_}: {len(g_)} records, p < 0.05 faster {int(((g_.p < 0.05) & (g_.delta > 0)).sum())}, "
+                     f"slower {int(((g_.p < 0.05) & (g_.delta < 0)).sum())}; median delta {g_.delta.median():+.1f}")
 
     # --- TDD: share of the variance vs share of the trend ---
     tf = main_out / "temperature" / "tdd_site_years.csv"
@@ -3219,19 +3367,35 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     # cannot pull the methods together) and on the model B residuals. Second test, at the same
     # place (series within 1 km): if the methods measured different things, two series of
     # different methods at one place would differ more than two series of the same method.
-    mrows = []
-    cm_ = ck.merge(res[["site_id"] + (["location_id"] if "location_id" in res else [])], on="site_id", how="left")
-    for col, what in [("rate_v6", "hierarchical rate"), ("ols_rate", "per-site OLS rate"),
-                      ("resid_rate", "model B residual trend")]:
+    # Added 2026-11-14 (second review): the trends of the site-only fit (same noise model,
+    # no pooling of trends) beside the per-site OLS trends, and every contrast recomputed with
+    # each shared region left out in turn (loro_*; all rows in aldi_v6_checks_method_loro.csv).
+    mrows, loro_all = [], []
+    cm_ = ck.merge(res[["site_id", "lat", "lon"] + (["location_id"] if "location_id" in res else [])],
+                   on="site_id", how="left")
+    measures = [("rate_v6", "hierarchical rate"), ("rate_v6_site_only", "site-only Bayesian rate"),
+                ("ols_rate", "per-site OLS rate"), ("resid_rate", "model B residual trend")]
+    for col, what in [(c, w) for c, w in measures if c in cm_]:
         v = cm_.dropna(subset=[col])
         con = _region_fe_contrast(v[col], v.family, v.region_id, "probe")
+        lo_t = _region_fe_loro(v[col], v.family, v.region_id, "probe", v.lat, v.lon)
+        if len(lo_t):
+            loro_all.append(lo_t.assign(measure=what))
         for f in FAMILIES:
             k = v.family == f
             c_ = con.get(f, (np.nan, np.nan, np.nan, np.nan))
+            lf = lo_t[lo_t.group == f].dropna(subset=["estimate"]) if len(lo_t) else lo_t
             mrows.append({"measure": what, "group": f, "n": int(k.sum()),
                           "mean": float(v[col][k].mean()), "median": float(v[col][k].median()),
                           "minus_probe_within_regions": c_[0], "lo95": c_[1], "hi95": c_[2],
-                          "shared_regions": c_[3]})
+                          "shared_regions": c_[3],
+                          "loro_min": float(lf.estimate.min()) if len(lf) else np.nan,
+                          "loro_max": float(lf.estimate.max()) if len(lf) else np.nan,
+                          "loro_min_region": lf.left_out_region.iloc[int(np.argmin(lf.estimate))] if len(lf) else np.nan,
+                          "loro_max_region": lf.left_out_region.iloc[int(np.argmax(lf.estimate))] if len(lf) else np.nan})
+    if loro_all:
+        lt = pd.concat(loro_all, ignore_index=True)
+        lt[["measure"] + [c for c in lt if c != "measure"]].to_csv(out / "aldi_v6_checks_method_loro.csv", index=False)
     n_mixed_places = n_mixed_series = 0
     if "location_id" in cm_:
         prs = []
@@ -3242,25 +3406,38 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
             for i in range(len(g)):
                 for j in range(i + 1, len(g)):
                     prs.append({"same": g.family[i] == g.family[j],
-                                "rate_v6": abs(g.rate_v6[i] - g.rate_v6[j]),
-                                "ols_rate": abs(g.ols_rate[i] - g.ols_rate[j])})
+                                **{c: abs(g[c][i] - g[c][j]) for c in ["rate_v6", "rate_v6_site_only", "ols_rate"]
+                                   if c in g}})
         pr = pd.DataFrame(prs)
         for same in [True, False]:
             gp = pr[pr.same == same] if len(pr) else pr
-            for col, what in [("rate_v6", "hierarchical rate"), ("ols_rate", "per-site OLS rate")]:
+            for col, what in [(c, w) for c, w in [("rate_v6", "hierarchical rate"),
+                                                  ("rate_v6_site_only", "site-only Bayesian rate"),
+                                                  ("ols_rate", "per-site OLS rate")] if c in pr]:
                 mrows.append({"measure": f"{what}, |difference| of two series at one place",
                               "group": "same method" if same else "different methods", "n": len(gp),
                               "mean": float(gp[col].mean()) if len(gp) else np.nan,
                               "median": float(gp[col].median()) if len(gp) else np.nan})
     ma = pd.DataFrame(mrows)
     ma["shared_regions"] = ma.shared_regions.astype("Int64")
+    for c in ["loro_min_region", "loro_max_region"]:
+        if c in ma:
+            ma[c] = pd.to_numeric(ma[c], errors="coerce").astype("Int64")
     ma.to_csv(out / "aldi_v6_checks_method.csv", index=False)
     nfam = res.groupby("region_id").family.nunique()
     L.append(f"\nAGREEMENT OF THE METHODS (%/dec; minus_probe_within_regions = difference from the probes in the "
-             f"same regions, region fixed effects, 95 % from resampling regions; {int((nfam >= 2).sum())} of "
+             f"same regions, region fixed effects, 95 % from resampling regions; loro_min / loro_max = the same "
+             f"difference with one shared region left out, smallest and largest; {int((nfam >= 2).sum())} of "
              f"{len(nfam)} regions hold two or more methods, {n_mixed_places} places {n_mixed_series} series; "
-             f"pair rows: n = pairs of series):")
+             f"pair rows: n = pairs of series, which share series and places, so a description, not a test):")
     L.append(ma.round(2).to_string(index=False))
+    if loro_all:
+        L.append("  leave-one-region-out (difference from the probes without that region; region: id, centre, series "
+                 "of the method / probes in it):")
+        for (m_, g_), t_ in lt.groupby(["measure", "group"], sort=False):
+            L.append(f"    {m_}, {g_}: " + "; ".join(
+                f"{int(w.left_out_region)} ({w.region_lat:.1f}N {w.region_lon:.1f}E, {w.n_group_left_out}/{w.n_base_left_out}) "
+                f"{w.estimate:+.1f}" for w in t_.itertuples()))
 
     # --- cm per decade beside published numbers ---
     cm = [{"what": "ALDI hierarchical, mean of site rates", "value": float(ck.rate_v6_cm_dec.mean()),
@@ -3349,11 +3526,26 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         for c in ["trend_p05", "network_err", "network_cover95"]:
             if c in rp:
                 sn[c] = g[c].mean().to_numpy()
+        if "network_cover95" in sn:
+            # one network interval per simulated network, so its coverage is k of n: exact
+            # (Clopper-Pearson) 95 % interval, to show how little 8 networks can tell
+            k_ = np.rint(sn.network_cover95 * sn.networks)
+            n_ = sn.networks.astype(float)
+            with np.errstate(invalid="ignore"):
+                sn["network_cover95_lo"] = np.where(k_ > 0, stats.beta.ppf(0.025, k_, n_ - k_ + 1), 0.0)
+                sn["network_cover95_hi"] = np.where(k_ < n_, stats.beta.ppf(0.975, k_ + 1, n_ - k_), 1.0)
+            sn.loc[sn.network_cover95.isna(), ["network_cover95_lo", "network_cover95_hi"]] = np.nan
         sn.to_csv(out / "aldi_v6_checks_simulation_networks.csv", index=False)
         L.append("\nSIMULATION, SPREAD BETWEEN NETWORKS (coverage of the 90 % intervals: mean over networks, SD and "
                  "standard error from the spread between networks, range):")
         L.append(sn[["scenario", "method", "networks", "coverage90", "coverage90_sd", "coverage90_se", "coverage90_min",
                      "coverage90_max", "rmse_pct_dec", "called_trend"]].round(3).to_string(index=False))
+        if "network_cover95_lo" in sn:
+            nc = sn.dropna(subset=["network_cover95"])
+            L.append("  coverage of the 95 % interval of the network rate (one per network; exact 95 % interval of "
+                     "that share): " + "; ".join(
+                         f"{w.scenario} {w.method} {int(round(w.network_cover95 * w.networks))} of {int(w.networks)} "
+                         f"({w.network_cover95_lo:.2f} to {w.network_cover95_hi:.2f})" for w in nc.itertuples()))
 
     # --- MCMC diagnostics and the survey-date drift flag ---
     mt = mcmc_table(summary)

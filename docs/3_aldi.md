@@ -37,7 +37,19 @@ sd(e) per site, log-normal around a family mean
 - Rates in % per decade = 100 (exp(b) - 1). Classes use the v5.2 rules on the 90 %
   credible interval (stable: inside ±5 %/dec; thickening/thinning: excludes 0; rapid:
   median beyond 10 %/dec). Every band probability is reported (`p6_*`).
-- Sensitivity runs: without region-year effects; Student-t(4) site deviations.
+- Sensitivity runs: without region-year effects; Student-t(4) site deviations; and, since
+  14 November 2026, a site-only fit (`site_only`): each series' trend has its own N(0, 1)
+  prior (log units per decade, flat over any plausible rate) and there is no network or
+  regional trend; noise model, censoring and region-year term are those of the main fit.
+  Against the main fit it isolates what pooling the trends adds to a site's interval and
+  P(thickening); the per-site Sen + AR(1) and OLS tests also change the estimator, and their
+  P(thickening), Phi(rate / SE), is a normal approximation, not a posterior.
+- Network summaries (`aldi_v6_network_summaries.csv`, Table 2 of the paper): mu, the
+  equal-weight mean of the regional trends, and means over equal-area cells of 100, 250 and
+  500 km, over places and over series, each computed in every posterior draw (median and
+  95 % interval). Cells: Lambert azimuthal equal-area projection centred on the North Pole
+  (sphere, R = 6371.0088 km), cell = floor(x / size), floor(y / size) from the pole, each
+  cell weighted once (1 / series in it). Places: series within 1 km (single linkage).
 
 ## B. Climate-adjusted ALDI
 
@@ -280,7 +292,8 @@ year, to the probe and tube ALT of the series on medium- or high-ice ground of t
 et al. 2017; 0.4 cm/yr median in the Mackenzie Valley, Smith et al. 2024; 12-15 cm in 18
 years on the North Slope, Nyland et al. 2021), and refit A and B. They bound how much the
 network rate and the B residual can grow; they are not a correction (no site has its own
-subsidence record here). Fig 5 of `paper_figures.m` marks the B means of the three runs.
+subsidence record here). Fig S2 of `paper_figures.m` shows their network rates; with
+MODEL_B = true its Model B figure marks the B means of the three runs.
 
 Results (PC, 12 November 2026; 146 probe and tube series on medium- or high-ice ground;
 every fit R-hat <= 1.013, no divergences):
@@ -337,7 +350,7 @@ accounting) into numbers a reader can compare with the usual analysis:
 - **Residual by ground ice and method** (`aldi_v6_checks_ice_method.csv`, Table S6): the
   low-minus-high ice contrast within regions, per method family, since probes and
   surface-referenced tubes carry the subsidence bias and ground temperatures do not.
-- **Agreement of the methods** (`aldi_v6_checks_method.csv`, Table S9; added 2026-11-14):
+- **Agreement of the methods** (`aldi_v6_checks_method.csv`, Table S3; added 2026-11-14):
   can probes, thaw tubes and ground temperatures share one index? Raw family means mix
   method with place (most thaw tubes are in the slowly deepening Mackenzie Delta), so each
   family is compared with the probes within regions (region fixed effects, 95 % interval
@@ -346,6 +359,22 @@ accounting) into numbers a reader can compare with the usual analysis:
   Second test at one place (series within 1 km): if the methods measured different things,
   two series of different methods at one place would differ more than two series of the
   same method there.
+  Since 14 November 2026 (second review of the paper) also on the trends of the site-only
+  fit (same noise model, no pooling of trends), and every within-region difference is
+  recomputed with each shared region left out in turn (`loro_min`, `loro_max` and
+  `aldi_v6_checks_method_loro.csv`): the thaw-tube contrast rests on four regions, and a
+  bootstrap of four regions cannot show that it generalizes. The pairs at one place share
+  series and places, so their medians describe the data; they are not a test.
+- **Excluded years that mark a lost active layer** (added 2026-11-14): site-years flagged
+  no_refreeze (the deepest thawed sensor did not refreeze the next winter) or talik /
+  possible_talik (thaw reached unfrozen ground; every later year of the site), in the ALT
+  target and in the analysed series, with each analysed series that loses such years. Such a
+  year has no valid ALT; that is not the same as no degradation.
+- **Acceleration** (`aldi_v6_checks_acceleration.csv`; added 2026-11-14): a hinge at the
+  midpoint of each record of at least 25 years with 8 or more measured values on each side,
+  GLS with the record's noise covariance; the change of trend per record with its p value
+  and, since the second review, its Benjamini-Hochberg q value over the records, pooled with
+  the random-effects model of v5.2 and as a plain mean with a region bootstrap.
 - **Rates in cm** (`aldi_v6_checks_cm.csv`, Table S7): site rates times the site's fitted
   ALT, and the per-site OLS on ALT in cm as in Streletskiy et al. (2026) and Lin et al.
   (EGUsphere-2026-841), beside their published values and Smith et al. (2024). The OLS is
