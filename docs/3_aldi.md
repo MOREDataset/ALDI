@@ -38,7 +38,8 @@ sd(e) per site, log-normal around a family mean
   credible interval (stable: inside ±5 %/dec; thickening/thinning: excludes 0; rapid:
   median beyond 10 %/dec). Every band probability is reported (`p6_*`).
 - Sensitivity runs: without region-year effects; Student-t(4) site deviations; and, since
-  14 November 2026, a site-only fit (`site_only`): each series' trend has its own N(0, 1)
+  14 November 2026, a trend-unpooled fit (run `site_only`; called the site-only fit until
+  the third review of the paper): each series' trend has its own N(0, 1)
   prior (log units per decade, flat over any plausible rate) and there is no network or
   regional trend; noise model, censoring and region-year term are those of the main fit.
   Against the main fit it isolates what pooling the trends adds to a site's interval and
@@ -280,6 +281,32 @@ one (ERA5-Land vs POWER), lowers k by 0.05 and the expected trend by 0.25 %/dec 
 the residual by 0.55 (0.17 without the error). With k = 0 (ALT ignores TDD) the residual
 coverage stays 0.90 and the expected trend is unbiased.
 
+Two A scenarios added on 14 November 2026 (third review of the paper). They are run on
+their own, `py -3.12 3_aldi.py --no-main --validate --scenarios A_thin,A_ppc --reps 10`,
+which writes `aldi_v6_simulation_reps_A_thin_A_ppc.csv` beside the main file; the paper
+checks read both files (a scenario is taken from the first file that holds it).
+
+- **Rare local thinning among thickening neighbours (`A_thin`).** Trends drawn as in
+  `A_fit`; then 12 series per network (about 5 %) get a true rate of -10 %/dec, at most one
+  per region and only in regions of at least 3 series whose drawn regional trend is
+  positive, taken in turn from the four record-length groups. Each network is refitted with
+  Model A (normal series trends, the main model), Model A with Student-t(4) series trends,
+  the trend-unpooled fit, the per-site Akritas-Theil-Sen method with AR(1) (v5.2) and the
+  per-site OLS. The paper checks give the share of the planted series called thinning,
+  unresolved, stable or thickening, by record length, their interval coverage and mean
+  estimate, and the false thinning calls among the other series
+  (`aldi_v6_checks_local_thinning.csv`). The question: does pooling hide a real local
+  exception, as it might for the six series that thin on their own record but are
+  unresolved in Model A?
+- **Posterior predictive check of the class counts (`A_ppc`).** Each network takes one
+  posterior draw of the real fit (series trends, noise SDs, AR(1) coefficients times 0.95 as
+  in the other scenarios, region-year SD), simulates the real design from it and is refitted
+  with Model A; the observed counts of unresolved and stable series by record length are
+  compared with the simulated ones (`ppc_*` columns of `aldi_v6_checks_by_span.csv`, block
+  "POSTERIOR PREDICTIVE CHECK" of `aldi_v6_checks.txt`). The expected shares of the
+  detectability check take the hierarchical rates as true and leave the pooling out; this
+  check runs the whole model. Both are conditional on Model A.
+
 ### Thaw-subsidence bounds (sensitivity runs `subsidence_0.2`, `_0.5`, `_1.0`; added 2026-11-09)
 
 A probe measures ALT from the ground surface, and so do the GSC Mackenzie thaw tubes read
@@ -310,13 +337,19 @@ care: the corrected quantity is the lowering of the permafrost table (thaw penet
 a fixed datum), not ALT itself, so the runs say that 5.2 %/dec is a lower bound for how fast
 the permafrost table drops beyond what air temperature explains, not that ALT grows faster.
 
+Since the third review of the paper (14 November 2026) the three runs are no longer among
+the sensitivity runs of the paper (Table S4, Fig S2 now show the 13 runs that change the
+analysis of ALT). They change the quantity, so they are reported apart, as hypothetical
+scenarios in Text S1 and Table S11 of the supplement (`paper_figures.m` writes
+`TableS11_subsidence_scenarios.csv`).
+
 ## Paper checks (`paper_checks`, `--checks`, `data/3_aldi_checks/`; added 2026-11-09)
 
 Computed from the outputs of the main run (and of `--sensitivity` for the 2000-2024 cm
 row), with no refit; about a minute. They turn the novelty of the paper (its uncertainty
 accounting) into numbers a reader can compare with the usual analysis:
 
-- **Years of record a site needs** (`aldi_v6_checks_detection.csv`, Table S4), per method
+- **Years of record a site needs** (`aldi_v6_checks_detection.csv`, Table S5), per method
   family. With the fitted noise (each family's AR(1) coefficient and sigma) the SD of a
   trend from a given set of years is exact, so the chance of each class follows from the
   true rate. Two noise levels: in the network (the shared region-year anomalies removed,
@@ -324,10 +357,14 @@ accounting) into numbers a reader can compare with the usual analysis:
   years this is the detection time of Weatherhead et al. (1998), written for annual values:
   n* = [C sqrt(12) sigma sqrt((1 + rho)/(1 - rho)) / |w0|]^(2/3), with C = 2.93 for
   thickening at 90 % and 3.29 for showing "stable"; the table gives both.
-- **Expected shares by record length** (`aldi_v6_checks_by_span.csv`, Table S5): the share
+- **Expected shares by record length** (`aldi_v6_checks_by_span.csv`, Table S6): the share
   of sites expected to stay unresolved from each record's own years and noise, beside the
   observed share (the dashes of Fig 3). Pooling toward the region narrows the hierarchical
-  intervals further, so its expected share is an upper bound.
+  intervals further, so its expected share is an upper bound. This is a model-conditional
+  consistency check, not a test of the model: it takes the hierarchical rates and the
+  fitted noise as true. Since 14 November 2026 the same table also holds the posterior
+  predictive check of scenario `A_ppc` (`ppc_*` columns; see the simulation above), which
+  runs the whole model on networks drawn from its posterior.
 - **The standard per-site test on the same series**: OLS of log ALT on year with the
   t (F) test at p < 0.05 (the test of recent CALM syntheses, e.g. Streletskiy et al. 2026),
   Benjamini-Hochberg false-discovery-rate q values, the same 90 % class rules on its
@@ -348,11 +385,13 @@ accounting) into numbers a reader can compare with the usual analysis:
   kfixed) is a theory-informed sensitivity scenario, not a bound: errors in TDD pull a
   fitted k toward 0, but 0.5 is the Stefan value for the thawing index of the ground
   surface, which air TDD is not.
-- **Residual by ground ice and method** (`aldi_v6_checks_ice_method.csv`, Table S6): the
+- **Residual by ground ice and method** (`aldi_v6_checks_ice_method.csv`; Model B, not in
+  the paper since 14 November 2026): the
   low-minus-high ice contrast within regions, per method family, since probes and
   surface-referenced tubes carry the subsidence bias and ground temperatures do not.
 - **Agreement of the methods** (`aldi_v6_checks_method.csv`, Table S3; added 2026-11-14):
-  can probes, thaw tubes and ground temperatures share one index? Raw family means mix
+  are the trends of probes, thaw tubes and ground temperatures consistent enough to be
+  analysed together under the model? Raw family means mix
   method with place (most thaw tubes are in the slowly deepening Mackenzie Delta), so each
   family is compared with the probes within regions (region fixed effects, 95 % interval
   from resampling whole regions), on the hierarchical rates, on the per-site OLS rates (no
@@ -360,27 +399,39 @@ accounting) into numbers a reader can compare with the usual analysis:
   Second test at one place (series within 1 km): if the methods measured different things,
   two series of different methods at one place would differ more than two series of the
   same method there.
-  Since 14 November 2026 (second review of the paper) also on the trends of the site-only
-  fit (same noise model, no pooling of trends), and every within-region difference is
+  Since 14 November 2026 (second review of the paper) also on the trends of the
+  trend-unpooled fit (same noise model, no pooling of trends), and every within-region difference is
   recomputed with each shared region left out in turn (`loro_min`, `loro_max` and
   `aldi_v6_checks_method_loro.csv`): the thaw-tube contrast rests on four regions, and a
   bootstrap of four regions cannot show that it generalizes. The pairs at one place share
   series and places, so their medians describe the data; they are not a test.
   Unpooled trends are noisy and, as percentages, skewed to the right (100 (e^b - 1)
   stretches large b), so a few short records with extreme rates dominate the unweighted
-  contrast of the site-only trends. The row "site-only Bayesian rate, precision-weighted"
+  contrast of the trend-unpooled trends. The row "trend-unpooled Bayesian rate, precision-weighted"
   makes the same contrast on the log scale with each series weighted by
   1 / (its posterior variance + tau_site^2), as in a random-effects meta-analysis, and turns
   the differences back into % per decade (its `mean` is the weighted mean).
 - **Classes against the record alone**: how many rapid series have their whole 90 %
   interval above the rapid threshold (the rapid / gradual split uses the median only), and
-  how many stable series are stable on their own record (site-only fit, same noise model)
-  and by the per-site Akritas-Theil-Sen method.
+  how many stable series are stable on their own record (trend-unpooled fit, same noise
+  model) and by the per-site Akritas-Theil-Sen method.
+- **Records that thin on their own record** (`aldi_v6_checks_thinning_records.csv`, second
+  file of Table S10; added 2026-11-14, third review): every series called thinning by the
+  trend-unpooled fit or by Model A, with its region (number of series, regional rate,
+  centre), record years and number of values, noise SD against its method's median, and its
+  rate, 90 % interval, P(thickening) and class in each fit (trend-unpooled, hierarchical,
+  Student-t trends, Akritas-Theil-Sen). A summary line says how many of those left
+  unresolved by Model A are short, noisier than their method's median, still negative in
+  Model A, and thinning by Akritas-Theil-Sen, and in which regions they lie.
+- **Rare local thinning** (`aldi_v6_checks_local_thinning.csv`, second file of Table S8;
+  added 2026-11-14): the `A_thin` simulation summarized by method and record length.
 - **Excluded years that mark a lost active layer** (added 2026-11-14): site-years flagged
   no_refreeze (the deepest thawed sensor did not refreeze the next winter) or talik /
   possible_talik (thaw reached unfrozen ground; every later year of the site), in the ALT
   target and in the analysed series, with each analysed series that loses such years. Such a
-  year has no valid ALT; that is not the same as no degradation.
+  year has no valid ALT; that is not the same as no degradation. ALT thickening and talik
+  formation are different observational outcomes: the trends describe the years with a
+  valid ALT, not the degradation that follows talik formation.
 - **Acceleration** (`aldi_v6_checks_acceleration.csv`; added 2026-11-14): a hinge at the
   midpoint of each record of at least 25 years with 8 or more measured values on each side,
   GLS with the record's noise covariance; the change of trend per record with its p value
@@ -395,7 +446,7 @@ accounting) into numbers a reader can compare with the usual analysis:
   cm/yr; the number of Arctic sites is not given), and 66.4 % in the Northern Hemisphere
   (91 of 137 sites), raised by the mountain sites (European mountains 18 of 19, Third Pole
   20 of 22). The Arctic share is the comparator for ALDI.
-- **MCMC diagnostics** of every fit of the main run (Table S8) and the count of sites whose
+- **MCMC diagnostics** of every fit of the main run (Table S2) and the count of sites whose
   survey date drifts by more than 14 days over the record.
 
 Results of the 12 November 2026 run (PC; `data/3_aldi_checks/aldi_v6_checks.txt`):

@@ -24,6 +24,13 @@ multi-source ALT dataset and the Active Layer Dynamics Index (ALDI) computed fro
   12 November 2026: thawing degree-days explain 1.3 of the mean site trend of
   6.6 %/dec, and 78 sites deepen faster than they predict.
 
+**Paper framing (14 November 2026).** The manuscript in preparation reports ALDI A as a
+multi-source, uncertainty-aware assessment of ALT trends: site rates with their intervals,
+site classes and summaries of the network trend. It does not present a single index value.
+A site's pooled rate depends on the other series of its region, so it is an estimate within
+the network rather than an index computed from one record. ALDI stays the name of this
+repository, its code and its outputs. ALDI B is set aside for a separate paper.
+
 The figure below shows the framework of the earlier version (v4, six classes and
 class-stratified causal models on 129 CALM sites, EGUsphere-2026-2639). It is kept for
 reference; the current method is described in `docs/3_aldi.md`.
