@@ -337,6 +337,15 @@ accounting) into numbers a reader can compare with the usual analysis:
 - **Residual by ground ice and method** (`aldi_v6_checks_ice_method.csv`, Table S6): the
   low-minus-high ice contrast within regions, per method family, since probes and
   surface-referenced tubes carry the subsidence bias and ground temperatures do not.
+- **Agreement of the methods** (`aldi_v6_checks_method.csv`, Table S9; added 2026-11-14):
+  can probes, thaw tubes and ground temperatures share one index? Raw family means mix
+  method with place (most thaw tubes are in the slowly deepening Mackenzie Delta), so each
+  family is compared with the probes within regions (region fixed effects, 95 % interval
+  from resampling whole regions), on the hierarchical rates, on the per-site OLS rates (no
+  pooling, so the model cannot pull the methods together) and on the model B residuals.
+  Second test at one place (series within 1 km): if the methods measured different things,
+  two series of different methods at one place would differ more than two series of the
+  same method there.
 - **Rates in cm** (`aldi_v6_checks_cm.csv`, Table S7): site rates times the site's fitted
   ALT, and the per-site OLS on ALT in cm as in Streletskiy et al. (2026) and Lin et al.
   (EGUsphere-2026-841), beside their published values and Smith et al. (2024). The OLS is
@@ -384,6 +393,17 @@ Results of the 12 November 2026 run (PC; `data/3_aldi_checks/aldi_v6_checks.txt`
   temperatures, which subsidence cannot bias. Only 2-5 regions hold both low- and high-ice
   sites, so the within-region contrasts are not resolved (all families +1.3, -1.8 to +3.3;
   ground temperatures -1.9 in 2 regions).
+- **Methods agree within regions** (run of 14 November 2026 on the outputs of 12 November):
+  raw means probes 7.9, thaw tubes 4.6, ground temperatures 7.5 %/dec, but within the same
+  regions tubes trend +1.7 (-3.7 to +3.8; 4 shared regions) and ground temperatures +1.3
+  (+0.1 to +3.1; 7 regions) %/dec faster than probes, small beside the between-site spread
+  (tau_site 5.1). The per-site OLS rates, which no pooling can pull together, give the same
+  signs with wide intervals (+2.3, -7.8 to +10.4; +4.8, -6.1 to +13.4); the model B
+  residuals +1.4 (-3.0 to +3.4) and +1.4 (+0.2 to +2.8). At the 12 places that hold two
+  methods (30 series), two series of different methods differ by a median 3.0 %/dec (19
+  pairs) and two series of the same method by 3.3 (68 pairs); per-site OLS 7.5 and 5.9,
+  the larger spread of the different-method pairs following the noisier ground-temperature
+  records (sigma 12.7 against 8.4 % for probes). 11 of the 44 regions hold two or more methods.
 - **cm**: hierarchical site rates average 6.1 cm/decade (median 4.3; 7.2 in the 2000-2024
   run). The per-site OLS on cm gives 1.27 cm/yr at the 106 sites with a significant
   increase (46 % of 230) and 0.93 cm/yr over all 175 increasing sites (Lin et al.: 1.48).
