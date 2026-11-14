@@ -180,10 +180,11 @@ model:
     # at SALTSIL 2017-2022 and Parks Canada C28 2015, where ALT is 90-190 cm), which
     # turned SALTSIL's +26 %/dec into +3. Sensitivity runs keep 0.5 and 1.0.
     cens_sd: null
-    # Site-only fit of A (added 2026-11-14, second review of the paper): no pooling of
-    # trends, each series' trend has its own N(0, free_slope_sd^2) prior (log units per
-    # decade; 1.0 is flat over any plausible rate). Everything else is model A. Against
-    # the main fit it shows what pooling the trends adds to a site's interval.
+    # Trend-unpooled fit of A (run site_only, added 2026-11-14, second review of the paper;
+    # called site-only until the third review): no pooling of trends, each series' trend
+    # has its own N(0, free_slope_sd^2) prior (log units per decade; 1.0 is flat over any
+    # plausible rate). Everything else is model A. Against the main fit it shows what
+    # pooling the trends adds to a site's interval.
     free_slope_sd: 1.0
 
 climate:
@@ -1172,7 +1173,7 @@ def model(arr, mode="A", k_mode="hierarchical", slope_dist="normal", priors=None
 
     # trend hierarchy (log units per decade; 0.1 ~ 10.5 %/dec)
     if slope_dist == "none":
-        # site-only trends (free_slope_sd in SETTINGS): no network or regional trend, each
+        # trend-unpooled (site-only) trends (free_slope_sd in SETTINGS): no network or regional trend, each
         # series' trend from its own record; noise, censoring and region-year term as below
         z_s = numpyro.sample("z_site", dist.Normal(0, 1).expand([ns]))
         slope = numpyro.deterministic("slope_site", p.get("free_slope_sd", 1.0) * z_s)
@@ -1344,7 +1345,7 @@ def summarise_A(mcmc, arr, cfg):
     s["sigma_pct"] = 100 * np.asarray(smp["sigma_site"]).mean(0)
     net = {"rho_family": np.asarray(smp["rho_family"]) * 0.95,
            "sigma_family": 100 * np.exp(np.asarray(smp["log_sigma_family"]))}
-    if "beta_region" not in smp:             # site-only fit: no regional or network trend
+    if "beta_region" not in smp:             # trend-unpooled fit: no regional or network trend
         s["region_rate_v6"] = np.nan
         return s, net, rate
     reg = pct(np.asarray(smp["beta_region"]))
@@ -2153,7 +2154,7 @@ def figures(res, out, prefix, have_b):
 
 
 def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_file=None):
-    """v5.2 (reference), A (four fits: main, without the region-year term, Student-t trends, site-only
+    """v5.2 (reference), A (four fits: main, without the region-year term, Student-t trends, trend-unpooled
     trends) and B (every climate variant); writes the outputs."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -2292,7 +2293,7 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
     wts["place"] = 1.0 / loc_.map(loc_.value_counts()).to_numpy()
     nunits["place"] = loc_.nunique()
     for name, r in runs.items():
-        if "mu" in r["net"]:                 # not in the site-only fit
+        if "mu" in r["net"]:                 # not in the trend-unpooled fit
             netrows[f"A_{name}_network_rate_pct_dec"] = q(r["net"]["mu"])
             netrows[f"A_{name}_equal_region_mean_pct_dec"] = q(r["net"]["equal_region_mean"])
         netrows[f"A_{name}_mean_site_rate_pct_dec"] = q(r["rate"].mean(1))
@@ -2386,12 +2387,13 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
     if "site_only" in runs:
         so_ = res.dropna(subset=["p6_thickening_site_only"])
         un_ = res.class_v6 == "indeterminate"
-        L.append(f"\nsite-only fit (no pooling of trends, same noise model; {runs['site_only']['diag']}): median width of "
+        L.append(f"\ntrend-unpooled fit (site_only run: no pooling of trends; same noise model and region-year term; "
+                 f"{runs['site_only']['diag']}): median width of "
                  f"the 90 % interval {np.median(res.rate_v6_hi_site_only - res.rate_v6_lo_site_only):.1f} against "
                  f"{np.median(res.rate_v6_hi - res.rate_v6_lo):.1f} %/dec in the main fit; P(thickening) > 0.9 at "
                  f"{int((so_.p6_thickening_site_only > 0.9).sum())} series (main {int((res.p6_thickening > 0.9).sum())}); "
                  f"the {int(un_.sum())} series not resolved in the main fit: median P(thickening) "
-                 f"{res.p6_thickening_site_only[un_].median():.2f} site-only against {res.p6_thickening[un_].median():.2f}, "
+                 f"{res.p6_thickening_site_only[un_].median():.2f} trend-unpooled against {res.p6_thickening[un_].median():.2f}, "
                  f"more likely thickening than not at {int((res.p6_thickening_site_only[un_] > 0.5).sum())} against "
                  f"{int((res.p6_thickening[un_] > 0.5).sum())}")
     L.append("\nclass counts (same sites):")
@@ -3019,6 +3021,19 @@ def mcmc_table(summary_text):
     return pd.DataFrame(rows)
 
 
+def read_sim_reps(val_dir):
+    """All simulated networks in data/3_aldi_validation: the main file and the scenarios run
+    later (aldi_v6_simulation_reps_<scenarios>.csv); a scenario is taken from the first file
+    that holds it."""
+    if val_dir is None or not (Path(val_dir) / "aldi_v6_simulation_reps.csv").exists():
+        return None
+    rp = pd.read_csv(Path(val_dir) / "aldi_v6_simulation_reps.csv")
+    for f in sorted(Path(val_dir).glob("aldi_v6_simulation_reps_*.csv")):   # scenarios run later
+        extra = pd.read_csv(f)
+        rp = pd.concat([rp, extra[~extra.scenario.isin(set(rp.scenario))]], ignore_index=True)
+    return rp
+
+
 def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     """The checks described above PART 4c."""
     main_out, out = Path(main_out), Path(out)
@@ -3148,12 +3163,41 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
             "median_trend_sd_network": float(ck.trend_sd_network[k].median()),
             "median_trend_sd_alone": float(ck.trend_sd_alone[k].median())})
     sp = pd.DataFrame(span_rows)
+    # (added 2026-11-14, third review) the expected shares above are model-based bounds, with the
+    # hierarchical rates taken as true. The posterior predictive check (simulation scenario A_ppc)
+    # asks the same of Model A itself: networks simulated from posterior draws of the real fit
+    # (series trends, noise, region-year SD) and refitted; how many series stay unresolved there,
+    # against the observed count. Both are conditional on the fitted model.
+    rp_all = read_sim_reps(val_dir)
+    ppc = None if rp_all is None else rp_all[(rp_all.scenario == "A_ppc") & (rp_all.method == "v6_ry")]
+    ppc_lines = []
+    if ppc is not None and len(ppc) and "all_unresolved" in ppc:
+        for i, sb in enumerate(sp.span):
+            sfx = "" if sb == "all" else f"_{sb}"
+            n_sim = ppc[f"all_n{sfx}"].astype(float)
+            obs_n = int(round(sp.at[i, "unresolved_hierarchical_pct"] * sp.at[i, "sites"] / 100))
+            obs_st = int(round(sp.at[i, "stable_hierarchical_pct"] * sp.at[i, "sites"] / 100))
+            u_ = ppc[f"all_unresolved{sfx}"]
+            st_sim = ppc[f"all_stable{sfx}"]
+            sp.loc[i, "ppc_unresolved_mean_pct"] = float((100 * u_ / n_sim).mean())
+            sp.loc[i, "ppc_unresolved_min_pct"] = float((100 * u_ / n_sim).min())
+            sp.loc[i, "ppc_unresolved_max_pct"] = float((100 * u_ / n_sim).max())
+            sp.loc[i, "ppc_share_networks_with_at_least_observed_unresolved"] = float((u_ >= obs_n).mean())
+            sp.loc[i, "ppc_stable_mean_pct"] = float((100 * st_sim / n_sim).mean())
+            ppc_lines.append(f"  {sb} yr: unresolved observed {obs_n} of {int(sp.at[i, 'sites'])}; simulated mean "
+                             f"{u_.mean():.1f} (range {int(u_.min())}-{int(u_.max())}); networks with at least the "
+                             f"observed count {int((u_ >= obs_n).sum())} of {len(u_)}; stable observed {obs_st}, "
+                             f"simulated mean {st_sim.mean():.1f} (range {int(st_sim.min())}-{int(st_sim.max())})")
     sp.to_csv(out / "aldi_v6_checks_by_span.csv", index=False)
     L.append("BY RECORD LENGTH (% of sites; expected = from record length and the fitted noise, with the "
              "hierarchical rate as the true rate):")
     L.append(sp.round(1).to_string(index=False))
     L.append(f"(OLS significant at p < 0.05 on ALT in cm instead of log ALT: {100 * (ck.ols_p_cm < 0.05).mean():.0f} % "
              f"of sites; on log ALT {100 * sig.mean():.0f} %)")
+    if ppc_lines:
+        L.append(f"POSTERIOR PREDICTIVE CHECK OF THE CLASS COUNTS (scenario A_ppc, {ppc.rep.nunique()} networks simulated "
+                 f"from posterior draws of the real fit and refitted with Model A; conditional on the fitted model):")
+        L += ppc_lines
 
     # --- detection time per family ---
     det = []
@@ -3224,7 +3268,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                  f"P(thickening) > 0.9 at {int((res.p6_thickening > 0.9).sum())}")
     # (added 2026-11-14, second review) the interval decides thickening; rapid / gradual uses the
     # median only, so how many rapid series are shown to exceed the rapid threshold, and how many
-    # stable series are stable on their own record (site-only fit, same noise model) or by the
+    # stable series are stable on their own record (trend-unpooled fit, same noise model) or by the
     # per-site Akritas-Theil-Sen method
     if {"p6_rapid_thickening", "rate_v6_lo"} <= set(res):
         rp_ = res[res.class_v6 == "rapid_thickening"]
@@ -3236,7 +3280,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     st_ = res[res.class_v6 == "stable"]
     if len(st_) and "class_v6_site_only" in res:
         L.append(f"  stable series also stable on their own record: {int((st_.class_v6_site_only == 'stable').sum())} "
-                 f"of {len(st_)} in the site-only fit (same noise model), "
+                 f"of {len(st_)} in the trend-unpooled fit (same noise model), "
                  f"{int((st_.class_site == 'stable').sum()) if 'class_site' in st_ else 'n/a'} of {len(st_)} by the "
                  f"per-site Akritas-Theil-Sen method")
 
@@ -3261,14 +3305,60 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         if "p6_thickening_site_only" in r:
             p_so = r.loc[un.index, "p6_thickening_site_only"].to_numpy(float)
             cso = r.loc[un.index, "class_v6_site_only"].astype(str)
-            L.append(f"  site-only Bayesian fit (same noise model, no pooling of trends; a posterior): median "
+            L.append(f"  trend-unpooled Bayesian fit (same noise model, no pooling of trends; a posterior): median "
                      f"P(thickening) {np.median(p_so):.2f}; more likely thickening than not at {int((p_so > 0.5).sum())}; "
                      f"P > 0.9 at {int((p_so > 0.9).sum())}; its classes of these records: "
                      + ", ".join(f"{c} {int((cso == c).sum())}" for c in ORDER if (cso == c).any()))
             all_so = r["class_v6_site_only"].astype(str)
-            L.append(f"  site-only fit, classes of all {len(r)} series: " + ", ".join(
+            L.append(f"  trend-unpooled fit, classes of all {len(r)} series: " + ", ".join(
                 f"{c} {int((all_so == c).sum())}" for c in ORDER) + f"; P(thickening) > 0.9 at "
                 f"{int((r.p6_thickening_site_only > 0.9).sum())} (hierarchical {int((r.p6_thickening > 0.9).sum())})")
+
+    # --- records that thin on their own record or in Model A (added 2026-11-14, third review) ---
+    # Six records unresolved in Model A are thinning in the trend-unpooled fit: the review asked
+    # whether pooling hides genuine local thinning. Listed with their region, record and noise,
+    # and their rates by each method.
+    if "class_v6_site_only" in res:
+        thin_ = lambda c: c.astype(str).str.contains("thinning")  # noqa: E731
+        tk = res[thin_(res.class_v6_site_only) | thin_(res.class_v6)].copy()
+        if len(tk):
+            rn = res.groupby("region_id").agg(region_series=("site_id", "size"), region_lat=("lat", "mean"),
+                                              region_lon=("lon", lambda v: float(np.degrees(np.arctan2(
+                                                  np.mean(np.sin(np.radians(v))), np.mean(np.cos(np.radians(v))))))))
+            sig_med = res.groupby("family").sigma_pct.median()
+            tk = tk.merge(rn, left_on="region_id", right_index=True, how="left")
+            tk["sigma_vs_method_median"] = tk.sigma_pct / tk.family.map(sig_med)
+            keep_ = ["site_id", "family", "region_id", "region_series", "region_lat", "region_lon", "region_rate_v6",
+                     "lat", "lon", "year_min", "year_max", "span_years", "n_obs", "n_censored", "sigma_pct",
+                     "sigma_vs_method_median", "rate_v6_site_only", "rate_v6_lo_site_only", "rate_v6_hi_site_only",
+                     "p6_thickening_site_only", "class_v6_site_only", "rate_v6", "rate_v6_lo", "rate_v6_hi",
+                     "p6_thickening", "class_v6", "rate_v6_student_slopes", "class_v6_student_slopes",
+                     "rate_pct_dec", "rate_lo", "rate_hi", "class_site"]
+            tk = tk[[c for c in keep_ if c in tk]].sort_values(["class_v6", "rate_v6_site_only"])
+            tk.to_csv(out / "aldi_v6_checks_thinning_records.csv", index=False)
+            n_un = int((tk.class_v6 == "indeterminate").sum())
+            L.append(f"\nRECORDS THAT THIN ON THEIR OWN RECORD (trend-unpooled fit) OR IN MODEL A ({len(tk)}; "
+                     f"{n_un} of them unresolved in Model A; aldi_v6_checks_thinning_records.csv):")
+            for w in tk.itertuples():
+                L.append(f"  {w.site_id} ({w.family}, region {w.region_id}: {w.region_series} series, regional rate "
+                         f"{w.region_rate_v6:+.1f}; {w.year_min}-{w.year_max}, {w.n_obs} values, sigma {w.sigma_pct:.1f} % = "
+                         f"{w.sigma_vs_method_median:.2f} x its method's median): unpooled {w.rate_v6_site_only:+.1f} "
+                         f"({w.rate_v6_lo_site_only:+.1f} to {w.rate_v6_hi_site_only:+.1f}), P(thickening) "
+                         f"{w.p6_thickening_site_only:.3f}, {w.class_v6_site_only}; hierarchical {w.rate_v6:+.1f} "
+                         f"({w.rate_v6_lo:+.1f} to {w.rate_v6_hi:+.1f}), P(thickening) {w.p6_thickening:.3f}, "
+                         f"{w.class_v6}; Student-t trends {getattr(w, 'rate_v6_student_slopes', np.nan):+.1f}, "
+                         f"{getattr(w, 'class_v6_student_slopes', 'n/a')}; Akritas-Theil-Sen {w.rate_pct_dec:+.1f} "
+                         f"({w.rate_lo:+.1f} to {w.rate_hi:+.1f}), {w.class_site}")
+            un6 = tk[tk.class_v6 == "indeterminate"]
+            if len(un6):
+                L.append(f"  of the {len(un6)} unresolved in Model A: records of 12-15 years {int((un6.span_years <= 15).sum())}, "
+                         f"16-25 {int(((un6.span_years > 15) & (un6.span_years <= 25)).sum())}, 26+ "
+                         f"{int((un6.span_years > 25).sum())}; noisier than their method's median "
+                         f"{int((un6.sigma_vs_method_median > 1).sum())}; hierarchical median below 0 at "
+                         f"{int((un6.rate_v6 < 0).sum())}, P(thickening) {un6.p6_thickening.min():.2f}-"
+                         f"{un6.p6_thickening.max():.2f}; thinning also by Akritas-Theil-Sen "
+                         f"{int(thin_(un6.class_site).sum())}; regions " + ", ".join(
+                             f"{k} ({v})" for k, v in un6.region_id.value_counts().items()))
 
     # --- acceleration: change of the trend between the two halves of the long records ---
     # (added 2026-11-14; the window comparison of period_check is descriptive) A hinge at the
@@ -3392,20 +3482,20 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     # cannot pull the methods together) and on the model B residuals. Second test, at the same
     # place (series within 1 km): if the methods measured different things, two series of
     # different methods at one place would differ more than two series of the same method.
-    # Added 2026-11-14 (second review): the trends of the site-only fit (same noise model,
+    # Added 2026-11-14 (second review): the trends of the trend-unpooled fit (same noise model,
     # no pooling of trends) beside the per-site OLS trends, and every contrast recomputed with
     # each shared region left out in turn (loro_*; all rows in aldi_v6_checks_method_loro.csv).
     mrows, loro_all = [], []
     cm_ = ck.merge(res[["site_id", "lat", "lon"] + (["location_id"] if "location_id" in res else [])],
                    on="site_id", how="left")
     # Unpooled trends are noisy and, as percentages, skewed to the right (100 (e^b - 1)
-    # stretches large b), so in the unweighted contrast of the site-only trends a few short
+    # stretches large b), so in the unweighted contrast of the trend-unpooled trends a few short
     # records with extreme rates dominate. The precision-weighted row (added 2026-11-14, second
     # review) makes the same within-region contrast on the log scale (log units x 100), each
     # series weighted by 1 / (its posterior variance + tau_site^2), as in a random-effects
     # meta-analysis, and turns the differences back into % per decade.
-    measures = [("rate_v6", "hierarchical rate", False), ("rate_v6_site_only", "site-only Bayesian rate", False),
-                ("rate_v6_site_only", "site-only Bayesian rate, precision-weighted", True),
+    measures = [("rate_v6", "hierarchical rate", False), ("rate_v6_site_only", "trend-unpooled Bayesian rate", False),
+                ("rate_v6_site_only", "trend-unpooled Bayesian rate, precision-weighted", True),
                 ("ols_rate", "per-site OLS rate", False), ("resid_rate", "model B residual trend", False)]
     zq = stats.norm.ppf(0.5 + cfg["trend"]["ci_level"] / 2)
     back = lambda x: 100 * np.expm1(np.asarray(x, float) / 100)   # log units x 100 -> % per decade
@@ -3459,7 +3549,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         for same in [True, False]:
             gp = pr[pr.same == same] if len(pr) else pr
             for col, what in [(c, w) for c, w in [("rate_v6", "hierarchical rate"),
-                                                  ("rate_v6_site_only", "site-only Bayesian rate"),
+                                                  ("rate_v6_site_only", "trend-unpooled Bayesian rate"),
                                                   ("ols_rate", "per-site OLS rate")] if c in pr]:
                 mrows.append({"measure": f"{what}, |difference| of two series at one place",
                               "group": "same method" if same else "different methods", "n": len(gp),
@@ -3477,7 +3567,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
              f"difference with one shared region left out, smallest and largest; {int((nfam >= 2).sum())} of "
              f"{len(nfam)} regions hold two or more methods, {n_mixed_places} places {n_mixed_series} series; "
              f"pair rows: n = pairs of series, which share series and places, so a description, not a test; "
-             f"precision-weighted: site-only trends on the log scale, weights 1 / (posterior variance + tau_site^2), "
+             f"precision-weighted: trend-unpooled trends on the log scale, weights 1 / (posterior variance + tau_site^2), "
              f"mean = weighted mean):")
     L.append(ma.round(2).to_string(index=False))
     if loro_all:
@@ -3561,11 +3651,8 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     # --- simulation: spread between the simulated networks (added 2026-11-14) ---
     # The series of one network share regions and hyperparameters, so the standard error of
     # a mean coverage comes from the spread between networks, not from the pooled series.
-    if val_dir is not None and (Path(val_dir) / "aldi_v6_simulation_reps.csv").exists():
-        rp = pd.read_csv(Path(val_dir) / "aldi_v6_simulation_reps.csv")
-        for f in sorted(Path(val_dir).glob("aldi_v6_simulation_reps_*.csv")):   # scenarios run later
-            extra = pd.read_csv(f)
-            rp = pd.concat([rp, extra[~extra.scenario.isin(set(rp.scenario))]], ignore_index=True)
+    if rp_all is not None:
+        rp = rp_all
         g = rp.groupby(["scenario", "method"], sort=False)
         sn = g.agg(networks=("rep", "nunique"), coverage90=("coverage90", "mean"),
                    coverage90_sd=("coverage90", "std"), coverage90_min=("coverage90", "min"),
@@ -3595,6 +3682,40 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                      "that share): " + "; ".join(
                          f"{w.scenario} {w.method} {int(round(w.network_cover95 * w.networks))} of {int(w.networks)} "
                          f"({w.network_cover95_lo:.2f} to {w.network_cover95_hi:.2f})" for w in nc.itertuples()))
+
+    # --- rare local thinning among thickening neighbours (scenario A_thin, third review) ---
+    th = None if rp_all is None else rp_all[rp_all.scenario == "A_thin"]
+    if th is not None and len(th) and "planted_n" in th:
+        rows_t = []
+        for m_, g_ in th.groupby("method", sort=False):
+            for grp in ["all"] + CHECK_SPANS:
+                sfx = "" if grp == "all" else f"_{grp}"
+                n_ = float(g_[f"planted_n{sfx}"].sum())
+                if n_ == 0:
+                    continue
+                row_ = {"method": m_, "record_length": grp, "networks": int(g_.rep.nunique()),
+                        "planted_series": int(n_)}
+                for c_ in ["thinning", "unresolved", "stable", "thickening"]:
+                    row_[f"{c_}_pct"] = 100 * g_[f"planted_{c_}{sfx}"].sum() / n_
+                if grp == "all":
+                    sh_ = g_.planted_thinning / g_.planted_n
+                    row_["thinning_pct_se_between_networks"] = (100 * sh_.std(ddof=1) / np.sqrt(len(sh_))
+                                                                if len(sh_) > 1 else np.nan)
+                    row_["coverage90_pct"] = 100 * g_.planted_covered.sum() / n_
+                    row_["mean_estimate_pct_dec"] = g_.planted_est_sum.sum() / n_
+                    row_["others_false_thinning_pct"] = 100 * g_.others_false_thinning.sum() / g_.others_n.sum()
+                    row_["others_coverage90_pct"] = 100 * g_.others_covered.sum() / g_.others_n.sum()
+                    for c_ in ["max_rhat", "divergences"]:
+                        if c_ in g_ and g_[c_].notna().any():
+                            row_[c_] = float(g_[c_].max()) if c_ == "max_rhat" else float(g_[c_].sum())
+                rows_t.append(row_)
+        tt = pd.DataFrame(rows_t)
+        tt.to_csv(out / "aldi_v6_checks_local_thinning.csv", index=False)
+        L.append(f"\nRARE LOCAL THINNING AMONG THICKENING NEIGHBOURS (scenario A_thin: {THIN_PER_NETWORK} series per "
+                 f"network thin at {THIN_RATE_PCT:+.0f} %/dec, at most one per region of >= {THIN_MIN_REGION} series "
+                 f"with a positive regional trend, spread over the record lengths; % of the planted series in each "
+                 f"class; false thinning = other series with a true rate >= 0 classed thinning):")
+        L.append(tt.round(2).to_string(index=False))
 
     # --- MCMC diagnostics and the survey-date drift flag ---
     mt = mcmc_table(summary)
@@ -3629,6 +3750,11 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
 #   A_misspec what model A does not assume (added 2026-11-14): a change of trend in each
 #             record, persistent region-year anomalies and Student-t(4) innovations; the
 #             true trend is the least-squares line of the noise-free trajectory
+#   A_thin    as A_fit, but 12 series per network thin at -10 %/dec among thickening
+#             neighbours (third review, 2026-11-14): refitted with model A, model A with
+#             Student-t trends, the trend-unpooled fit, Akritas-Theil-Sen and OLS
+#   A_ppc     posterior predictive check of the class counts: each network from one
+#             posterior draw of the real fit, refitted with model A
 #   B_fit     k_i from the fitted family means and spread, residual trends from the fitted
 #             hierarchy
 #   B_climate residual trend 0 everywhere: every "deeper/shallower than TDD" call is false
@@ -3853,6 +3979,139 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
     return rows
 
 
+# A_thin (added 2026-11-14, third review of the paper): rare local thinning among thickening
+# neighbours. Can the pooled model still see a series that thins where its region thickens?
+THIN_RATE_PCT = -10.0         # true rate of the planted series, %/dec
+THIN_PER_NETWORK = 12         # planted series per network (about 5 % of the series)
+THIN_MIN_REGION = 3           # only in regions of at least this many series
+
+
+def plant_thinning(arr, beta, rng, n_plant=THIN_PER_NETWORK, min_region=THIN_MIN_REGION):
+    """Series that thin among thickening neighbours: at most one per region, only in regions of
+    at least min_region series whose drawn regional trend is positive, taken in turn from the
+    four record-length groups (so about n_plant / 4 from each)."""
+    r_site = np.asarray(arr["r_idx_site"])
+    size = np.bincount(r_site, minlength=arr["n_regions"])
+    ok = (size >= min_region) & (np.asarray(beta) > 0)
+    bins = np.asarray(span_bins_sim(arr)).astype(str)
+    used, planted = set(), []
+    while len(planted) < n_plant:
+        added = False
+        for b in rng.permutation(CHECK_SPANS):
+            if len(planted) >= n_plant:
+                break
+            cand = [i for i in np.nonzero(bins == b)[0] if ok[r_site[i]] and int(r_site[i]) not in used]
+            if cand:
+                i = int(rng.choice(cand))
+                planted.append(i)
+                used.add(int(r_site[i]))
+                added = True
+        if not added:
+            break
+    mask = np.zeros(arr["n_sites"], bool)
+    mask[planted] = True
+    return mask
+
+
+def class_counts(cls, lo, hi, est, true_rate, mask, bins, prefix):
+    """How many of the series in mask fall in each class (thinning, unresolved, stable,
+    thickening), overall and by record length, how many 90 % intervals contain the true rate,
+    and the sum of the estimates. Counts, so the paper checks can pool them over networks."""
+    cls = np.asarray(cls).astype(str)
+    lo, hi, est, true_rate = (np.asarray(v, float) for v in (lo, hi, est, true_rate))
+    bins = np.asarray(bins).astype(str)
+    grp = {"thinning": np.isin(cls, ["rapid_thinning", "gradual_thinning"]), "unresolved": cls == "indeterminate",
+           "stable": cls == "stable", "thickening": np.isin(cls, ["rapid_thickening", "gradual_thickening"])}
+    cover = (lo <= true_rate) & (true_rate <= hi)
+    out = {f"{prefix}_n": int(mask.sum()), f"{prefix}_covered": int((cover & mask).sum()),
+           f"{prefix}_est_sum": float(est[mask].sum())}
+    for g, k in grp.items():
+        out[f"{prefix}_{g}"] = int((k & mask).sum())
+    for b in CHECK_SPANS:
+        mb = mask & (bins == b)
+        out[f"{prefix}_n_{b}"] = int(mb.sum())
+        for g, k in grp.items():
+            out[f"{prefix}_{g}_{b}"] = int((k & mb).sum())
+    if prefix == "others":
+        out["others_false_thinning"] = int((grp["thinning"] & mask & (true_rate >= 0)).sum())
+    return out
+
+
+def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
+    """Scenarios A_thin and A_ppc (added 2026-11-14, third review of the paper).
+
+    A_thin: trends drawn as in A_fit, then THIN_PER_NETWORK series thin at THIN_RATE_PCT among
+    thickening neighbours (plant_thinning). Each network is refitted with Model A (normal series
+    trends, the main model), Model A with Student-t series trends, the trend-unpooled fit (no
+    pooling of trends; same noise model and region-year term), the per-site Akritas-Theil-Sen
+    method with AR(1) (v5.2) and per-site OLS; the classes of the planted series and the false
+    thinning of the others are counted.
+    A_ppc: posterior predictive check of the class counts. Each network takes one posterior draw
+    of the real fit (series trends, noise SDs, AR(1) coefficients, region-year SD), simulates the
+    real design from it and is refitted with Model A; the paper checks compare the counts of
+    unresolved and stable series by record length with the observed counts."""
+    bins = span_bins_sim(arr)
+    ns, nr = arr["n_sites"], arr["n_regions"]
+    lvl = cfg["trend"]["ci_level"]
+    thin_cls = ["rapid_thinning", "gradual_thinning"]
+    rows = []
+    for rep in range(reps):
+        if scen == "A_ppc":
+            j = int(rng.integers(len(fitted["post_slope"])))
+            slope = np.asarray(fitted["post_slope"][j], float)
+            tr = {"a": arr["ybar"], "rho_f": fitted["post_rho"][j], "sigma": fitted["post_sigma"][j],
+                  "sd_ry": float(fitted["post_sd_ry"][j]), "slope": slope}
+            planted = np.zeros(ns, bool)
+            fits = [("v6_ry", {})]
+        else:
+            beta = fitted["mu"] + fitted["tau_region"] * rng.normal(size=nr)
+            slope = beta[arr["r_idx_site"]] + fitted["tau_site"] * rng.normal(size=ns)
+            planted = plant_thinning(arr, beta, rng)
+            slope[planted] = np.log1p(THIN_RATE_PCT / 100)
+            tr = {"a": arr["ybar"], "rho_f": fitted["rho_f"], "sigma": fitted["sigma"], "sd_ry": fitted["sd_ry"],
+                  "slope": slope}
+            fits = [("v6_ry", {}), ("v6_student", {"slope_dist": "student"}), ("v6_unpooled", {"slope_dist": "none"})]
+        sim = simulate(arr, tr, rng)
+        true_rate = pct(slope)
+        mu_true = float(np.mean(true_rate))
+        start = len(rows)
+        for name, kw in fits:
+            mc = fit(sim, "A", region_year=True, seed=rep, target_accept=0.95, **kw, **fit_kw)
+            s, net, rate = summarise_A(mc, sim, cfg)
+            est, lo, hi, cls = (s.rate_v6.to_numpy(), s.rate_v6_lo.to_numpy(), s.rate_v6_hi.to_numpy(),
+                                s.class_v6.to_numpy())
+            mu_args = ()
+            if "mu" in net:
+                mu_draw = rate.mean(1)
+                mu_args = (np.median(mu_draw), *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
+            row = score(scen, name, est, lo, hi, cls, true_rate, bins, *mu_args)
+            row.update(rep=rep, **diagnostics(mc))
+            row.update(class_counts(cls, lo, hi, est, true_rate, np.ones(ns, bool), bins, "all"))
+            if planted.any():
+                row.update(class_counts(cls, lo, hi, est, true_rate, planted, bins, "planted"))
+                row.update(class_counts(cls, lo, hi, est, true_rate, ~planted, bins, "others"))
+            rows.append(row)
+            del mc
+            free_jit()
+        if scen == "A_thin":
+            res, _ = v52(sim, cfg)
+            est_o, lo_o, hi_o, cls_o = ols_site(sim, cfg, lvl)
+            for name, est, lo, hi, cls in [("v5.2_site", res.rate_pct_dec.to_numpy(), res.rate_lo.to_numpy(),
+                                            res.rate_hi.to_numpy(), res.class_site.to_numpy()),
+                                           ("ols_site", est_o, lo_o, hi_o, cls_o)]:
+                row = {**score(scen, name, est, lo, hi, cls, true_rate, bins), "rep": rep}
+                row.update(class_counts(cls, lo, hi, est, true_rate, np.ones(ns, bool), bins, "all"))
+                row.update(class_counts(cls, lo, hi, est, true_rate, planted, bins, "planted"))
+                row.update(class_counts(cls, lo, hi, est, true_rate, ~planted, bins, "others"))
+                rows.append(row)
+        print(f"{scen} rep {rep}: " + "; ".join(
+            f"{r['method']} cov {r['coverage90']:.2f}" + (
+                f", planted thinning {r['planted_thinning']} unresolved {r['planted_unresolved']} thickening "
+                f"{r['planted_thickening']} of {r['planted_n']}" if "planted_n" in r else
+                f", unresolved {r['all_unresolved']} stable {r['all_stable']}") for r in rows[start:]), flush=True)
+    return rows
+
+
 def run_B(arr, cfg, fitted, scen, rng, reps, fit_kw, real_x):
     m, rp = cfg["classes"]["stable_margin_pct_dec"], cfg["classes"]["rapid_pct_dec"]
     bins = span_bins_sim(arr)
@@ -3906,7 +4165,12 @@ def fitted_values(arr, arrB, cfg, fit_kw):
          "tau_site": float(np.mean(smp["tau_site"])),
          "rho_f": np.asarray(smp["rho_family"]).mean(0) * 0.95,
          "sigma": np.asarray(smp["sigma_site"]).mean(0),
-         "sd_ry": float(np.mean(smp["sd_region_year"])) if "sd_region_year" in smp else 0.0}
+         "sd_ry": float(np.mean(smp["sd_region_year"])) if "sd_region_year" in smp else 0.0,
+         # posterior draws for the posterior predictive scenario A_ppc (added 2026-11-14)
+         "post_slope": np.asarray(smp["slope_site"]), "post_sigma": np.asarray(smp["sigma_site"]),
+         "post_rho": np.asarray(smp["rho_family"]) * 0.95,
+         "post_sd_ry": (np.asarray(smp["sd_region_year"]) if "sd_region_year" in smp
+                        else np.zeros(np.asarray(smp["mu"]).shape[0]))}
     mcB = fit(arrB, "B", region_year=False, target_accept=0.95, **fit_kw)
     sb = mcB.get_samples()
     f.update(mu_d=float(np.mean(sb["mu"])), tau_region_d=float(np.mean(sb["tau_region"])),
@@ -3923,7 +4187,7 @@ def simulation_check(cfg, argv=None):
     ap.add_argument("out_dir")
     ap.add_argument("tdd_file", nargs="?")
     ap.add_argument("--reps", type=int, default=10)
-    ap.add_argument("--scenarios", default="A_fit,A_heavy,A_null,A_misspec,B_fit,B_climate,B_tdderr,B_nok")
+    ap.add_argument("--scenarios", default="A_fit,A_heavy,A_null,A_misspec,A_thin,A_ppc,B_fit,B_climate,B_tdderr,B_nok")
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--warmup", type=int, default=500)
     ap.add_argument("--draws", type=int, default=500)
@@ -3954,7 +4218,9 @@ def simulation_check(cfg, argv=None):
     rng = np.random.default_rng(cfg.get("random_seed", 42))
     rows = []
     for sc in args.scenarios.split(","):
-        if sc.startswith("A_"):
+        if sc in ("A_thin", "A_ppc"):
+            rows += run_A_extra(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
+        elif sc.startswith("A_"):
             rows += run_A(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
         else:
             rows += run_B(arr, cfg, fitted, sc, rng, args.reps, fit_kw, real_x)

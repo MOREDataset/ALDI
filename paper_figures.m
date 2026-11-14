@@ -22,20 +22,23 @@
 %
 % Every figure has one panel and makes one point of the Results. Numbering follows the
 % draft of 14 November 2026 (three research questions; supplement numbered by first
-% citation). Model B (the part of the trend associated with air temperature) was set
+% citation; draft 4 after the third review of that day: the paper is an uncertainty-aware
+% assessment of ALT trends, not an index, and the fit without pooling of trends is called
+% "trend-unpooled"). Model B (the part of the trend associated with air temperature) was set
 % aside for a follow-up paper on that day: MODEL_B below brings its figure and tables
 % back, under names that start with B_.
 % Main text
 %   Fig 1  Sites on the IPA permafrost map, coloured by ALDI class          (Results 3.3)
 %   Fig 2  Regional and network rates of ALT change                         (Results 3.2)
-%   Fig 3  Site classes by record length, per-site method vs hierarchical   (Results 3.3)
+%   Fig 3  Site classes by record length: per-site Sen + AR(1), trend-unpooled and
+%          hierarchical                                                    (Results 3.3)
 %   Fig 4  Simulation: coverage of 90 % intervals by record length          (Results 3.3)
 %   Table 2  Summaries of the network trend: mu, mean of the regions, means over equal-area
 %            cells, places and series, from the posterior draws (Table 1, published
 %            studies, is not made here)
 % Supplement
 %   Fig S1  Site-years per year by measurement method
-%   Fig S2  Sensitivity runs: network rate of each run
+%   Fig S2  Sensitivity runs: network rate of each run (without the subsidence scenarios)
 %   Fig S3  Regional trends of all regions with their 90 and 95 % intervals
 %   Fig S4  Site rate on its own (per-site OLS) vs in the hierarchical model
 %   Table S1  Data sources of the analysed series
@@ -43,14 +46,19 @@
 %   Table S3  Agreement of the three methods: within regions (with each shared region left
 %             out in turn) and at one place (TableS3_method_agreement, TableS3_method_loro),
 %             and the series of each method (TableS3_by_method)
-%   Table S4  Sensitivity runs and class margins
+%   Table S4  Sensitivity runs and class margins (without the subsidence scenarios)
 %   Table S5  Years of record a site needs, per method
 %   Table S6  By record length: observed and expected shares, the standard per-site test
 %   Table S7  Rates in cm per decade beside published values
-%   Table S8  Simulation check
+%   Table S8  Simulation check (TableS8_simulation), and rare local thinning among
+%             thickening neighbours (TableS8_simulation_local_thinning; scenario A_thin)
 %   Table S9  Regional trends: median, 90 and 95 % intervals, P(trend > 0)
-%   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), site-only
-%             Bayesian fit) and from the hierarchical model
+%   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), trend-unpooled
+%             Bayesian fit) and from the hierarchical model (TableS10_rates_and_classes_by_method),
+%             and the records that thin on their own record or in the hierarchical model
+%             (TableS10_records_thinning_on_their_own)
+%   Table S11 Subsidence scenarios (Text S1): the lowering of the permafrost table relative
+%             to a fixed elevation, a different quantity from ALT, so not sensitivity runs
 % With MODEL_B = true also: B_Fig_expected_vs_residual (Fig 5 until 14 November 2026),
 % B_Fig_ground_ice_within_regions, B_Table_decomposition, B_Table_residual_by_ice_and_method,
 % and the Model B columns and markers of the tables above and of Fig S2.
@@ -231,38 +239,54 @@ legend(ax, [h1 h2], {sprintf('Network rate, %.1f (%.1f to %.1f)', nw), ...
     sprintf('Mean of sites, %.1f', nsm(1))}, 'Location', 'southoutside', 'Box', 'off');
 save_figure(fig, OUT, 'Fig2_regional_rates');
 
-%% Figure 3: site classes by record length, per-site method vs hierarchical
-% Black dashes (3_aldi.py --checks): the share of sites expected NOT to be resolved yet,
-% from each record's years and noise and the hierarchical rate as the true rate; for a
-% site on its own on the S bars, with the shared year-to-year anomalies of its region
-% removed on the H bars. The hierarchical model also pools toward the region, so it can
-% resolve more sites than its dash. Where a bar's grey top reaches its dash, the
-% unresolved sites are what record length allows, not a weakness of the method.
-fig = new_figure(12, 7.5);
+%% Figure 3: site classes by record length, three methods
+% S: per-site Akritas-Theil-Sen trend with AR(1) correction (v5.2); U: the trend-unpooled fit
+% (Model A without pooling of trends: same noise model, censoring and region-year term, each
+% record on its own; third review of 14 November 2026); H: the hierarchical model (this study).
+% U against S shows what the noise model adds, H against U what pooling adds.
+% Black dashes (3_aldi.py --checks): the share of sites expected NOT to be resolved yet, from
+% each record's years and noise and the hierarchical rate as the true rate; with the shared
+% year-to-year anomalies of its region left in on the S bars and removed on the U and H bars.
+% For H the dash is an upper bound, because pooling also draws on the region.
+have_so = ismember('class_v6_site_only', res.Properties.VariableNames);
+nm = 2 + have_so;                                    % bars per record-length group
+fig = new_figure(13, 7.5);
 ax = axes(fig); hold(ax, 'on');
-Y = zeros(8, numel(CLS)); xpos = [1 2 4 5 7 8 10 11]; nbin = zeros(1, 4);
+Y = zeros(4 * nm, numel(CLS)); xpos = zeros(1, 4 * nm); nbin = zeros(1, 4); blab = strings(1, 4 * nm);
 for b = 1:4
     k = span_bin == SPAN_L(b); nbin(b) = sum(k);
-    Y(2*b - 1, :) = 100 * mean(res.class_site(k) == CLS, 1);
-    Y(2*b, :)     = 100 * mean(res.class_v6(k) == CLS, 1);
+    j0 = (b - 1) * nm;
+    xpos(j0 + (1:nm)) = (b - 1) * (nm + 1) + (1:nm);
+    Y(j0 + 1, :) = 100 * mean(res.class_site(k) == CLS, 1); blab(j0 + 1) = "S";
+    if have_so
+        Y(j0 + 2, :) = 100 * mean(res.class_v6_site_only(k) == CLS, 1); blab(j0 + 2) = "U";
+    end
+    Y(j0 + nm, :) = 100 * mean(res.class_v6(k) == CLS, 1); blab(j0 + nm) = "H";
 end
 hb = bar(ax, xpos, Y, 0.85, 'stacked', 'EdgeColor', 'none');
 for c = 1:numel(CLS), hb(c).FaceColor = CLS_C(c, :); end
-ylim(ax, [0 100]); xlim(ax, [0 12]);
-xticks(ax, [1.5 4.5 7.5 10.5]); xticklabels(ax, compose('%s\\newlinen=%d', SPAN_L', nbin'));
-text(ax, xpos, 101 * ones(size(xpos)), repmat(["S" "H"], 1, 4), 'HorizontalAlignment', 'center', ...
+ylim(ax, [0 100]); xlim(ax, [0 xpos(end) + 1]);
+xticks(ax, mean(reshape(xpos, nm, 4), 1)); xticklabels(ax, compose('%s\\newlinen=%d', SPAN_L', nbin'));
+text(ax, xpos, 101 * ones(size(xpos)), blab, 'HorizontalAlignment', 'center', ...
     'VerticalAlignment', 'bottom', 'FontSize', FONT - 1);
-xlabel(ax, {'Record length (years)', 'S: per-site Sen + AR(1), H: hierarchical (this study)'});
+if have_so
+    xlabel(ax, {'Record length (years)', 'S: per-site Sen + AR(1), U: trend-unpooled, H: hierarchical (this study)'});
+else
+    xlabel(ax, {'Record length (years)', 'S: per-site Sen + AR(1), H: hierarchical (this study)'});
+end
 ylabel(ax, 'Share of sites (%)');
 hL = fliplr(hb); lL = fliplr(CLS_L); hE = [];
 if have_ck
     for b = 1:4
         k = cksp.span == SPAN_L(b);
         if ~any(k), continue; end
+        j0 = (b - 1) * nm;
         yS = 100 - cksp.expected_unresolved_alone_pct(k);
-        yH = 100 - cksp.expected_unresolved_network_pct(k);
-        hE = plot(ax, xpos(2*b - 1) + [-0.42 0.42], [yS yS], 'k-', 'LineWidth', 1.4);
-        plot(ax, xpos(2*b) + [-0.42 0.42], [yH yH], 'k-', 'LineWidth', 1.4);
+        yN = 100 - cksp.expected_unresolved_network_pct(k);
+        hE = plot(ax, xpos(j0 + 1) + [-0.42 0.42], [yS yS], 'k-', 'LineWidth', 1.4);
+        for j = 2:nm
+            plot(ax, xpos(j0 + j) + [-0.42 0.42], [yN yN], 'k-', 'LineWidth', 1.4);
+        end
     end
 end
 if ~isempty(hE)                         % bars and a line: concatenate, do not assign
@@ -387,8 +411,9 @@ else
 end
 
 %% Table S10: rates and classes from the record alone and from the hierarchical model
-% per site: the Akritas-Theil-Sen trend with AR(1) correction (v5.2) and the site-only
-% Bayesian fit (Model A without pooling of trends, same noise model); hierarchical: Model A.
+% per site: the Akritas-Theil-Sen trend with AR(1) correction (v5.2) and the trend-unpooled
+% Bayesian fit (Model A without pooling of trends, same noise model; called site-only until the
+% third review of 14 November 2026); hierarchical: Model A.
 % P(thickening) of Sen + AR(1) is the normal approximation Phi(rate / SE), not a posterior.
 row = @(name, a, b, c) {string(name), string(a), string(b), string(c)};
 iw = @(lo, hi) sprintf('%.1f', median(hi - lo, 'omitnan'));
@@ -417,8 +442,19 @@ for c = 1:numel(CLS)
     if have_so, nc = sum(res.class_v6_site_only == CLS(c)); else, nc = '-'; end
     rows = [rows; row(CLS_L(c), sum(res.class_site == CLS(c)), nc, sum(res.class_v6 == CLS(c)))]; %#ok<AGROW>
 end
-T2 = cell2table(rows, 'VariableNames', {'quantity', 'per_site_Sen_AR1', 'site_only_bayesian', 'hierarchical'});
+T2 = cell2table(rows, 'VariableNames', {'quantity', 'per_site_Sen_AR1', 'trend_unpooled_bayesian', 'hierarchical'});
 writetable(T2, fullfile(OUT, 'TableS10_rates_and_classes_by_method.csv'));
+% second part (third review): the records that thin on their own record (trend-unpooled fit)
+% or in the hierarchical model, with their region, record, noise and the rate of each method
+f_tr = fullfile(CK, 'aldi_v6_checks_thinning_records.csv');
+if have_ck && isfile(f_tr)
+    trk = read_text_cols(f_tr, {'site_id', 'family', 'class_v6_site_only', 'class_v6', ...
+        'class_v6_student_slopes', 'class_site'});
+    trk.region_name = strings(height(trk), 1);
+    for i = 1:height(trk), trk.region_name(i) = region_name(trk.region_lat(i), trk.region_lon(i)); end
+    trk = movevars(trk, 'region_name', 'After', 'region_id');
+    writetable(trk, fullfile(OUT, 'TableS10_records_thinning_on_their_own.csv'));
+end
 
 %% Model B (MODEL_B): decomposition for every climate input and check (Table 3 until 14 Nov 2026)
 if MODEL_B
@@ -498,10 +534,20 @@ if have_sens
     lab_s1 = strrep(T_s1.run, '_', ' ');
     [tf, loc] = ismember(T_s1.run, RUN_ID); lab_s1(tf) = RUN_L(loc(tf));
     T_s1 = addvars(T_s1, lab_s1, 'After', 'run', 'NewVariableNames', 'label');
-    writetable(T_s1, fullfile(OUT, 'TableS4_sensitivity.csv'));
+    % the subsidence scenarios estimate a different quantity, the lowering of the permafrost
+    % table relative to a fixed elevation, so they are not sensitivity runs of the ALT trend
+    % (third review of 14 November 2026): own table (Table S11, Text S1), not in Fig S2
+    sub = startsWith(T_s1.run, "subsidence");
+    writetable(T_s1(~sub, :), fullfile(OUT, 'TableS4_sensitivity.csv'));
+    if any(sub)
+        cols11 = intersect({'run', 'label', 'n_sites', 'n_subsidence_series', 'A_network_rate', 'A_network_lo95', ...
+            'A_network_hi95', 'A_mean_site_rate', 'A_rapid_thickening', 'A_gradual_thickening', 'A_stable', ...
+            'A_gradual_thinning', 'A_rapid_thinning', 'A_indeterminate'}, T_s1.Properties.VariableNames, 'stable');
+        writetable(T_s1(sub | T_s1.run == "main", cols11), fullfile(OUT, 'TableS11_subsidence_scenarios.csv'));
+    end
 
     % one row per run, both models on one rate axis; dotted lines mark the main run
-    sf = sens(~isnan(sens.A_network_rate), :);           % margins_* runs only reclassify: no rates
+    sf = sens(~isnan(sens.A_network_rate) & ~startsWith(sens.run, "subsidence"), :);   % margins_* runs: no rates
     nrun = height(sf); yy = (nrun:-1:1)';
     m0 = find(sf.run == "main", 1);
     C_EXP = [0.27 0.45 0.70];
@@ -701,7 +747,8 @@ if have_ck
     copies = {'aldi_v6_checks_detection.csv', 'TableS5_detection_time.csv'
               'aldi_v6_checks_by_span.csv', 'TableS6_by_record_length.csv'
               'aldi_v6_checks_cm.csv', 'TableS7_rates_in_cm.csv'
-              'aldi_v6_checks_method_loro.csv', 'TableS3_method_loro.csv'};
+              'aldi_v6_checks_method_loro.csv', 'TableS3_method_loro.csv'
+              'aldi_v6_checks_local_thinning.csv', 'TableS8_simulation_local_thinning.csv'};
     if MODEL_B
         copies = [copies; {'aldi_v6_checks_ice_method.csv', 'B_Table_residual_by_ice_and_method.csv'}];
     end
@@ -870,11 +917,13 @@ if have_ck
     p('  shrinkage toward the region (median): %s', strjoin(compose('%s yr %.2f', cksp.span, cksp.median_shrinkage)', ', '));
     keys = ["share that is regional" "class of a site with NO data" "POSTERIOR EXPECTED CLASS COUNTS" ...
             "P(rate >" "MCMC:" "survey date drift" "site-years by method, all" "UNRESOLVED RECORDS" ...
-            "site-only Bayesian fit (same noise" "site-only fit, classes of all" "ACCELERATION" ...
+            "trend-unpooled Bayesian fit (same noise" "trend-unpooled fit, classes of all" "ACCELERATION" ...
             "median trend before" "p < 0.05: faster" "Benjamini-Hochberg over the records" ...
             "records, p < 0.05 faster" "EXCLUDED YEARS THAT MARK" "  no_refreeze: " "talik or possible_talik: " ...
             "wide_sensor_spacing: " "profile_inversion: " "analysed series with" ...
-            "coverage of the 95 % interval of the network rate"];
+            "coverage of the 95 % interval of the network rate" "POSTERIOR PREDICTIVE CHECK" ...
+            " yr: unresolved observed" "RECORDS THAT THIN ON THEIR OWN" "series, regional rate" ...
+            "unresolved in Model A: records of"];
     if MODEL_B, keys = [keys "with site fixed effects R2" "share of the TREND"]; end
     lines = splitlines(string(ck_txt));
     for kk = keys
@@ -904,7 +953,7 @@ if have_ck
         ma = rd(fullfile(CK, 'aldi_v6_checks_method.csv'));
         p('  agreement of the methods (Table S3), mean %%/dec and difference from probes within regions');
         p('  [difference, 95 %% interval, shared regions; smallest and largest with one shared region left out]:');
-        mlist = ["hierarchical rate" "site-only Bayesian rate" "site-only Bayesian rate, precision-weighted" ...
+        mlist = ["hierarchical rate" "trend-unpooled Bayesian rate" "trend-unpooled Bayesian rate, precision-weighted" ...
                  "per-site OLS rate"];
         if MODEL_B, mlist = [mlist "model B residual trend"]; end
         has_loro = ismember('loro_min', ma.Properties.VariableNames);
@@ -925,13 +974,29 @@ if have_ck
             end
             p('%s', s);
         end
-        for m = ["hierarchical rate" "site-only Bayesian rate" "per-site OLS rate"]
+        for m = ["hierarchical rate" "trend-unpooled Bayesian rate" "per-site OLS rate"]
             k1 = ma.measure == m + ", |difference| of two series at one place" & ma.group == "same method";
             k2 = ma.measure == m + ", |difference| of two series at one place" & ma.group == "different methods";
             if any(k1) && any(k2)
                 p('    two series at one place, %s: median |difference| %.1f same method (%d pairs), %.1f different methods (%d pairs)', ...
                     m, ma.median(k1), ma.n(k1), ma.median(k2), ma.n(k2));
             end
+        end
+    end
+    f_lt = fullfile(CK, 'aldi_v6_checks_local_thinning.csv');
+    if isfile(f_lt)
+        lt = read_text_cols(f_lt, {'method', 'record_length'});
+        p('  rare local thinning among thickening neighbours (simulation A_thin, Table S8): %% of the planted series');
+        for i = 1:height(lt)
+            s = sprintf('    %s, %s yr (%d planted, %d networks): thinning %.0f, unresolved %.0f, stable %.0f, thickening %.0f', ...
+                lt.method(i), lt.record_length(i), lt.planted_series(i), lt.networks(i), lt.thinning_pct(i), ...
+                lt.unresolved_pct(i), lt.stable_pct(i), lt.thickening_pct(i));
+            if lt.record_length(i) == "all"
+                s = [s sprintf(' (SE %.0f); coverage of 90 %% intervals %.0f; mean estimate %.1f %%/dec; other series falsely thinning %.1f %%', ...
+                    lt.thinning_pct_se_between_networks(i), lt.coverage90_pct(i), lt.mean_estimate_pct_dec(i), ...
+                    lt.others_false_thinning_pct(i))]; %#ok<AGROW>
+            end
+            p('%s', s);
         end
     end
     cm = rd(fullfile(CK, 'aldi_v6_checks_cm.csv'));
@@ -957,7 +1022,8 @@ if isfile(reg_f)
         rg.name(k0), rg.n_series(k0), rg.rate_median(k0), rg.lo95(k0), rg.hi95(k0)), '; '));
 end
 lines = splitlines(string(summ));
-kl = contains(lines, "site-years by method family") | contains(lines, "site-only fit (no pooling");
+kl = contains(lines, "site-years by method family") | contains(lines, "site-only fit (no pooling") | ...
+    contains(lines, "trend-unpooled fit (site_only run");
 if MODEL_B, kl = kl | contains(lines, "corr(expected, residual mean)"); end
 for ln = lines(kl)'
     p('  %s', strtrim(ln));
