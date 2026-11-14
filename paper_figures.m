@@ -50,8 +50,11 @@
 %   Table S5  Years of record a site needs, per method
 %   Table S6  By record length: observed and expected shares, the standard per-site test
 %   Table S7  Rates in cm per decade beside published values
-%   Table S8  Simulation check (TableS8_simulation), and rare local thinning among
-%             thickening neighbours (TableS8_simulation_local_thinning; scenario A_thin)
+%   Table S8  Simulation check (TableS8_simulation), rare local thinning among
+%             thickening neighbours (TableS8_simulation_local_thinning; scenario A_thin), the
+%             interval of the series mean by scenario (TableS8_simulation_series_mean) and the
+%             scores against other definitions of the true trend (TableS8_simulation_trend_targets;
+%             scenario A_misspec)
 %   Table S9  Regional trends: median, 90 and 95 % intervals, P(trend > 0)
 %   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), trend-unpooled
 %             Bayesian fit) and from the hierarchical model (TableS10_rates_and_classes_by_method),
@@ -748,7 +751,9 @@ if have_ck
               'aldi_v6_checks_by_span.csv', 'TableS6_by_record_length.csv'
               'aldi_v6_checks_cm.csv', 'TableS7_rates_in_cm.csv'
               'aldi_v6_checks_method_loro.csv', 'TableS3_method_loro.csv'
-              'aldi_v6_checks_local_thinning.csv', 'TableS8_simulation_local_thinning.csv'};
+              'aldi_v6_checks_local_thinning.csv', 'TableS8_simulation_local_thinning.csv'
+              'aldi_v6_checks_series_mean.csv', 'TableS8_simulation_series_mean.csv'
+              'aldi_v6_checks_trend_targets.csv', 'TableS8_simulation_trend_targets.csv'};
     if MODEL_B
         copies = [copies; {'aldi_v6_checks_ice_method.csv', 'B_Table_residual_by_ice_and_method.csv'}];
     end
@@ -923,7 +928,7 @@ if have_ck
             "wide_sensor_spacing: " "profile_inversion: " "analysed series with" ...
             "coverage of the 95 % interval of the" "POSTERIOR PREDICTIVE CHECK" ...
             " yr: unresolved observed" "RECORDS THAT THIN ON THEIR OWN" "series, regional rate" ...
-            "unresolved in Model A: records of"];
+            "unresolved in Model A: records of" "series-mean interval, " "trend target"];
     if MODEL_B, keys = [keys "with site fixed effects R2" "share of the TREND"]; end
     lines = splitlines(string(ck_txt));
     for kk = keys
