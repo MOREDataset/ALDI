@@ -32,8 +32,9 @@
 %   Fig 2  Regional and network rates of ALT change                         (Results 3.2)
 %   Fig 3  Site classes by record length: per-site Sen + AR(1), trend-unpooled and
 %          hierarchical                                                    (Results 3.3)
-%   Fig 4  Simulation: coverage of 90 % intervals by record length, per-site methods,
-%          trend-unpooled fit and hierarchical model                       (Results 3.3)
+%   Fig 4  Simulation: coverage of 90 % intervals by record length, per-site methods
+%          (OLS, Sen + AR(1), GLS with the noise covariance of Model A), trend-unpooled fit
+%          and hierarchical model                                          (Results 3.4)
 %   Table 2  Summaries of the network trend: mu, mean of the regions, means over equal-area
 %            cells, places and series, from the posterior draws (Table 1, published
 %            studies, is not made here)
@@ -51,7 +52,8 @@
 %             and the series of each method (TableS3_by_method)
 %   Table S4  Sensitivity runs and class margins (without the subsidence scenarios), and the
 %             classes that change in each run (TableS4_class_changes, by series
-%             TableS4_class_changes_by_series; fifth review)
+%             TableS4_class_changes_by_series; fifth review), and between the two long-chain
+%             runs (TableS4_class_changes_long_chains; sixth review)
 %   Table S5  Years of record a site needs, per method
 %   Table S6  By record length: observed and expected shares, the standard per-site test
 %   Table S7  Rates in cm per decade beside published values
@@ -59,13 +61,17 @@
 %             thickening neighbours (TableS8_simulation_local_thinning; scenario A_thin), the
 %             interval of the series mean by scenario (TableS8_simulation_series_mean) and the
 %             scores against other definitions of the true trend (TableS8_simulation_trend_targets;
-%             scenario A_misspec), and pooling against the noise model: per-site methods, the
-%             trend-unpooled fit and Model A on the same networks (TableS8_simulation_pooling_vs_noise)
+%             scenario A_misspec), and pooling against the noise model: per-site methods, per-site
+%             GLS, the trend-unpooled fit and Model A on the same networks
+%             (TableS8_simulation_pooling_vs_noise), and the series-mean interval on more networks
+%             (TableS8_simulation_series_mean_more_networks; sixth review)
 %   Table S9  Regional trends: median, 90 and 95 % intervals, P(trend > 0)
 %   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), trend-unpooled
 %             Bayesian fit) and from the hierarchical model (TableS10_rates_and_classes_by_method),
 %             and the records that thin on their own record or in the hierarchical model
-%             (TableS10_records_thinning_on_their_own)
+%             (TableS10_records_thinning_on_their_own), and every series with its rates, classes,
+%             class margin, Monte Carlo errors, the runs that change its class and a robustness
+%             label (TableS10_series_results; sixth review)
 %   Table S11 Subsidence scenarios (Text S1): the lowering of the permafrost table relative
 %             to a fixed elevation, a different quantity from ALT, so not sensitivity runs
 % With MODEL_B = true also: B_Fig_expected_vs_residual (Fig 5 until 14 November 2026),
@@ -102,9 +108,13 @@ FAM_L = ["Probing" "Thaw tube" "Ground temperature"];
 FAM_M = ['o' 's' '^'];
 FAM_C = [0.27 0.45 0.70; 0.90 0.60 0.20; 0.40 0.66 0.40];
 SPAN_L = ["12-15" "16-20" "21-25" "26+"];
-METH   = ["ols_site" "v5.2_site" "v6_unpooled" "v6_ry"];    % simulation methods (Fig 4)
-METH_L = ["Per-site OLS" "Per-site Sen + AR(1)" "Trend-unpooled (noise model of Model A)" "Hierarchical (this study)"];
-METH_C = [0.15 0.15 0.15; 0.62 0.62 0.62; 0.27 0.45 0.70; 0.70 0.09 0.17];
+% simulation methods (Fig 4); per-site GLS with the noise covariance of the trend-unpooled fit
+% added 2026-11-14 (sixth review), dashed, between OLS and the trend-unpooled Bayesian fit
+METH   = ["ols_site" "v5.2_site" "gls_site" "v6_unpooled" "v6_ry"];
+METH_L = ["Per-site OLS" "Per-site Sen + AR(1)" "Per-site GLS (noise covariance of Model A)" ...
+          "Trend-unpooled (noise model of Model A)" "Hierarchical (this study)"];
+METH_C = [0.15 0.15 0.15; 0.62 0.62 0.62; 0.10 0.55 0.50; 0.27 0.45 0.70; 0.70 0.09 0.17];
+METH_S = ["-o" "-o" "--s" "-o" "-o"];
 
 %% Read the results
 rd = @(f) readtable(f, 'TextType', 'string', 'VariableNamingRule', 'preserve', 'Delimiter', ',');
@@ -327,7 +337,7 @@ if ~isempty(sim4)
         k = sim4.scenario == "A_fit" & sim4.method == METH(m);
         if ~any(k), continue; end
         cov = arrayfun(@(b) sim4.(char("coverage_" + SPAN_L(b)))(k), 1:4);
-        hm(end+1) = plot(ax, 1:4, 100 * cov, '-o', 'Color', METH_C(m, :), 'MarkerFaceColor', METH_C(m, :), ...
+        hm(end+1) = plot(ax, 1:4, 100 * cov, METH_S(m), 'Color', METH_C(m, :), 'MarkerFaceColor', METH_C(m, :), ...
             'MarkerSize', 4, 'LineWidth', 1); %#ok<SAGROW>
         ml(end+1) = sprintf('%s: %.0f %% overall', METH_L(m), 100 * sim4.coverage90(k)); %#ok<SAGROW>
     end
@@ -473,6 +483,23 @@ if have_ck && isfile(f_tr)
     for i = 1:height(trk), trk.region_name(i) = region_name(trk.region_lat(i), trk.region_lon(i)); end
     trk = movevars(trk, 'region_name', 'After', 'region_id');
     writetable(trk, fullfile(OUT, 'TableS10_records_thinning_on_their_own.csv'));
+end
+% third part (sixth review, 14 November 2026): every series with the rates, intervals and classes
+% of each method, the margin of its hierarchical class, the Monte Carlo errors of the interval
+% ends that decide it, the runs in which its class changes and one robustness label (robust,
+% borderline, choice, monte_carlo; see aldi_v6_checks.txt)
+f_sr = fullfile(CK, 'aldi_v6_checks_series_robustness.csv');
+if have_ck && isfile(f_sr)
+    srb = read_text_cols(f_sr, {'site_id', 'family', 'methods', 'class_v6', 'class_deciding_end', ...
+        'class_changes_in', 'class_robustness', 'class_v6_site_only', 'class_ats', 'class_ols'});
+    [G, rid] = findgroups(srb.region_id);
+    clat = splitapply(@mean, srb.lat, G);
+    clon = splitapply(@(x) atan2d(mean(sind(x)), mean(cosd(x))), srb.lon, G);   % circular mean
+    rname = strings(numel(rid), 1);
+    for i = 1:numel(rid), rname(i) = region_name(clat(i), clon(i)); end
+    srb.region_name = rname(G);
+    srb = movevars(srb, 'region_name', 'After', 'region_id');
+    writetable(srb, fullfile(OUT, 'TableS10_series_results.csv'));
 end
 
 %% Model B (MODEL_B): decomposition for every climate input and check (Table 3 until 14 Nov 2026)
@@ -825,7 +852,9 @@ if have_ck
               'aldi_v6_checks_trend_targets.csv', 'TableS8_simulation_trend_targets.csv'
               'aldi_v6_checks_pooling_vs_noise.csv', 'TableS8_simulation_pooling_vs_noise.csv'
               'aldi_v6_checks_class_changes.csv', 'TableS4_class_changes.csv'
-              'aldi_v6_checks_class_changes_sites.csv', 'TableS4_class_changes_by_series.csv'};
+              'aldi_v6_checks_class_changes_sites.csv', 'TableS4_class_changes_by_series.csv'
+              'aldi_v6_checks_class_changes_long_chains.csv', 'TableS4_class_changes_long_chains.csv'
+              'aldi_v6_checks_series_mean_more_networks.csv', 'TableS8_simulation_series_mean_more_networks.csv'};
     if MODEL_B
         copies = [copies; {'aldi_v6_checks_ice_method.csv', 'B_Table_residual_by_ice_and_method.csv'}];
     end

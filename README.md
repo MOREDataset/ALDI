@@ -66,16 +66,19 @@ step, with its settings at the top.
   residuals); model B also runs four checks of its split (other priors of k and of the residual
   trend, and a region-year term). Options: `--power` (NASA POWER temperature, robustness run),
   `--validate` (simulation check, 1-2 h; `--scenarios A_misspec` adds one scenario to the
-  existing simulation), `--sensitivity` (the runs that each change one choice: censored
+  existing simulation), `--mean-check` (50 more simulated networks each of A_fit and A_ppc,
+  model A only, for the interval of the series mean; about 25 min), `--sensitivity` (the runs that each change one choice: censored
   prior, undated surveys, site quality, disturbed plots, one series per place, 2000-2024
   window, record length, region size, survey day, temperature intervals and three
   thaw-subsidence bounds, plus `mcmc_seed`, the main settings with another sampler seed as a
-  Monte Carlo reference; about 1 h; `--runs a,b` runs only those, into
+  Monte Carlo reference, and `mcmc_long` / `mcmc_long_seed`, 5000 draws per chain with two
+  seeds (model A only); about 1 h; `--runs a,b` runs only those, into
   `data/3_aldi_sensitivity_runs`), `--checks` (the paper checks: years of record a site
   needs, the standard per-site test on the same series, shrinkage, residual by ground ice
   and method, rates in cm, a test for acceleration in the long records, the simulation's
-  spread between networks, pooling against the noise model, the classes that change between
-  runs; about a minute, no refit), `--spatial` (only the spatial checks on the existing results, about
+  spread between networks, pooling against the noise model (with per-site GLS), the classes that
+  change between runs, the robustness of each class with its Monte Carlo error (Table S10), a
+  randomization test of the method contrasts; about a minute, no refit), `--spatial` (only the spatial checks on the existing results, about
   a minute; needs geopandas for the permafrost-map part). `--no-main` skips the main fit
   and adds the other runs to the existing `data/3_aldi`. Everything at once:
   `py -3.12 3_aldi.py --power --sensitivity --checks --validate`.

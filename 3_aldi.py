@@ -52,6 +52,7 @@ from __future__ import annotations
 import argparse
 import copy
 import importlib.util
+import itertools
 import json
 import re
 import shutil
@@ -1306,6 +1307,37 @@ def interval(draws, level):
     return np.quantile(draws, q, axis=0), np.quantile(draws, 1 - q, axis=0)
 
 
+def mcse_quantile(draws, prob):
+    """Monte Carlo standard error of the prob-quantile of each column of draws, given as
+    (chains, draws, columns...), as in Vehtari et al. (2021, Bayesian Analysis 16, 667-718;
+    ArviZ mcse with method="quantile"): the effective sample size of the indicator
+    draws <= quantile, on split chains, gives a Beta interval (+-1 SD) for the probability,
+    whose ends are read off the sorted draws; half its width is the standard error. Added
+    2026-11-14 (sixth review of the paper): the Monte Carlo error of the interval ends that
+    decide the classes, and of the quantiles of mu."""
+    from numpyro.diagnostics import effective_sample_size
+    x = np.asarray(draws, float)
+    nc, nd = x.shape[:2]
+    h = nd // 2
+    xs = np.concatenate([x[:, :h], x[:, h:2 * h]], axis=0)            # split chains
+    flat = x.reshape(nc * nd, *x.shape[2:])
+    q = np.quantile(flat, prob, axis=0)
+    ind = (xs <= q).astype(float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ess = np.asarray(effective_sample_size(ind), float)
+    ess = np.where(np.isfinite(ess) & (ess > 0), ess, np.nan)
+    with np.errstate(invalid="ignore"):
+        a0 = stats.beta.ppf(0.1586553, ess * prob + 1, ess * (1 - prob) + 1)
+        a1 = stats.beta.ppf(0.8413447, ess * prob + 1, ess * (1 - prob) + 1)
+    srt = np.sort(flat, axis=0)
+    size = srt.shape[0]
+    i0 = np.asarray(np.clip(np.floor(np.nan_to_num(a0, nan=0.0) * size - 1), 0, size - 1), int)
+    i1 = np.asarray(np.clip(np.ceil(np.nan_to_num(a1, nan=1.0) * size - 1), 0, size - 1), int)
+    th0 = np.take_along_axis(srt, i0[None], 0)[0]
+    th1 = np.take_along_axis(srt, i1[None], 0)[0]
+    return np.where(np.isfinite(ess), (th1 - th0) / 2, np.nan)
+
+
 def band_probs(rate_draws, margin, rapid, prefix="p_"):
     r = rate_draws
     return {
@@ -1329,7 +1361,10 @@ RESID_CLASS = {"stable": "consistent_with_TDD", "rapid_thickening": "deeper_than
                "gradual_thinning": "shallower_than_TDD", "indeterminate": "not_resolved"}
 
 
-def summarise_A(mcmc, arr, cfg):
+def summarise_A(mcmc, arr, cfg, mcse=False):
+    """Site table, network draws and site-rate draws of a fit of model A. mcse=True (main
+    fit; added 2026-11-14, sixth review) adds the Monte Carlo standard errors of the median
+    and of the two ends of each series' interval (mcse_quantile)."""
     smp = mcmc.get_samples()
     lvl = cfg["trend"]["ci_level"]
     m, rp = cfg["classes"]["stable_margin_pct_dec"], cfg["classes"]["rapid_pct_dec"]
@@ -1340,6 +1375,12 @@ def summarise_A(mcmc, arr, cfg):
     s["rate_v6_lo"], s["rate_v6_hi"] = lo, hi
     s["rate_v6_sd"] = rate.std(0)
     s["class_v6"] = cls
+    if mcse:
+        rb = pct(np.asarray(mcmc.get_samples(group_by_chain=True)["slope_site"]))
+        q = (1 - lvl) / 2
+        s["rate_v6_mcse"] = mcse_quantile(rb, 0.5)
+        s["rate_v6_lo_mcse"] = mcse_quantile(rb, q)
+        s["rate_v6_hi_mcse"] = mcse_quantile(rb, 1 - q)
     for k, v in band_probs(rate, m, rp, prefix="p6_").items():
         s[k] = v
     s["sigma_pct"] = 100 * np.asarray(smp["sigma_site"]).mean(0)
@@ -1990,6 +2031,47 @@ def _region_fe_contrast(y, group, region, base, n_boot=2000, seed=0, w=None):
     return out
 
 
+# Few shared regions (added 2026-11-14, sixth review of the paper). The interval of a within-
+# region contrast comes from resampling whole regions, and a bootstrap over few clusters can
+# be unreliable (Cameron, Gelbach and Miller 2008). Fisher's randomization test needs no
+# asymptotics: if each region's difference is symmetric around the true difference, every
+# pattern of signs of the regional differences is equally likely, so with R regions the
+# smallest attainable one-sided p is 1 / 2^R, and equivalence within +-delta (two one-sided
+# tests) can only be shown at the 5 % level with at least 5 regions.
+METHOD_EQUIV_MARGIN = 5.0          # %/dec, the equivalence margin of H1
+
+
+def _region_diff_randomization(y, group, region, base, w=None, delta=METHOD_EQUIV_MARGIN):
+    """Difference of each group from `base` in every region that holds both (weighted means
+    with w), their weighted mean (weights n_g n_b / (n_g + n_b), the weights of a two-group
+    fixed-effects contrast; sums of w in place of counts), and the exact sign-flip
+    randomization test of it: p_zero (two-sided, no difference) and p_equiv (the larger of
+    the two one-sided p of the tests against -delta and +delta)."""
+    df = pd.DataFrame({"y": np.asarray(y, float), "g": np.asarray(group), "r": np.asarray(region),
+                       "w": 1.0 if w is None else np.asarray(w, float)}).dropna()
+    out = {}
+    for g in sorted(set(df.g) - {base}):
+        rows = []
+        for r_, d_ in df.groupby("r"):
+            a, b = d_[d_.g == g], d_[d_.g == base]
+            if len(a) and len(b):
+                wa, wb = a.w.sum(), b.w.sum()
+                rows.append((r_, np.average(a.y, weights=a.w) - np.average(b.y, weights=b.w), wa * wb / (wa + wb)))
+        if not rows:
+            continue
+        reg, dif, wt = (np.asarray(v) for v in zip(*rows))
+        wt = wt.astype(float) / wt.sum()
+        signs = np.array(list(itertools.product([1.0, -1.0], repeat=len(dif))))
+        t0 = float(dif @ wt)
+        eps = 1e-9
+        out[g] = {"regions": reg, "diffs": dif.astype(float), "weights": wt, "estimate": t0,
+                  "p_zero": float(np.mean(np.abs((signs * dif) @ wt) >= abs(t0) - eps)),
+                  "p_equiv": max(float(np.mean((signs * (dif + delta)) @ wt >= t0 + delta - eps)),
+                                 float(np.mean((signs * (dif - delta)) @ wt <= t0 - delta + eps))),
+                  "p_min_one_sided": 2.0 ** -len(dif)}
+    return out
+
+
 def spatial_checks(res, shapefile=PF_MAP):
     """Adds location_id, pf_extent and pf_ice to the results and returns the text block of
     the spatial checks:
@@ -2187,7 +2269,7 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
                          ("site_only", mc_cfg["region_year"], "none")]:
         t0 = time.time()
         mc = fit(arr, "A", slope_dist=sd, region_year=ry, priors=pri, **fit_kw)
-        s, net, rate = summarise_A(mc, arr, cfg)
+        s, net, rate = summarise_A(mc, arr, cfg, mcse=(name == "main"))
         runs[name] = dict(mc=mc, s=s, net=net, rate=rate, diag=diagnostics(mc), sec=time.time() - t0,
                           sd_ry=(100 * np.asarray(mc.get_samples()["sd_region_year"])
                                  if "sd_region_year" in mc.get_samples() else None),
@@ -2205,6 +2287,26 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
         so = runs["site_only"]["s"].set_index("site_id")
         for c in ["rate_v6_lo", "rate_v6_hi", "p6_thickening"]:
             res[f"{c}_site_only"] = res.site_id.map(so[c])
+    # Monte Carlo error of the classes and of the network summaries (added 2026-11-14, sixth
+    # review of the paper): how far each class lies from its boundary, the Monte Carlo
+    # standard error of the interval end that decided it, and the same error for the
+    # quantiles of mu and of the mean of the series trends (mcse_quantile)
+    res = class_robustness(res, cfg)
+    gmain = runs["main"]["mc"].get_samples(group_by_chain=True)
+    mcse_net = {}
+    if "mu" in gmain:
+        mcse_net["network_rate"] = [float(mcse_quantile(pct(np.asarray(gmain["mu"])), p_)) for p_ in (0.5, 0.025, 0.975)]
+    mcse_net["mean_site_rate"] = [float(mcse_quantile(pct(np.asarray(gmain["slope_site"])).mean(2), p_))
+                                  for p_ in (0.5, 0.025, 0.975)]
+    del gmain
+    log.append("A main, Monte Carlo standard errors (Vehtari et al. 2021) of the median / 2.5 % / 97.5 % quantiles, "
+               "%/dec: " + "; ".join(f"{k_} " + " / ".join(f"{v_:.3f}" for v_ in v) for k_, v in mcse_net.items())
+               + f"; of the ends of the series' {int(100 * cfg['trend']['ci_level'])} % intervals: median "
+               f"{np.nanmedian(np.r_[res.rate_v6_lo_mcse, res.rate_v6_hi_mcse]):.3f}, max "
+               f"{np.nanmax(np.r_[res.rate_v6_lo_mcse, res.rate_v6_hi_mcse]):.3f}; classes whose deciding end lies "
+               f"within {MC_FLAG_SE:g} Monte Carlo SE of its boundary {int(res.class_mc_sensitive.sum())} (borderline, "
+               f"within {CLASS_BORDER:g} %/dec: {int(res.class_borderline.sum())}); rapid/gradual splits within "
+               f"{MC_FLAG_SE:g} SE of the threshold {int(res.rapid_mc_sensitive.sum())}")
 
     # --- B ---
     have_b = tdd_file is not None
@@ -2307,6 +2409,8 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
             netrows[f"A_{name}_sigma_{f}_pct"] = q(r["net"]["sigma_family"][:, i])
         if r["sd_ry"] is not None:
             netrows[f"A_{name}_sd_region_year_pct"] = q(r["sd_ry"])
+    for k_, v in mcse_net.items():        # Monte Carlo SE of the median and of the 95 % interval ends
+        netrows[f"A_main_{k_}_pct_dec_mcse"] = pd.Series({"median": v[0], "lo95": v[1], "hi95": v[2]})
     if have_b:
         for km, r in bruns.items():
             n = r["net"]
@@ -2587,6 +2691,15 @@ SENSITIVITY = [
     dict(name="mcmc_seed", seed_offset=1,
          why="main settings, another random seed of the sampler (seed + 1): the Monte Carlo variation of the "
              "rates and classes, against which the class changes of the other runs are read"),
+    # Added 2026-11-14 (sixth review): longer chains, with two seeds, so that the class changes
+    # left by Monte Carlo error at 3.3 times the main number of draws can be counted. Model A
+    # only (skip_B), run on their own like mcmc_seed.
+    dict(name="mcmc_long", draws=5000, skip_B=True,
+         why="main settings with 5000 instead of 1500 draws per chain (model A only): the classes that "
+             "longer sampling settles"),
+    dict(name="mcmc_long_seed", draws=5000, seed_offset=1, skip_B=True,
+         why="as mcmc_long with another seed of the sampler (seed + 1): the Monte Carlo variation of the "
+             "classes left at that length"),
 ]
 SENS_MARGINS = [(2.5, 10.0), (5.0, 15.0)]     # (stable margin, rapid threshold), %/dec
 DISTURBED_NOTE = re.compile(r"burned|fire line|safety region", re.I)
@@ -2725,8 +2838,11 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
         if n_subsided:
             row["n_subsidence_series"] = n_subsided
         diags = []
-        # another sampler seed for run mcmc_seed, the main one for all others
+        # another sampler seed for runs mcmc_seed and mcmc_long_seed, the main one for all others;
+        # more draws per chain for mcmc_long and mcmc_long_seed
         kw = dict(fit_kw, seed=fit_kw.get("seed", 0) + sc["seed_offset"]) if sc.get("seed_offset") else fit_kw
+        if sc.get("draws"):
+            kw = dict(kw, draws=sc["draws"])
         # A
         if sc.get("skip_A") and main_A is not None:
             sA, netA = main_A
@@ -2763,6 +2879,15 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
                    A_network_hi95=float(np.quantile(mu, 0.975)), A_mean_site_rate=float(sA.rate_v6.mean()),
                    A_declustered_250km=declustered_mean(sA.lat, sA.lon, sA.rate_v6),
                    A_mean_over_regions=float(sA.groupby("region_id").rate_v6.mean().mean()))
+        if sc.get("skip_B"):                 # model A only (the long-chain runs)
+            row.update(max_rhat=max(x["max_rhat"] for x in diags), divergences=sum(x["divergences"] for x in diags),
+                       seconds=round(time.time() - t0))
+            rows.append(row)
+            site_rows.append(sA[["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6"]].assign(run=sc["name"]))
+            log.append(f"{sc['name']}: {row['n_sites']} sites, model A only ({kw['draws']} draws per chain); max R-hat "
+                       f"{row['max_rhat']:.3f}, divergences {row['divergences']} ({row['seconds']} s)")
+            print(log[-1], flush=True)
+            continue
         # B main and B weather_memory
         arrB = build_arrays(d, c, t)
         p2 = dict(pri, k_fixed=c["climate"]["k_fixed"])
@@ -2823,8 +2948,10 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
     for r, g in sites[sites.run != "main"].groupby("run"):
         g = g.set_index("site_id")
         shared = g.index.intersection(m0.index)
+        has_b = "class_resid" in g and g["class_resid"].notna().any()
         changed[r] = (int((g.loc[shared, "class_v6"] != m0.loc[shared, "class_v6"]).sum()),
-                      int((g.loc[shared, "class_resid"].astype(str) != m0.loc[shared, "class_resid"].astype(str)).sum()),
+                      int((g.loc[shared, "class_resid"].astype(str) != m0.loc[shared, "class_resid"].astype(str)).sum())
+                      if has_b else -1,
                       len(shared))
     L = ["SENSITIVITY RUNS (each changes one choice; A main + B main + B weather_memory refitted)", ""]
     L += log + [""]
@@ -2862,7 +2989,7 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
         L.append(f"  {r:22s} A {tab.at[r, 'A_mean_site_rate'] - base.A_mean_site_rate:+5.2f}  "
                  f"B {tab.at[r, 'B_mean_residual'] - base.B_mean_residual:+5.2f} / "
                  f"{tab.at[r, 'Bwm_mean_residual'] - base.Bwm_mean_residual:+5.2f}   "
-                 f"A class changed {n_a}, residual class changed {n_b} of {n_sh}")
+                 f"A class changed {n_a}, residual class changed {n_b if n_b >= 0 else '-'} of {n_sh}")
     L.append("\nwhy each run:")
     for s in runs:
         L.append(f"  {s['name']:22s} {s['why']}")
@@ -3070,7 +3197,8 @@ CLASS_GROUP = {"rapid_thickening": "thickening", "gradual_thickening": "thickeni
                "indeterminate": "unresolved", "gradual_thinning": "thinning", "rapid_thinning": "thinning"}
 CLASS_BORDER = 1.0                                   # %/dec
 OTHER_PERIOD_RUNS = ("window_2000_2024",)            # a different period, not a processing choice of the same trend
-CLASS_REFERENCE_RUNS = ("mcmc_seed", "keep_low_variability")   # reported apart from the processing runs
+CLASS_REFERENCE_RUNS = ("mcmc_seed", "mcmc_long", "mcmc_long_seed", "keep_low_variability")   # reported apart
+MONTE_CARLO_RUNS = ("mcmc_seed", "mcmc_long", "mcmc_long_seed")    # the same model and data, other draws
 
 
 def class_margin(cls, lo, hi, stable_margin):
@@ -3083,6 +3211,53 @@ def class_margin(cls, lo, hi, stable_margin):
     if g == "stable":
         return min(lo + stable_margin, stable_margin - hi)
     return min(-lo, hi, max(-stable_margin - lo, hi - stable_margin, 0.0))
+
+
+def deciding_end(cls, lo, hi, stable_margin):
+    """Which end of the interval ('lo' or 'hi') lies at the distance that class_margin
+    returns: the end whose Monte Carlo error can change the class."""
+    g = CLASS_GROUP.get(cls, "unresolved")
+    if g == "thickening":
+        return "lo"
+    if g == "thinning":
+        return "hi"
+    if g == "stable":
+        return "lo" if lo + stable_margin <= stable_margin - hi else "hi"
+    st_lo, st_hi = -stable_margin - lo, hi - stable_margin      # shortfalls from a stable class
+    st = max(st_lo, st_hi, 0.0)
+    if st < min(-lo, hi):
+        return "lo" if st_lo >= st_hi else "hi"
+    return "lo" if -lo <= hi else "hi"
+
+
+# Monte Carlo sensitivity of a class (added 2026-11-14, sixth review of the paper): a class is
+# called Monte Carlo sensitive when the end of the interval that decided it lies within
+# MC_FLAG_SE Monte Carlo standard errors (mcse_quantile) of its class boundary, so that another
+# run of the sampler could move it across; likewise a rapid/gradual split whose median lies
+# within MC_FLAG_SE standard errors of the rapid threshold.
+MC_FLAG_SE = 2.0
+
+
+def class_robustness(res, cfg):
+    """Adds to a site table with rate_v6, rate_v6_lo, rate_v6_hi and class_v6: class_margin
+    (%/dec, see class_margin), class_deciding_end, class_borderline (margin < CLASS_BORDER)
+    and, where the Monte Carlo errors are present (rate_v6_*_mcse), class_margin_mcse,
+    class_mc_sensitive, rapid_margin and rapid_mc_sensitive."""
+    m, rp = cfg["classes"]["stable_margin_pct_dec"], cfg["classes"]["rapid_pct_dec"]
+    r = res.copy()
+    trip = list(zip(r.class_v6, r.rate_v6_lo, r.rate_v6_hi))
+    r["class_margin"] = [class_margin(c, lo, hi, m) for c, lo, hi in trip]
+    end = np.array([deciding_end(c, lo, hi, m) for c, lo, hi in trip])
+    r["class_deciding_end"] = end
+    r["class_borderline"] = r.class_margin < CLASS_BORDER
+    if {"rate_v6_mcse", "rate_v6_lo_mcse", "rate_v6_hi_mcse"} <= set(r):
+        r["class_margin_mcse"] = np.where(end == "lo", r.rate_v6_lo_mcse, r.rate_v6_hi_mcse)
+        r["class_mc_sensitive"] = r.class_margin < MC_FLAG_SE * r.class_margin_mcse
+        grp = r.class_v6.map(CLASS_GROUP)
+        r["rapid_margin"] = np.where(grp == "thickening", (r.rate_v6 - rp).abs(),
+                                     np.where(grp == "thinning", (r.rate_v6 + rp).abs(), np.nan))
+        r["rapid_mc_sensitive"] = r.rapid_margin < MC_FLAG_SE * r.rate_v6_mcse
+    return r
 
 
 def compare_classes(ref, alt, run, source, stable_margin):
@@ -3584,8 +3759,15 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
             yv, wv = v[col], None
         con = _region_fe_contrast(yv, v.family, v.region_id, "probe", w=wv)
         lo_t = _region_fe_loro(yv, v.family, v.region_id, "probe", v.lat, v.lon, w=wv)
+        # randomization test on the regional differences (sixth review); on the log scale for
+        # the precision-weighted row, so its margin is log(1.05) x 100 there
+        rnd = _region_diff_randomization(yv, v.family, v.region_id, "probe", w=wv,
+                                         delta=100 * np.log1p(METHOD_EQUIV_MARGIN / 100) if weighted
+                                         else METHOD_EQUIV_MARGIN)
         if weighted:
             con = {g: (*back(c_[:3]), c_[3]) for g, c_ in con.items()}
+            for g, r_ in rnd.items():
+                r_["estimate"], r_["diffs"] = float(back(r_["estimate"])), back(r_["diffs"])
             if len(lo_t):
                 lo_t["estimate"] = back(lo_t.estimate)
         if len(lo_t):
@@ -3603,7 +3785,15 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                           "loro_min": float(lf.estimate.min()) if len(lf) else np.nan,
                           "loro_max": float(lf.estimate.max()) if len(lf) else np.nan,
                           "loro_min_region": lf.left_out_region.iloc[int(np.argmin(lf.estimate))] if len(lf) else np.nan,
-                          "loro_max_region": lf.left_out_region.iloc[int(np.argmax(lf.estimate))] if len(lf) else np.nan})
+                          "loro_max_region": lf.left_out_region.iloc[int(np.argmax(lf.estimate))] if len(lf) else np.nan,
+                          **({"randomization_regions": len(rnd[f]["diffs"]),
+                              "randomization_estimate": rnd[f]["estimate"],
+                              "randomization_p_no_difference": rnd[f]["p_zero"],
+                              "randomization_p_equivalence": rnd[f]["p_equiv"],
+                              "randomization_p_min_one_sided": rnd[f]["p_min_one_sided"],
+                              "regional_differences": "; ".join(f"{int(r_)}: {d_:+.1f}" for r_, d_ in
+                                                                zip(rnd[f]["regions"], rnd[f]["diffs"]))}
+                             if f in rnd else {})})
     if loro_all:
         lt = pd.concat(loro_all, ignore_index=True)
         lt[["measure"] + [c for c in lt if c != "measure"]].to_csv(out / "aldi_v6_checks_method_loro.csv", index=False)
@@ -3643,7 +3833,17 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
              f"pair rows: n = pairs of series, which share series and places, so a description, not a test; "
              f"precision-weighted: trend-unpooled trends on the log scale, weights 1 / (posterior variance + tau_site^2), "
              f"mean = weighted mean):")
-    L.append(ma.round(2).to_string(index=False))
+    L.append(ma.drop(columns=[c for c in ma if c.startswith(("randomization_", "regional_"))]).round(2)
+             .to_string(index=False))
+    if "randomization_regions" in ma:
+        L.append(f"  randomization test on the regional differences (exact sign flips; the smallest attainable one-sided "
+                 f"p is 1 / 2^regions, so equivalence within +-{METHOD_EQUIV_MARGIN:g} %/dec cannot be shown at the "
+                 f"5 % level with fewer than 5 regions): " + "; ".join(
+                     f"{w.measure}, {w.group}: {int(w.randomization_regions)} regions, mean regional difference "
+                     f"{w.randomization_estimate:+.1f}, p (no difference) {w.randomization_p_no_difference:.3f}, "
+                     f"p (equivalence) {w.randomization_p_equivalence:.3f} (smallest possible "
+                     f"{w.randomization_p_min_one_sided:.3f}); regional differences {w.regional_differences}"
+                     for w in ma.dropna(subset=["randomization_regions"]).itertuples()))
     if loro_all:
         L.append("  leave-one-region-out (difference from the probes without that region; region: id, centre, series "
                  "of the method / probes in it):")
@@ -3723,7 +3923,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     L.append(cmt.round(2).to_string(index=False))
 
     # --- classes that change between runs (added 2026-11-14, fifth review; see class_changes above) ---
-    cc_rows, cc_sites, seen = [], [], set()
+    cc_rows, cc_sites, seen, shared_sets, long_pair = [], [], set(), {}, None
     if sens_dir:
         for d_ in [Path(sens_dir), Path(sens_dir).with_name(Path(sens_dir).name + "_runs")]:
             f_ = d_ / "aldi_v6_sensitivity_sites.csv"
@@ -3741,6 +3941,12 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                 r_, s_ = compare_classes(ref_, ss_[ss_.run == run_], run_, d_.name, margin)
                 cc_rows.append(r_)
                 cc_sites.append(s_)
+                shared_sets[run_] = set(ss_.site_id[ss_.run == run_]) & set(ref_.site_id)
+            # sixth review: the two long-chain runs against each other (Monte Carlo error left
+            # at 5000 draws per chain), reported beside the main-fit comparisons
+            if {"mcmc_long", "mcmc_long_seed"} <= set(ss_.run) and long_pair is None:
+                long_pair = compare_classes(ss_[ss_.run == "mcmc_long"], ss_[ss_.run == "mcmc_long_seed"],
+                                            "mcmc_long_seed against mcmc_long", d_.name, margin)
     kp_ = Path(main_out).with_name(Path(main_out).name + "_keep_pinned") / f"{pre}_results.csv"
     if kp_.exists():
         kpr = pd.read_csv(kp_)
@@ -3748,6 +3954,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         r_["series_added"] = int((~kpr.site_id.isin(res.site_id)).sum())
         cc_rows.append(r_)
         cc_sites.append(s_)
+        shared_sets["keep_low_variability"] = set(kpr.site_id) & set(res.site_id)
     if cc_rows:
         cc = pd.DataFrame(cc_rows)
         cc["kind"] = np.where(cc.run.isin(OTHER_PERIOD_RUNS), "other period",
@@ -3782,12 +3989,89 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                      f"{pc_.group_changes.max()}); {int(pc_.group_changes_borderline.sum())} of the "
                      f"{int(pc_.group_changes.sum())} changes between groups are borderline; {sel.site_id.nunique()} "
                      f"series change group in at least one run")
-        for run_ in ["survey_doy", "keep_low_variability", "mcmc_seed"]:
+        for run_ in ["survey_doy", "keep_low_variability", "mcmc_seed", "mcmc_long", "mcmc_long_seed"]:
             x_ = ccs[ccs.run == run_]
             if len(x_):
                 L.append(f"    changed in {run_}: " + "; ".join(
                     f"{w.site_id} ({w.class_v6_main} -> {w.class_v6_run}; rate {w.rate_v6_main:.2f} -> {w.rate_v6_run:.2f}, "
                     f"lower end {w.rate_v6_lo_main:.2f} -> {w.rate_v6_lo_run:.2f})" for w in x_.itertuples()))
+        if long_pair is not None:
+            r_, s_ = long_pair
+            L.append(f"  class changes, {r_['run']} ({r_['source']}; 4 x 5000 draws each): {r_['class_changes']} of "
+                     f"{r_['shared_series']} (between groups {r_['group_changes']}, {r_['group_changes_borderline']} of them "
+                     f"borderline; rapid/gradual {r_['rapid_gradual_changes']}); RMS rate change "
+                     f"{r_['rms_rate_change_all_shared']:.2f}" + (": " + "; ".join(
+                         f"{w.site_id} ({w.class_v6_main} -> {w.class_v6_run})" for w in s_.itertuples()) if len(s_) else ""))
+            pd.DataFrame([r_]).to_csv(out / "aldi_v6_checks_class_changes_long_chains.csv", index=False)
+
+    # --- each series: its classes and how robust they are (added 2026-11-14, sixth review) ---
+    # The table the paper releases beside the classes (Table S10, series part): the rates,
+    # intervals and classes of model A, of the trend-unpooled fit, of the Akritas-Theil-Sen
+    # method and of per-site OLS; the margin of the model A class (distance of the deciding
+    # interval end from its boundary), the Monte Carlo standard errors of the interval ends of
+    # the main fit and whether another run of the sampler could change the class (end within
+    # MC_FLAG_SE standard errors; mcse_quantile), and the runs in which the class changes, each
+    # with its new class. One label sums it up (class_robustness), the first that applies:
+    #   monte_carlo  the class changes between runs of the sampler (another seed, longer chains)
+    #                or its deciding end lies within MC_FLAG_SE Monte Carlo SE of the boundary
+    #   choice       the class changes in a run with one processing choice changed (same period)
+    #                or with the low-variability temperature series kept
+    #   borderline   neither, but the deciding end lies within CLASS_BORDER %/dec of the boundary
+    #   robust       none of these
+    rob = class_robustness(res, cfg)
+    ck_cols = [c for c in ["site_id", "ols_rate", "ols_lo", "ols_hi", "ols_p", "class_ols", "p_resolved_alone",
+                           "p_resolved_network"] if c in ck]
+    rob = rob.merge(ck[ck_cols], on="site_id", how="left")
+    chg = pd.concat(cc_sites, ignore_index=True) if cc_sites else pd.DataFrame(columns=["site_id", "run", "class_v6_run"])
+    chg = chg[~chg.run.isin(OTHER_PERIOD_RUNS)]
+    lists = chg.groupby("site_id").apply(lambda g: "; ".join(f"{w.run} ({w.class_v6_run})" for w in g.itertuples()),
+                                         include_groups=False) if len(chg) else pd.Series(dtype=object)
+    rob["class_changes_in"] = rob.site_id.map(lists).fillna("")
+    runs_cmp = [r_ for r_ in shared_sets if r_ not in OTHER_PERIOD_RUNS]
+    rob["runs_compared"] = [sum(sid in shared_sets[r_] for r_ in runs_cmp) for sid in rob.site_id]
+    rob["runs_changed"] = rob.site_id.map(chg.groupby("site_id").run.nunique()).fillna(0).astype(int)
+    mc_chg = set(chg.site_id[chg.run.isin(MONTE_CARLO_RUNS)])
+    ch_chg = set(chg.site_id[~chg.run.isin(MONTE_CARLO_RUNS)])
+    mc_flag = rob.site_id.isin(mc_chg)
+    if "class_mc_sensitive" in rob:
+        mc_flag = mc_flag | rob.class_mc_sensitive.fillna(False).astype(bool) | rob.rapid_mc_sensitive.fillna(False).astype(bool)
+    rob["class_robustness"] = np.select([mc_flag, rob.site_id.isin(ch_chg), rob.class_borderline],
+                                        ["monte_carlo", "choice", "borderline"], "robust")
+    keep = [c for c in ["site_id", "family", "methods", "lat", "lon", "region_id", "year_min", "year_max", "span_years",
+                        "n_obs", "n_censored", "sigma_pct", "region_rate_v6", "rate_v6", "rate_v6_lo", "rate_v6_hi",
+                        "p6_thickening", "class_v6", "class_margin", "class_deciding_end", "class_borderline",
+                        "rate_v6_mcse", "rate_v6_lo_mcse", "rate_v6_hi_mcse", "class_margin_mcse", "class_mc_sensitive",
+                        "rapid_margin", "rapid_mc_sensitive", "class_changes_in", "runs_compared", "runs_changed",
+                        "class_robustness", "rate_v6_site_only", "rate_v6_lo_site_only", "rate_v6_hi_site_only",
+                        "p6_thickening_site_only", "class_v6_site_only", "rate_pct_dec", "rate_lo", "rate_hi",
+                        "class_site", "ols_rate", "ols_lo", "ols_hi", "ols_p", "class_ols", "p_resolved_alone",
+                        "p_resolved_network"] if c in rob]
+    rob = rob[keep].rename(columns={"rate_pct_dec": "rate_ats", "rate_lo": "rate_ats_lo", "rate_hi": "rate_ats_hi",
+                                    "class_site": "class_ats"})
+    rob.to_csv(out / "aldi_v6_checks_series_robustness.csv", index=False)
+    vc_ = rob.class_robustness.value_counts()
+    ln_ = (f"\nROBUSTNESS OF EACH CLASS (aldi_v6_checks_series_robustness.csv, Table S10; first that applies: "
+           f"monte_carlo = changes between runs of the sampler or deciding end within {MC_FLAG_SE:g} Monte Carlo SE of its "
+           f"boundary; choice = changes in a processing run of the same period or with the low-variability series kept; "
+           f"borderline = deciding end within {CLASS_BORDER:g} %/dec; robust = none): "
+           + ", ".join(f"{k_} {int(vc_.get(k_, 0))}" for k_ in ["robust", "borderline", "choice", "monte_carlo"]))
+    L.append(ln_)
+    if "class_mc_sensitive" in rob:
+        seed_ = chg[chg.run == "mcmc_seed"].site_id
+        L.append(f"  Monte Carlo errors of the main fit (4 x {cfg['model']['draws']} draws): median MC SE of the interval "
+                 f"ends {np.nanmedian(np.r_[rob.rate_v6_lo_mcse, rob.rate_v6_hi_mcse]):.3f} %/dec (max "
+                 f"{np.nanmax(np.r_[rob.rate_v6_lo_mcse, rob.rate_v6_hi_mcse]):.3f}); {int(rob.class_mc_sensitive.sum())} "
+                 f"classes with the deciding end within {MC_FLAG_SE:g} SE of the boundary and "
+                 f"{int(rob.rapid_mc_sensitive.sum())} rapid/gradual splits within {MC_FLAG_SE:g} SE of the threshold; "
+                 f"of the {seed_.nunique()} series whose class changes with the seed (mcmc_seed), "
+                 f"{int(rob.set_index('site_id').loc[list(set(seed_)), ['class_mc_sensitive', 'rapid_mc_sensitive']].any(axis=1).sum())} "
+                 f"are flagged; margin / MC SE of these: " + ", ".join(
+                     f"{w.site_id} {w.class_margin / w.class_margin_mcse:.1f}" + (
+                         f" (rapid {w.rapid_margin / w.rate_v6_mcse:.1f})" if np.isfinite(w.rapid_margin) else "")
+                     for w in rob[rob.site_id.isin(set(seed_))].itertuples()))
+    L.append("  by class: " + "; ".join(
+        f"{c_} " + ", ".join(f"{k_} {int(n_)}" for k_, n_ in g_.class_robustness.value_counts().items())
+        for c_, g_ in rob.groupby("class_v6", sort=False)))
 
     # --- simulation: spread between the simulated networks (added 2026-11-14) ---
     # The series of one network share regions and hyperparameters, so the standard error of
@@ -3880,6 +4164,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                         r_[f"{c_}_covered"] = int(x_.loc[v_, f"{c_}_cover95"].sum())
                         r_[f"{c_}_mean_width95"] = float(x_.loc[v_, f"{c_}_width95"].mean())
                         r_[f"{c_}_p_nominal"] = float(stats.binom.cdf(r_[f"{c_}_covered"], r_[f"{c_}_networks"], 0.95))
+                if "network_z" in x_ and x_.network_z.notna().any():      # sixth review
+                    zz_ = x_.network_z.dropna()
+                    r_["z_networks"], r_["z_mean"], r_["z_sd"] = len(zz_), float(zz_.mean()), float(zz_.std(ddof=1))
                 u_ = unp[unp.scenario.isin(scs)]
                 if len(u_):
                     r_["unpooled_networks"] = len(u_)
@@ -3914,11 +4201,88 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                 if "boot_covered" in r_:
                     ln += (f"; region bootstrap covers the true series mean in {r_['boot_covered']} of "
                            f"{r_['boot_networks']} (mean width {r_['boot_mean_width95']:.1f})")
+                if "z_mean" in r_:
+                    ln += (f"; standardized error (error / posterior SD) mean {r_['z_mean']:+.2f}, SD {r_['z_sd']:.2f} "
+                           f"({r_['z_networks']} networks)")
                 if "unpooled_covered" in r_:
                     ln += (f"; trend-unpooled fit covers it in {r_['unpooled_covered']} of {r_['unpooled_networks']} "
                            f"(bias {r_['unpooled_bias_pct_dec']:+.2f}"
                            + (f", mean width {r_['unpooled_mean_width95']:.2f}" if "unpooled_mean_width95" in r_ else "")
                            + ")")
+                L.append(ln)
+
+        # --- more networks for the series-mean interval (added 2026-11-14, sixth review) ---
+        # The networks of run_A_mean (aldi_v6_simulation_mean_reps*.csv: A_fit and A_ppc drawn
+        # again from another seed, model A only). Per scenario: coverage of the 95 % and 90 %
+        # intervals of the series mean with exact intervals and the one-sided test of nominal
+        # coverage; bias with its standard error, RMSE, mean posterior SD and the standardized
+        # errors (mean 0 and SD 1 if the interval is calibrated: a shifted mean points to bias, an
+        # SD above 1 to an interval that is too narrow); the error split into the part from the
+        # regional trends and the part from the series' departures from them, and by record
+        # length and method; mu and the region bootstrap on the same networks; and the count with
+        # the main networks of the scenario added (descriptive).
+        mfiles = sorted(Path(val_dir).glob("aldi_v6_simulation_mean_reps*.csv")) if val_dir else []
+        if mfiles:
+            mm = pd.concat([pd.read_csv(f).assign(source_file=f.name) for f in mfiles], ignore_index=True)
+            rows_x = []
+            se_ = lambda v: float(np.std(v, ddof=1) / np.sqrt(len(v))) if len(v) > 1 else np.nan  # noqa: E731
+            for sc_, g_ in mm.groupby("scenario", sort=False):
+                n_, k_, k9 = len(g_), int(g_.network_cover95.sum()), int(g_.network_cover90.sum())
+                r_ = {"scenario": sc_, "networks": n_, "covered95": k_, "coverage95": k_ / n_,
+                      "cp_lo": stats.beta.ppf(0.025, k_, n_ - k_ + 1) if k_ > 0 else 0.0,
+                      "cp_hi": stats.beta.ppf(0.975, k_ + 1, n_ - k_) if k_ < n_ else 1.0,
+                      "p_nominal95": float(stats.binom.cdf(k_, n_, 0.95)),
+                      "covered90": k9, "p_nominal90": float(stats.binom.cdf(k9, n_, 0.90)),
+                      "bias_pct_dec": float(g_.network_err.mean()), "bias_se": se_(g_.network_err),
+                      "rmse_pct_dec": float(np.sqrt(np.mean(g_.network_err ** 2))),
+                      "mean_posterior_sd": float(g_.network_sd.mean()),
+                      "z_mean": float(g_.network_z.mean()), "z_sd": float(g_.network_z.std(ddof=1)),
+                      "mean_width95": float(g_.network_width95.mean()),
+                      "mu_covered95": int(g_.mu_cover95.sum()), "mu_p_nominal95": float(stats.binom.cdf(int(g_.mu_cover95.sum()), n_, 0.95)),
+                      "mu_bias_pct_dec": float(g_.mu_err.mean()), "mu_mean_width95": float(g_.mu_width95.mean()),
+                      "boot_covered95": int(g_.boot_cover95.sum()), "boot_mean_width95": float(g_.boot_width95.mean()),
+                      "series_coverage90": float(g_.coverage90.mean()),
+                      "max_rhat": float(g_.max_rhat.max()) if "max_rhat" in g_ else np.nan,
+                      "divergences": int(g_.divergences.sum()) if "divergences" in g_ else np.nan,
+                      "source_file": "; ".join(sorted(g_.source_file.unique()))}
+                r_["rmse_over_mean_sd"] = r_["rmse_pct_dec"] / r_["mean_posterior_sd"]
+                for c_ in ["err_regional", "err_within"] + [f"err_{b}" for b in CHECK_SPANS] + [f"err_{f}" for f in FAMILIES]:
+                    if c_ in g_:
+                        r_[c_] = float(g_[c_].mean())
+                        r_[f"{c_}_se"] = se_(g_[c_])
+                if rp_all is not None and "network_cover95" in rp_all:
+                    m0_ = rp_all[(rp_all.scenario == sc_) & (rp_all.method == "v6_ry") & rp_all.network_cover95.notna()]
+                    if len(m0_):
+                        r_["main_networks"], r_["main_covered95"] = len(m0_), int(m0_.network_cover95.sum())
+                        r_["all_networks"] = n_ + len(m0_)
+                        r_["all_covered95"] = k_ + r_["main_covered95"]
+                        r_["all_p_nominal95"] = float(stats.binom.cdf(r_["all_covered95"], r_["all_networks"], 0.95))
+                rows_x.append(r_)
+            mx_ = pd.DataFrame(rows_x)
+            mx_.to_csv(out / "aldi_v6_checks_series_mean_more_networks.csv", index=False)
+            L.append("\nSERIES MEAN, MORE NETWORKS (aldi_v6_simulation_mean_reps: A_fit and A_ppc drawn again from another "
+                     "seed, model A only; 95 % and 90 % intervals of the mean of the series trends against the true mean of "
+                     "each network; standardized error = error / posterior SD, mean 0 and SD 1 if calibrated; error split "
+                     "into regional trends and departures of the series from them; %/dec):")
+            for r_ in rows_x:
+                ln = (f"  series mean, more networks, {r_['scenario']}: 95 % interval covers {r_['covered95']} of "
+                      f"{r_['networks']} ({r_['cp_lo']:.2f} to {r_['cp_hi']:.2f}; p {r_['p_nominal95']:.3f}), 90 % interval "
+                      f"{r_['covered90']} of {r_['networks']} (p {r_['p_nominal90']:.3f}); bias {r_['bias_pct_dec']:+.2f} "
+                      f"(SE {r_['bias_se']:.2f}), RMSE {r_['rmse_pct_dec']:.2f}, mean posterior SD "
+                      f"{r_['mean_posterior_sd']:.2f} (RMSE / SD {r_['rmse_over_mean_sd']:.2f}); standardized error mean "
+                      f"{r_['z_mean']:+.2f}, SD {r_['z_sd']:.2f}")
+                if "err_regional" in r_:
+                    ln += (f"; error from the regional trends {r_['err_regional']:+.2f} (SE {r_['err_regional_se']:.2f}), from "
+                           f"the departures of the series {r_['err_within']:+.2f} (SE {r_['err_within_se']:.2f}); by record "
+                           f"length " + ", ".join(f"{b} {r_[f'err_{b}']:+.2f}" for b in CHECK_SPANS if f"err_{b}" in r_)
+                           + "; by method " + ", ".join(f"{f} {r_[f'err_{f}']:+.2f}" for f in FAMILIES if f"err_{f}" in r_))
+                ln += (f"; mu covers its network rate in {r_['mu_covered95']} of {r_['networks']} (p "
+                       f"{r_['mu_p_nominal95']:.3f}; bias {r_['mu_bias_pct_dec']:+.2f}); region bootstrap covers the true "
+                       f"series mean in {r_['boot_covered95']} (mean width {r_['boot_mean_width95']:.1f}); series 90 % "
+                       f"coverage {r_['series_coverage90']:.3f}; max R-hat {r_['max_rhat']:.3f}, divergences {r_['divergences']}")
+                if "all_networks" in r_:
+                    ln += (f"; with the {r_['main_networks']} main networks {r_['all_covered95']} of {r_['all_networks']} "
+                           f"(p {r_['all_p_nominal95']:.3f})")
                 L.append(ln)
 
         # --- trend targets under a change of trend (added 2026-11-14, fourth review) ---
@@ -3964,9 +4328,14 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         # Differences are paired by network (same simulated data), with their standard error
         # from the spread between networks. share_of_rmse_gain_from_pooling: the part of the
         # RMSE reduction from per-site OLS to model A that comes after the trend-unpooled fit.
-        meths = ["ols_site", "v5.2_site", "v6_unpooled", "v6_ry"]
-        mlab = {"ols_site": "OLS", "v5.2_site": "Akritas-Theil-Sen", "v6_unpooled": "trend-unpooled",
-                "v6_ry": "model A"}
+        # Sixth review: the per-series GLS with the noise covariance of the trend-unpooled fit
+        # (gls_site) and with the true covariance (gls_true) split the first step: per-site OLS ->
+        # GLS is what modelling the temporal dependence and the shared anomalies gives, GLS ->
+        # trend-unpooled what the Bayesian fit adds (lower bounds as censored values, region-year
+        # anomalies estimated jointly, uncertainty of the noise parameters, priors).
+        meths = ["ols_site", "v5.2_site", "gls_site", "gls_true", "v6_unpooled", "v6_ry"]
+        mlab = {"ols_site": "OLS", "v5.2_site": "Akritas-Theil-Sen", "gls_site": "GLS (noise of trend-unpooled fit)",
+                "gls_true": "GLS (true noise)", "v6_unpooled": "trend-unpooled", "v6_ry": "model A"}
         cols_p = (["coverage90", "rmse_pct_dec", "wrong_direction", "resolved", "called_trend"]
                   + [f"coverage_{b}" for b in CHECK_SPANS] + [f"rmse_{b}" for b in CHECK_SPANS])
         rows_p = []
@@ -3982,7 +4351,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                         r_[f"{c_}_{m_}"] = float(pv[m_].mean())
             for c_, a_, b_ in [("rmse_pct_dec", "v6_unpooled", "v6_ry"), ("rmse_pct_dec", "ols_site", "v6_unpooled"),
                                ("coverage90", "v6_unpooled", "ols_site"), ("coverage90", "v6_unpooled", "v5.2_site"),
-                               ("coverage90", "v6_ry", "v6_unpooled")]:
+                               ("coverage90", "v6_ry", "v6_unpooled"), ("coverage90", "gls_site", "ols_site"),
+                               ("coverage90", "v6_unpooled", "gls_site"), ("coverage90", "gls_true", "gls_site"),
+                               ("rmse_pct_dec", "ols_site", "gls_site"), ("rmse_pct_dec", "gls_site", "v6_unpooled")]:
                 pv = piv.get(c_)
                 if pv is not None and a_ in pv and b_ in pv:
                     d_ = (pv[a_] - pv[b_]).dropna()
@@ -3996,6 +4367,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                 gain = r_["coverage90_v6_ry"] - r_["coverage90_ols_site"]
                 r_["share_of_coverage_gain_from_noise_model"] = ((r_["coverage90_v6_unpooled"] - r_["coverage90_ols_site"])
                                                                  / gain if gain > 0 else np.nan)
+                if "coverage90_gls_site" in r_:
+                    r_["share_of_coverage_gain_reached_by_gls"] = ((r_["coverage90_gls_site"] - r_["coverage90_ols_site"])
+                                                                   / gain if gain > 0 else np.nan)
             rows_p.append(r_)
         if rows_p:
             pn_ = pd.DataFrame(rows_p)
@@ -4011,16 +4385,26 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                 if "rmse_pct_dec_v6_unpooled_minus_v6_ry" in r_:
                     ln += (f"; RMSE trend-unpooled minus model A {r_['rmse_pct_dec_v6_unpooled_minus_v6_ry']:+.2f} "
                            f"(SE {r_['rmse_pct_dec_v6_unpooled_minus_v6_ry_se']:.2f})")
-                for a_, b_ in [("v6_unpooled", "ols_site"), ("v6_unpooled", "v5.2_site"), ("v6_ry", "v6_unpooled")]:
+                for a_, b_ in [("v6_unpooled", "ols_site"), ("v6_unpooled", "v5.2_site"), ("v6_ry", "v6_unpooled"),
+                               ("gls_site", "ols_site"), ("v6_unpooled", "gls_site"), ("gls_true", "gls_site")]:
                     k_ = f"coverage90_{a_}_minus_{b_}"
                     if k_ in r_:
                         ln += f"; coverage {mlab[a_]} minus {mlab[b_]} {r_[k_]:+.3f} (SE {r_[k_ + '_se']:.3f})"
+                if np.isfinite(r_.get("share_of_coverage_gain_reached_by_gls", np.nan)):
+                    ln += (f"; share of the coverage gain over OLS reached by GLS with the same noise covariance "
+                           f"{r_['share_of_coverage_gain_reached_by_gls']:.2f}")
                 if np.isfinite(r_.get("share_of_rmse_gain_from_pooling", np.nan)):
                     ln += f"; share of the RMSE gain over OLS after the trend-unpooled fit {r_['share_of_rmse_gain_from_pooling']:.2f}"
                 if np.isfinite(r_.get("share_of_coverage_gain_from_noise_model", np.nan)):
                     ln += (f"; share of the coverage gain over OLS reached by the trend-unpooled fit "
                            f"{r_['share_of_coverage_gain_from_noise_model']:.2f}")
                 L.append(ln)
+                if all(f"coverage_{b}_gls_site" in r_ and f"coverage_{b}_ols_site" in r_ for b in CHECK_SPANS):
+                    L.append("    by record length, coverage OLS / GLS (noise of trend-unpooled fit) / GLS (true noise) / "
+                             "trend-unpooled: " + ", ".join(
+                                 f"{b} yr {r_[f'coverage_{b}_ols_site']:.2f} / {r_[f'coverage_{b}_gls_site']:.2f} / "
+                                 f"{r_.get(f'coverage_{b}_gls_true', np.nan):.2f} / {r_[f'coverage_{b}_v6_unpooled']:.2f}"
+                                 for b in CHECK_SPANS))
                 if all(f"rmse_{b}_v6_unpooled" in r_ and f"rmse_{b}_v6_ry" in r_ for b in CHECK_SPANS):
                     L.append("    by record length, RMSE trend-unpooled / model A: " + ", ".join(
                         f"{b} yr {r_[f'rmse_{b}_v6_unpooled']:.1f} / {r_[f'rmse_{b}_v6_ry']:.1f}" for b in CHECK_SPANS)
@@ -4226,6 +4610,61 @@ def ols_site(arr, cfg, level):
     return est, lo, hi, np.asarray(cls)
 
 
+def gls_site(arr, noise, cfg, level, all_region_years=False):
+    """Generalized least squares of log ALT on time, series by series, under the noise of
+    model A (added 2026-11-14, sixth review of the paper): AR(1) in calendar years with the
+    series' SD sigma and its method's coefficient rho_f, plus the variance of the region-year
+    term (sd_ry^2) in the region-years that hold another series, as in the model, or in every
+    region-year (all_region_years=True, as the simulation draws them), persistent from year to
+    year when noise holds ry_rho. With the posterior means of the trend-unpooled fit as noise
+    this is the feasible GLS comparator the sixth review asked for: the noise covariance of
+    model A, but not its Bayesian estimation (no propagation of the uncertainty of the noise
+    parameters, lower bounds used as values as in ols_site, region-year anomalies not estimated
+    from the other series of the region). With the true noise of a simulated network it is the
+    oracle GLS. Normal-quantile interval, the covariance being taken as known. Returns rate,
+    interval and class in %/decade."""
+    m, rp = cfg["classes"]["stable_margin_pct_dec"], cfg["classes"]["rapid_pct_dec"]
+    y, t, s_idx = np.asarray(arr["y"]), np.asarray(arr["t"]), np.asarray(arr["s_idx"])
+    years = arr["d"]["year"].to_numpy(float)
+    shared = np.ones(len(y), bool) if all_region_years else (np.asarray(arr["ry_idx"]) >= 0)
+    zq = stats.norm.ppf(0.5 + level / 2)
+    ry_rho = float(noise.get("ry_rho") or 0.0)
+    est, lo, hi = (np.full(arr["n_sites"], np.nan) for _ in range(3))
+    cls = []
+    for i in range(arr["n_sites"]):
+        idx = s_idx == i
+        lag = np.abs(years[idx][:, None] - years[idx][None, :])
+        gv = noise["sd_ry"] ** 2 * shared[idx]
+        v = noise["sigma"][i] ** 2 * noise["rho_f"][arr["f_idx_site"][i]] ** lag
+        v = v + (np.sqrt(np.outer(gv, gv)) * ry_rho ** lag if ry_rho else np.diag(gv))
+        x = np.column_stack([np.ones(int(idx.sum())), t[idx]])
+        vx = np.linalg.solve(v, x)
+        cov = np.linalg.inv(x.T @ vx)
+        b = float((cov @ (vx.T @ y[idx]))[1])
+        se = float(np.sqrt(cov[1, 1]))
+        est[i], lo[i], hi[i] = pct(b), pct(b - zq * se), pct(b + zq * se)
+        cls.append(classify(est[i], lo[i], hi[i], m, rp))
+    return est, lo, hi, np.asarray(cls)
+
+
+def plug_in_noise(mc):
+    """Posterior means of the noise parameters of a fit of model A (sigma per series, the
+    AR(1) coefficient per method, the region-year SD): the covariance gls_site borrows."""
+    smp = mc.get_samples()
+    return {"sigma": np.asarray(smp["sigma_site"]).mean(0), "rho_f": np.asarray(smp["rho_family"]).mean(0) * 0.95,
+            "sd_ry": float(np.mean(smp["sd_region_year"])) if "sd_region_year" in smp else 0.0}
+
+
+def series_mean_stats(mu_draw, mu_true):
+    """Posterior SD of the mean of the series trends, coverage of its 90 % interval and the
+    standardized error (added 2026-11-14, sixth review: what lies behind the shortfall of the
+    95 % interval)."""
+    sd_ = float(np.std(mu_draw))
+    q05, q95 = np.quantile(mu_draw, [0.05, 0.95])
+    return {"network_sd": sd_, "network_cover90": float(q05 <= mu_true <= q95),
+            "network_z": float((np.median(mu_draw) - mu_true) / sd_) if sd_ > 0 else np.nan}
+
+
 def score(name, method, est, lo, hi, cls, true_rate, bins, mu_hat=None, mu_lo=None, mu_hi=None, mu_true=None):
     cover = (lo <= true_rate) & (true_rate <= hi)
     thick = np.isin(cls, ["rapid_thickening", "gradual_thickening"])
@@ -4299,6 +4738,7 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
     bins = span_bins_sim(arr)
     rows = []
     for rep in range(reps):
+        start = len(rows)
         tr = {"a": arr["ybar"], "rho_f": fitted["rho_f"], "sigma": fitted["sigma"],
               "sd_ry": fitted["sd_ry"]}
         nr, ns = arr["n_regions"], arr["n_sites"]
@@ -4368,7 +4808,7 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
             b_lo, b_hi = region_bootstrap(s.rate_v6.to_numpy(), s.region_id.to_numpy(), seed=rep)
             row.update(mu_err=float(np.median(net["mu"]) - mu_true_net), mu_cover95=float(m_lo <= mu_true_net <= m_hi),
                        mu_width95=float(m_hi - m_lo), boot_cover95=float(b_lo <= mu_true <= b_hi),
-                       boot_width95=float(b_hi - b_lo))
+                       boot_width95=float(b_hi - b_lo), **series_mean_stats(mu_draw, mu_true))
             if targets:
                 score_targets(row, s.rate_v6, s.rate_v6_lo, s.rate_v6_hi, s.class_v6, targets)
                 row.update(tstats)
@@ -4390,11 +4830,13 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
         row = score(scen, "v6_unpooled", s.rate_v6.to_numpy(), s.rate_v6_lo.to_numpy(), s.rate_v6_hi.to_numpy(),
                     s.class_v6.to_numpy(), true_rate, bins, np.median(mu_draw),
                     *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
+        row.update(series_mean_stats(mu_draw, mu_true))
         if targets:
             score_targets(row, s.rate_v6, s.rate_v6_lo, s.rate_v6_hi, s.class_v6, targets)
             row.update(tstats)
         row.update(rep=rep, **diagnostics(mc))
         rows.append(row)
+        plug = plug_in_noise(mc)            # the noise covariance the GLS comparator borrows (below)
         del mc
         free_jit()
         res, net = v52(sim, cfg)
@@ -4427,8 +4869,21 @@ def run_A(arr, cfg, fitted, scen, rng, reps, fit_kw):
         if targets:
             score_targets(rows[-1], est, lo, hi, cls, targets)
             rows[-1].update(tstats)
+        # per-series GLS (added 2026-11-14, sixth review of the paper): the noise covariance of
+        # the trend-unpooled fit (posterior means) without the Bayesian fit, and the true
+        # covariance of the network (oracle). Between per-site OLS and the trend-unpooled fit, it
+        # separates what modelling the temporal dependence and the shared anomalies gives from
+        # what the Bayesian fit adds (censoring, joint region-year anomalies, uncertainty of the
+        # noise parameters, priors). No random numbers are drawn.
+        truth_noise = {"sigma": tr["sigma"], "rho_f": tr["rho_f"], "sd_ry": tr["sd_ry"], "ry_rho": tr.get("ry_rho")}
+        for name_g, noise_g, all_ry in [("gls_site", plug, False), ("gls_true", truth_noise, True)]:
+            est, lo, hi, cls = gls_site(sim, noise_g, cfg, 0.90, all_region_years=all_ry)
+            rows.append({**score(scen, name_g, est, lo, hi, cls, true_rate, bins), "rep": rep})
+            if targets:
+                score_targets(rows[-1], est, lo, hi, cls, targets)
+                rows[-1].update(tstats)
         print(f"{scen} rep {rep}: " + "; ".join(f"{r['method']} cov {r['coverage90']:.2f} wrong {r['wrong_direction']:.3f} "
-                                                f"resolved {r['resolved']:.2f}" for r in rows[-6:]), flush=True)
+                                                f"resolved {r['resolved']:.2f}" for r in rows[start:]), flush=True)
     return rows
 
 
@@ -4516,6 +4971,8 @@ def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
                   "sd_ry": float(fitted["post_sd_ry"][j]), "slope": slope}
             planted = np.zeros(ns, bool)
             fits = [("v6_ry", {})]
+            # the network rate of this draw (sixth review: mu scored in A_ppc too)
+            mu_true_net = float(pct(fitted["post_mu"][j])) if "post_mu" in fitted else np.nan
         else:
             beta = fitted["mu"] + fitted["tau_region"] * rng.normal(size=nr)
             slope = beta[arr["r_idx_site"]] + fitted["tau_site"] * rng.normal(size=ns)
@@ -4524,10 +4981,12 @@ def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
             tr = {"a": arr["ybar"], "rho_f": fitted["rho_f"], "sigma": fitted["sigma"], "sd_ry": fitted["sd_ry"],
                   "slope": slope}
             fits = [("v6_ry", {}), ("v6_student", {"slope_dist": "student"}), ("v6_unpooled", {"slope_dist": "none"})]
+            mu_true_net = float(pct(fitted["mu"]))
         sim = simulate(arr, tr, rng)
         true_rate = pct(slope)
         mu_true = float(np.mean(true_rate))
         start = len(rows)
+        plug = None
         for name, kw in fits:
             mc = fit(sim, "A", region_year=True, seed=rep, target_accept=0.95, **kw, **fit_kw)
             s, net, rate = summarise_A(mc, sim, cfg)
@@ -4538,6 +4997,16 @@ def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
                 mu_draw = rate.mean(1)
                 mu_args = (np.median(mu_draw), *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
             row = score(scen, name, est, lo, hi, cls, true_rate, bins, *mu_args)
+            if "mu" in net:
+                # sixth review: posterior SD and 90 % coverage of the series mean, the interval of
+                # mu against the network rate and the region bootstrap of the series mean
+                m_lo, m_hi = np.quantile(net["mu"], [0.025, 0.975])
+                b_lo, b_hi = region_bootstrap(est, s.region_id.to_numpy(), seed=rep)
+                row.update(series_mean_stats(mu_draw, mu_true), mu_err=float(np.median(net["mu"]) - mu_true_net),
+                           mu_cover95=float(m_lo <= mu_true_net <= m_hi), mu_width95=float(m_hi - m_lo),
+                           boot_cover95=float(b_lo <= mu_true <= b_hi), boot_width95=float(b_hi - b_lo))
+            if name == "v6_unpooled":
+                plug = plug_in_noise(mc)
             row.update(rep=rep, **diagnostics(mc))
             row.update(class_counts(cls, lo, hi, est, true_rate, np.ones(ns, bool), bins, "all"))
             if planted.any():
@@ -4549,9 +5018,15 @@ def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
         if scen == "A_thin":
             res, _ = v52(sim, cfg)
             est_o, lo_o, hi_o, cls_o = ols_site(sim, cfg, lvl)
-            for name, est, lo, hi, cls in [("v5.2_site", res.rate_pct_dec.to_numpy(), res.rate_lo.to_numpy(),
-                                            res.rate_hi.to_numpy(), res.class_site.to_numpy()),
-                                           ("ols_site", est_o, lo_o, hi_o, cls_o)]:
+            extra_m = [("v5.2_site", res.rate_pct_dec.to_numpy(), res.rate_lo.to_numpy(),
+                        res.rate_hi.to_numpy(), res.class_site.to_numpy()),
+                       ("ols_site", est_o, lo_o, hi_o, cls_o)]
+            # per-series GLS (sixth review; see run_A): the trend-unpooled fit's noise, and the truth's
+            truth_noise = {"sigma": tr["sigma"], "rho_f": tr["rho_f"], "sd_ry": tr["sd_ry"]}
+            for name_g, noise_g, all_ry in [("gls_site", plug, False), ("gls_true", truth_noise, True)]:
+                if noise_g is not None:
+                    extra_m.append((name_g, *gls_site(sim, noise_g, cfg, lvl, all_region_years=all_ry)))
+            for name, est, lo, hi, cls in extra_m:
                 row = {**score(scen, name, est, lo, hi, cls, true_rate, bins), "rep": rep}
                 row.update(class_counts(cls, lo, hi, est, true_rate, np.ones(ns, bool), bins, "all"))
                 row.update(class_counts(cls, lo, hi, est, true_rate, planted, bins, "planted"))
@@ -4562,6 +5037,77 @@ def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
                 f", planted thinning {r['planted_thinning']} unresolved {r['planted_unresolved']} thickening "
                 f"{r['planted_thickening']} of {r['planted_n']}" if "planted_n" in r else
                 f", unresolved {r['all_unresolved']} stable {r['all_stable']}") for r in rows[start:]), flush=True)
+    return rows
+
+
+# More networks for the interval of the mean of the series trends (added 2026-11-14, sixth
+# review of the paper). The 95 % interval of the series mean covered the true mean in 7 of 10
+# posterior-predictive networks (A_ppc). Is that a lasting shortfall or the noise of ten
+# networks? run_A_mean draws further networks as A_fit (fitted hyperparameters) and A_ppc
+# (one posterior draw each) do, from another seed, and refits each with model A only (as v6_ry
+# there). Per network it stores the error, posterior SD and 95 % / 90 % coverage of the series
+# mean, the interval of mu against the network rate, the region bootstrap, and the error of the
+# series mean split by level (regional trends against the series' departures from them), by
+# record length and by method: where a shortfall comes from. Written to
+# aldi_v6_simulation_mean_reps.csv, apart from the scenario files, so that the scores of the
+# main scenarios keep their networks.
+MEAN_CHECK_SEED = 2026
+
+
+def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
+    bins = np.asarray(span_bins_sim(arr)).astype(str)
+    ns, nr = arr["n_sites"], arr["n_regions"]
+    fam = np.asarray(arr["f_idx_site"])
+    r_site = np.asarray(arr["r_idx_site"])
+    rows = []
+    for rep in range(reps):
+        if scen == "A_ppc":
+            j = int(rng.integers(len(fitted["post_slope"])))
+            slope = np.asarray(fitted["post_slope"][j], float)
+            beta = np.asarray(fitted["post_beta"][j], float)
+            tr = {"a": arr["ybar"], "rho_f": fitted["post_rho"][j], "sigma": fitted["post_sigma"][j],
+                  "sd_ry": float(fitted["post_sd_ry"][j]), "slope": slope}
+            mu_true_net = float(pct(fitted["post_mu"][j]))
+            ta = 0.95                                     # as A_ppc in run_A_extra
+        elif scen == "A_fit":
+            beta = fitted["mu"] + fitted["tau_region"] * rng.normal(size=nr)
+            slope = beta[r_site] + fitted["tau_site"] * rng.normal(size=ns)
+            tr = {"a": arr["ybar"], "rho_f": fitted["rho_f"], "sigma": fitted["sigma"], "sd_ry": fitted["sd_ry"],
+                  "slope": slope}
+            mu_true_net = float(pct(fitted["mu"]))
+            ta = 0.9                                      # as v6_ry in run_A
+        else:
+            raise ValueError(f"run_A_mean: {scen} (A_fit or A_ppc)")
+        sim = simulate(arr, tr, rng)
+        true_rate = pct(slope)
+        mu_true = float(np.mean(true_rate))
+        mc = fit(sim, "A", region_year=True, seed=rep, target_accept=ta, **fit_kw)
+        s, net, rate = summarise_A(mc, sim, cfg)
+        mu_draw = rate.mean(1)
+        row = score(scen, "v6_ry", s.rate_v6.to_numpy(), s.rate_v6_lo.to_numpy(), s.rate_v6_hi.to_numpy(),
+                    s.class_v6.to_numpy(), true_rate, bins, np.median(mu_draw),
+                    *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
+        m_lo, m_hi = np.quantile(net["mu"], [0.025, 0.975])
+        b_lo, b_hi = region_bootstrap(s.rate_v6.to_numpy(), s.region_id.to_numpy(), seed=rep)
+        row.update(series_mean_stats(mu_draw, mu_true), mu_err=float(np.median(net["mu"]) - mu_true_net),
+                   mu_cover95=float(m_lo <= mu_true_net <= m_hi), mu_width95=float(m_hi - m_lo),
+                   mu_sd=float(np.std(net["mu"])), boot_cover95=float(b_lo <= mu_true <= b_hi),
+                   boot_width95=float(b_hi - b_lo))
+        # the error of the series mean (posterior means; %/dec) by level, record length and method
+        e = rate.mean(0) - true_rate
+        e_reg = net["region_draws"].mean(0)[r_site] - pct(beta)[r_site]
+        row.update(err_mean=float(e.mean()), err_regional=float(e_reg.mean()), err_within=float((e - e_reg).mean()))
+        for b in CHECK_SPANS:
+            row[f"err_{b}"] = float(e[bins == b].sum() / ns)
+        for k, f in enumerate(FAMILIES):
+            row[f"err_{f}"] = float(e[fam == k].sum() / ns)
+        row.update(rep=rep, **diagnostics(mc))
+        rows.append(row)
+        del mc
+        free_jit()
+        print(f"{scen} (series mean) rep {rep}: error {row['network_err']:+.2f}, SD {row['network_sd']:.2f}, "
+              f"covered {int(row['network_cover95'])}; regional {row['err_regional']:+.2f}, within "
+              f"{row['err_within']:+.2f}; mu covered {int(row['mu_cover95'])}", flush=True)
     return rows
 
 
@@ -4623,7 +5169,10 @@ def fitted_values(arr, arrB, cfg, fit_kw):
          "post_slope": np.asarray(smp["slope_site"]), "post_sigma": np.asarray(smp["sigma_site"]),
          "post_rho": np.asarray(smp["rho_family"]) * 0.95,
          "post_sd_ry": (np.asarray(smp["sd_region_year"]) if "sd_region_year" in smp
-                        else np.zeros(np.asarray(smp["mu"]).shape[0]))}
+                        else np.zeros(np.asarray(smp["mu"]).shape[0])),
+         # sixth review: the network rate and regional trends of each draw, so that A_ppc and the
+         # added networks of the series-mean check score mu and split the error by level
+         "post_mu": np.asarray(smp["mu"]), "post_beta": np.asarray(smp["beta_region"])}
     mcB = fit(arrB, "B", region_year=False, target_accept=0.95, **fit_kw)
     sb = mcB.get_samples()
     f.update(mu_d=float(np.mean(sb["mu"])), tau_region_d=float(np.mean(sb["tau_region"])),
@@ -4645,6 +5194,9 @@ def simulation_check(cfg, argv=None):
     ap.add_argument("--warmup", type=int, default=500)
     ap.add_argument("--draws", type=int, default=500)
     ap.add_argument("--tag", default="", help="suffix for the output files (run scenarios in parts)")
+    ap.add_argument("--mean-only", action="store_true",
+                    help="model A only, more networks for the series-mean interval (run_A_mean; A_fit, A_ppc)")
+    ap.add_argument("--seed", type=int, default=None, help="seed of the simulated networks (default random_seed)")
     args = ap.parse_args(argv)
     import numpyro
     numpyro.set_host_device_count(args.chains)
@@ -4668,24 +5220,27 @@ def simulation_check(cfg, argv=None):
     fitted = fitted_values(arr, arrB, cfg, fit_kw)
     print("fitted truth:", {k: (np.round(v, 3) if np.ndim(v) == 0 else np.round(np.mean(v), 3)) for k, v in fitted.items()})
 
-    rng = np.random.default_rng(cfg.get("random_seed", 42))
+    rng = np.random.default_rng(cfg.get("random_seed", 42) if args.seed is None else args.seed)
+    stem = "aldi_v6_simulation_mean" if args.mean_only else "aldi_v6_simulation"
     rows = []
     for sc in args.scenarios.split(","):
-        if sc in ("A_thin", "A_ppc"):
+        if args.mean_only:
+            rows += run_A_mean(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
+        elif sc in ("A_thin", "A_ppc"):
             rows += run_A_extra(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
         elif sc.startswith("A_"):
             rows += run_A(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
         else:
             rows += run_B(arr, cfg, fitted, sc, rng, args.reps, fit_kw, real_x)
-        pd.DataFrame(rows).to_csv(out / f"aldi_v6_simulation_reps{args.tag}.csv", index=False)
+        pd.DataFrame(rows).to_csv(out / f"{stem}_reps{args.tag}.csv", index=False)
     df = pd.DataFrame(rows)
     summ = df.drop(columns=["rep"]).groupby(["scenario", "method"], sort=False).mean(numeric_only=True)
-    summ.to_csv(out / f"aldi_v6_simulation{args.tag}.csv")
-    txt = (f"ALDI v6 simulation check, {args.reps} networks per scenario, real design "
-           f"({arr['n_sites']} sites, {len(arr['y'])} site-years); TDD: "
-           f"{'real' if real_x is not None else 'synthetic'}\n\n"
+    summ.to_csv(out / f"{stem}{args.tag}.csv")
+    txt = (f"ALDI v6 simulation check{' (series mean, model A only)' if args.mean_only else ''}, {args.reps} "
+           f"networks per scenario, real design ({arr['n_sites']} sites, {len(arr['y'])} site-years); TDD: "
+           f"{'real' if real_x is not None else 'synthetic'}; seed {cfg.get('random_seed', 42) if args.seed is None else args.seed}\n\n"
            + summ.round(3).T.to_string())
-    (out / f"aldi_v6_simulation{args.tag}.txt").write_text(txt)
+    (out / f"{stem}{args.tag}.txt").write_text(txt)
     print(txt)
 
 
@@ -4761,6 +5316,11 @@ def main():
     ap.add_argument("--scenarios", default=None,
                     help="simulation scenarios, comma-separated (--validate): added to the existing "
                          "data/3_aldi_validation as aldi_v6_simulation*_<scenarios>.csv, the rest is kept")
+    ap.add_argument("--mean-check", action="store_true",
+                    help="more simulated networks for the interval of the series mean (A_fit and A_ppc, model A "
+                         "only, seed MEAN_CHECK_SEED; added to data/3_aldi_validation as "
+                         "aldi_v6_simulation_mean*; about 15 s per network)")
+    ap.add_argument("--mean-reps", type=int, default=50, help="networks per scenario for --mean-check")
     ap.add_argument("--annual", type=Path, default=ANNUAL, help="ALT input (default: step 1 output)")
     ap.add_argument("--ee-dir", type=Path, default=EE_DIR, help="Earth Engine files (default: step 2 output)")
     ap.add_argument("--out", type=Path, default=OUT, help="output folder (default data/3_aldi)")
@@ -4843,6 +5403,21 @@ def main():
                         shutil.copy2(f, work / f.name)
             simulation_check(cfg, argv)
         stage(final_v, validate_run)
+
+    if a.mean_check:
+        temp = a.out / "temperature"
+        final_v = a.out.with_name(a.out.name + "_validation")
+        argv_m = [str(a.annual), "", str(temp / "tdd_site_years.csv"), "--reps", str(a.mean_reps),
+                  "--scenarios", "A_fit,A_ppc", "--mean-only", "--seed", str(MEAN_CHECK_SEED)]
+
+        def mean_run(work):
+            argv_m[1] = str(work)
+            if final_v.exists():                       # added to the simulation already there
+                for f in final_v.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, work / f.name)
+            simulation_check(cfg, argv_m)
+        stage(final_v, mean_run)
 
     print(f"\nDone. Start with {a.out / 'aldi_v6_summary.txt'}")
 
