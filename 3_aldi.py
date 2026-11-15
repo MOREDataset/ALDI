@@ -11,6 +11,10 @@ STEP 3: ALDI A + B, the active layer dynamics index.
     py -3.12 3_aldi.py --no-main --sensitivity --runs survey_doy,temp_interval_flagged
                                       only the named sensitivity runs (+ main), to data/3_aldi_sensitivity_runs
     py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
+    py -3.12 3_aldi.py --no-main --mean-diag --mean-reps 50
+                                      four diagnostic series-mean scenarios (no lower bounds, bounds
+                                      generated at the instrument limits, exchangeable truth;
+                                      ~1 hour), then --checks to report them
 
 A  One hierarchical Bayesian trend model for all ALT series: each site's rate of change
    (% per decade), its 90 % interval and its class (rapid / gradual thickening, stable,
@@ -4242,6 +4246,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                       "mu_bias_pct_dec": float(g_.mu_err.mean()), "mu_mean_width95": float(g_.mu_width95.mean()),
                       "boot_covered95": int(g_.boot_cover95.sum()), "boot_mean_width95": float(g_.boot_width95.mean()),
                       "series_coverage90": float(g_.coverage90.mean()),
+                      "mean_lower_bounds": float(g_.n_cens.mean()) if "n_cens" in g_ and g_.n_cens.notna().any() else np.nan,
                       "max_rhat": float(g_.max_rhat.max()) if "max_rhat" in g_ else np.nan,
                       "divergences": int(g_.divergences.sum()) if "divergences" in g_ else np.nan,
                       "source_file": "; ".join(sorted(g_.source_file.unique()))}
@@ -4261,7 +4266,10 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
             mx_ = pd.DataFrame(rows_x)
             mx_.to_csv(out / "aldi_v6_checks_series_mean_more_networks.csv", index=False)
             L.append("\nSERIES MEAN, MORE NETWORKS (aldi_v6_simulation_mean_reps: A_fit and A_ppc drawn again from another "
-                     "seed, model A only; 95 % and 90 % intervals of the mean of the series trends against the true mean of "
+                     "seed, model A only, and, in the _diag file, A_fit and A_ppc without lower bounds (_nocens), A_fit with "
+                     "bounds generated at the real instrument limits (_gencens) and A_ppc_redraw_nocens (a posterior draw's "
+                     "hyperparameters with new exchangeable trends); 95 % and 90 % intervals of the mean "
+                     "of the series trends against the true mean of "
                      "each network; standardized error = error / posterior SD, mean 0 and SD 1 if calibrated; error split "
                      "into regional trends and departures of the series from them; %/dec):")
             for r_ in rows_x:
@@ -4280,6 +4288,8 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                        f"{r_['mu_p_nominal95']:.3f}; bias {r_['mu_bias_pct_dec']:+.2f}); region bootstrap covers the true "
                        f"series mean in {r_['boot_covered95']} (mean width {r_['boot_mean_width95']:.1f}); series 90 % "
                        f"coverage {r_['series_coverage90']:.3f}; max R-hat {r_['max_rhat']:.3f}, divergences {r_['divergences']}")
+                if np.isfinite(r_["mean_lower_bounds"]):
+                    ln += f"; lower bounds per network {r_['mean_lower_bounds']:.1f}"
                 if "all_networks" in r_:
                     ln += (f"; with the {r_['main_networks']} main networks {r_['all_covered95']} of {r_['all_networks']} "
                            f"(p {r_['all_p_nominal95']:.3f})")
@@ -5054,31 +5064,83 @@ def run_A_extra(arr, cfg, fitted, scen, rng, reps, fit_kw):
 MEAN_CHECK_SEED = 2026
 
 
+# Diagnostic scenarios (added 2026-11-15, after the first run of run_A_mean): with the fitted
+# spread (A_fit) the series mean and mu came out 0.26 and 0.38 %/dec high, from posterior draws
+# (A_ppc) 0.16 and 0.62 low, both from the regional level of the model. Two candidate causes:
+#   censoring: the simulations keep the real pattern of lower bounds and put each bound just
+#     below the simulated value, which tells more than a real instrument limit (ALT anywhere
+#     above it), the case the censored likelihood is written for; the latent values are then
+#     imputed upwards. Five real series hold 51 of the 75 bounds, mostly in runs at the end of
+#     the record and in regions of one to three series, so the regional trends would carry it.
+#   configuration (A_ppc): the true trends of a posterior draw inherit the real network
+#     (well-measured large regions trending slowly, small ones fast and shrunk towards mu);
+#     a refit shrinks the small regions again and pulls mu towards the large ones.
+# A suffix sets the censoring of the simulated networks: none (_nocens: every value measured)
+# or generated (_gencens: a series with lower bounds in the real data keeps an instrument limit,
+# the median of its real bounds, at its fitted level, and a simulated value above the limit is
+# recorded as a bound at the limit, the mechanism the censored likelihood assumes); without a
+# suffix the fixed real pattern. A_ppc_redraw takes the hyperparameters of one posterior draw
+# (mu, the two spreads of trends, noise) with new exchangeable regional and series trends.
+# --mean-diag runs A_fit_nocens, A_fit_gencens (censoring), A_ppc_nocens and
+# A_ppc_redraw_nocens (configuration without censoring).
+MEAN_DIAG_SEED = 2027
+
+
 def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
     bins = np.asarray(span_bins_sim(arr)).astype(str)
     ns, nr = arr["n_sites"], arr["n_regions"]
     fam = np.asarray(arr["f_idx_site"])
     r_site = np.asarray(arr["r_idx_site"])
+    # censoring of the simulated networks (see the note above): fixed, none or generated
+    base, mode = scen, "fixed"
+    for suf, md in (("_nocens", "none"), ("_gencens", "generated")):
+        if scen.endswith(suf):
+            base, mode = scen[: -len(suf)], md
+    arr_s = arr if mode == "fixed" else dict(arr, cens=np.zeros(len(arr["y"]), bool))
+    a_true = arr["ybar"]
+    if mode == "generated":
+        cens_real, s_obs = np.asarray(arr["cens"], bool), np.asarray(arr["s_idx"])
+        lim = np.full(ns, np.nan)
+        for i in np.unique(s_obs[cens_real]):
+            lim[i] = float(np.median(np.asarray(arr["y"])[cens_real & (s_obs == i)]))
+        lim_obs = lim[s_obs]
+        a_true = fitted["a_site"]          # fitted level: the latent years above the bounds count
     rows = []
     for rep in range(reps):
-        if scen == "A_ppc":
+        if base == "A_ppc_redraw":
+            j = int(rng.integers(len(fitted["post_mu"])))
+            mu_j = float(fitted["post_mu"][j])
+            beta = mu_j + float(fitted["post_tau_region"][j]) * rng.normal(size=nr)
+            slope = beta[r_site] + float(fitted["post_tau_site"][j]) * rng.normal(size=ns)
+            tr = {"a": a_true, "rho_f": fitted["post_rho"][j], "sigma": fitted["post_sigma"][j],
+                  "sd_ry": float(fitted["post_sd_ry"][j]), "slope": slope}
+            mu_true_net = float(pct(mu_j))
+            ta = 0.95                                     # as A_ppc
+        elif base == "A_ppc":
             j = int(rng.integers(len(fitted["post_slope"])))
             slope = np.asarray(fitted["post_slope"][j], float)
             beta = np.asarray(fitted["post_beta"][j], float)
-            tr = {"a": arr["ybar"], "rho_f": fitted["post_rho"][j], "sigma": fitted["post_sigma"][j],
+            tr = {"a": a_true, "rho_f": fitted["post_rho"][j], "sigma": fitted["post_sigma"][j],
                   "sd_ry": float(fitted["post_sd_ry"][j]), "slope": slope}
             mu_true_net = float(pct(fitted["post_mu"][j]))
             ta = 0.95                                     # as A_ppc in run_A_extra
-        elif scen == "A_fit":
+        elif base == "A_fit":
             beta = fitted["mu"] + fitted["tau_region"] * rng.normal(size=nr)
             slope = beta[r_site] + fitted["tau_site"] * rng.normal(size=ns)
-            tr = {"a": arr["ybar"], "rho_f": fitted["rho_f"], "sigma": fitted["sigma"], "sd_ry": fitted["sd_ry"],
+            tr = {"a": a_true, "rho_f": fitted["rho_f"], "sigma": fitted["sigma"], "sd_ry": fitted["sd_ry"],
                   "slope": slope}
             mu_true_net = float(pct(fitted["mu"]))
             ta = 0.9                                      # as v6_ry in run_A
         else:
-            raise ValueError(f"run_A_mean: {scen} (A_fit or A_ppc)")
-        sim = simulate(arr, tr, rng)
+            raise ValueError(f"run_A_mean: {scen} (A_fit, A_ppc or A_ppc_redraw, optionally with _nocens or _gencens)")
+        sim = simulate(arr_s, tr, rng)
+        if mode == "generated":                           # a bound at the limit wherever the value exceeds it
+            y_s = np.asarray(sim["y"], float).copy()
+            over = np.isfinite(lim_obs) & (y_s > lim_obs)
+            y_s[over] = lim_obs[over]
+            sim["y"], sim["cens"] = y_s, over
+            sim["d"] = sim["d"].assign(alt_cm=np.exp(y_s), censored=over)
+        n_cens = int(np.asarray(sim["cens"], bool).sum())
         true_rate = pct(slope)
         mu_true = float(np.mean(true_rate))
         mc = fit(sim, "A", region_year=True, seed=rep, target_accept=ta, **fit_kw)
@@ -5101,7 +5163,7 @@ def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
             row[f"err_{b}"] = float(e[bins == b].sum() / ns)
         for k, f in enumerate(FAMILIES):
             row[f"err_{f}"] = float(e[fam == k].sum() / ns)
-        row.update(rep=rep, **diagnostics(mc))
+        row.update(rep=rep, n_cens=n_cens, cens_mode=mode, **diagnostics(mc))
         rows.append(row)
         del mc
         free_jit()
@@ -5172,7 +5234,12 @@ def fitted_values(arr, arrB, cfg, fit_kw):
                         else np.zeros(np.asarray(smp["mu"]).shape[0])),
          # sixth review: the network rate and regional trends of each draw, so that A_ppc and the
          # added networks of the series-mean check score mu and split the error by level
-         "post_mu": np.asarray(smp["mu"]), "post_beta": np.asarray(smp["beta_region"])}
+         "post_mu": np.asarray(smp["mu"]), "post_beta": np.asarray(smp["beta_region"]),
+         # 15 November (diagnostics of the series-mean check): the spreads of trends of each draw,
+         # so that A_ppc_redraw can draw new regional and series trends from one draw's hyperparameters
+         "post_tau_region": np.asarray(smp["tau_region"]), "post_tau_site": np.asarray(smp["tau_site"]),
+         # and the fitted level of each series (A_fit_gencens: censored series at their real level)
+         "a_site": np.asarray(smp["a_site"]).mean(0)}
     mcB = fit(arrB, "B", region_year=False, target_accept=0.95, **fit_kw)
     sb = mcB.get_samples()
     f.update(mu_d=float(np.mean(sb["mu"])), tau_region_d=float(np.mean(sb["tau_region"])),
@@ -5195,7 +5262,8 @@ def simulation_check(cfg, argv=None):
     ap.add_argument("--draws", type=int, default=500)
     ap.add_argument("--tag", default="", help="suffix for the output files (run scenarios in parts)")
     ap.add_argument("--mean-only", action="store_true",
-                    help="model A only, more networks for the series-mean interval (run_A_mean; A_fit, A_ppc)")
+                    help="model A only, more networks for the series-mean interval (run_A_mean; A_fit, A_ppc, "
+                         "A_ppc_redraw, each optionally with _nocens or _gencens)")
     ap.add_argument("--seed", type=int, default=None, help="seed of the simulated networks (default random_seed)")
     args = ap.parse_args(argv)
     import numpyro
@@ -5321,6 +5389,12 @@ def main():
                          "only, seed MEAN_CHECK_SEED; added to data/3_aldi_validation as "
                          "aldi_v6_simulation_mean*; about 15 s per network)")
     ap.add_argument("--mean-reps", type=int, default=50, help="networks per scenario for --mean-check")
+    ap.add_argument("--mean-diag", action="store_true",
+                    help="four diagnostic scenarios for the series-mean check (A_fit_nocens and A_ppc_nocens: no lower "
+                         "bounds; A_fit_gencens: bounds generated at the real instrument limits; A_ppc_redraw_nocens: "
+                         "hyperparameters of a posterior draw with new exchangeable trends, no bounds), model A only, "
+                         "seed MEAN_DIAG_SEED, --mean-reps networks each; added to data/3_aldi_validation as "
+                         "aldi_v6_simulation_mean*_diag")
     ap.add_argument("--annual", type=Path, default=ANNUAL, help="ALT input (default: step 1 output)")
     ap.add_argument("--ee-dir", type=Path, default=EE_DIR, help="Earth Engine files (default: step 2 output)")
     ap.add_argument("--out", type=Path, default=OUT, help="output folder (default data/3_aldi)")
@@ -5418,6 +5492,23 @@ def main():
                         shutil.copy2(f, work / f.name)
             simulation_check(cfg, argv_m)
         stage(final_v, mean_run)
+
+    if a.mean_diag:
+        temp = a.out / "temperature"
+        final_v = a.out.with_name(a.out.name + "_validation")
+        argv_d = [str(a.annual), "", str(temp / "tdd_site_years.csv"), "--reps", str(a.mean_reps),
+                  "--scenarios", "A_fit_nocens,A_fit_gencens,A_ppc_nocens,A_ppc_redraw_nocens", "--mean-only",
+                  "--seed", str(MEAN_DIAG_SEED),
+                  "--tag", "_diag"]
+
+        def diag_run(work):
+            argv_d[1] = str(work)
+            if final_v.exists():                       # added to the simulation already there
+                for f in final_v.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, work / f.name)
+            simulation_check(cfg, argv_d)
+        stage(final_v, diag_run)
 
     print(f"\nDone. Start with {a.out / 'aldi_v6_summary.txt'}")
 
