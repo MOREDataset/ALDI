@@ -36,7 +36,8 @@
 %          (OLS, Sen + AR(1), GLS with the noise covariance of Model A), trend-unpooled fit
 %          and hierarchical model                                          (Results 3.4)
 %   Table 2  Summaries of the network trend: mu, mean of the regions, means over equal-area
-%            cells, places and series, from the posterior draws (Table 1, published
+%            cells, places and series, from the posterior draws, with the scale each one
+%            averages and its value on the other scale (seventh review) (Table 1, published
 %            studies, is not made here)
 % Supplement
 %   Fig S1  Site-years per year by measurement method
@@ -53,7 +54,9 @@
 %   Table S4  Sensitivity runs and class margins (without the subsidence scenarios), and the
 %             classes that change in each run (TableS4_class_changes, by series
 %             TableS4_class_changes_by_series; fifth review), and between the two long-chain
-%             runs (TableS4_class_changes_long_chains; sixth review)
+%             runs (TableS4_class_changes_long_chains; sixth review); Model A with the regional
+%             anomaly in every region-year against the main fit, by series group
+%             (TableS4_region_year_all; seventh review)
 %   Table S5  Years of record a site needs, per method
 %   Table S6  By record length: observed and expected shares, the standard per-site test
 %   Table S7  Rates in cm per decade beside published values
@@ -64,7 +67,10 @@
 %             scenario A_misspec), and pooling against the noise model: per-site methods, per-site
 %             GLS, the trend-unpooled fit and Model A on the same networks
 %             (TableS8_simulation_pooling_vs_noise), and the series-mean interval on more networks
-%             (TableS8_simulation_series_mean_more_networks; sixth review)
+%             (TableS8_simulation_series_mean_more_networks; sixth review), and the regional
+%             anomalies of single-series region-years: networks drawn as before, drawn with model
+%             A's likelihood exactly, and refitted with an anomaly in every region-year
+%             (TableS8_simulation_region_years; seventh review)
 %   Table S9  Regional trends: median, 90 and 95 % intervals, P(trend > 0)
 %   Table S10 Rates and classes from the record alone (per-site Sen + AR(1), trend-unpooled
 %             Bayesian fit) and from the hierarchical model (TableS10_rates_and_classes_by_method),
@@ -854,7 +860,9 @@ if have_ck
               'aldi_v6_checks_class_changes.csv', 'TableS4_class_changes.csv'
               'aldi_v6_checks_class_changes_sites.csv', 'TableS4_class_changes_by_series.csv'
               'aldi_v6_checks_class_changes_long_chains.csv', 'TableS4_class_changes_long_chains.csv'
-              'aldi_v6_checks_series_mean_more_networks.csv', 'TableS8_simulation_series_mean_more_networks.csv'};
+              'aldi_v6_checks_series_mean_more_networks.csv', 'TableS8_simulation_series_mean_more_networks.csv'
+              'aldi_v6_checks_region_years.csv', 'TableS8_simulation_region_years.csv'
+              'aldi_v6_checks_region_years_real.csv', 'TableS4_region_year_all.csv'};
     if MODEL_B
         copies = [copies; {'aldi_v6_checks_ice_method.csv', 'B_Table_residual_by_ice_and_method.csv'}];
     end
@@ -1144,6 +1152,11 @@ if isfile(sum_f)
             st.lo95(i), st.hi95(i));
         if isfinite(st.region_bootstrap_lo95(i))
             s = [s sprintf('; region bootstrap %.1f to %.1f', st.region_bootstrap_lo95(i), st.region_bootstrap_hi95(i))]; %#ok<AGROW>
+        end
+        % seventh review: the scale of the averaging, and the same summary on the other scale
+        if any(strcmp(st.Properties.VariableNames, 'other_scale_median'))
+            s = [s sprintf('; averaged: %s; on the other scale %.2f (%.1f to %.1f)', st.averaged(i), ...
+                st.other_scale_median(i), st.other_scale_lo95(i), st.other_scale_hi95(i))]; %#ok<AGROW>
         end
         p('%s', s);
     end

@@ -9,12 +9,17 @@ STEP 3: ALDI A + B, the active layer dynamics index.
                                       residual by ice and method, cm per decade; ~1 min, no refit)
     py -3.12 3_aldi.py --no-main --sensitivity --checks   only these, on the existing data/3_aldi
     py -3.12 3_aldi.py --no-main --sensitivity --runs survey_doy,temp_interval_flagged
-                                      only the named sensitivity runs (+ main), to data/3_aldi_sensitivity_runs
+                                      only the named sensitivity runs (+ main), added to
+                                      data/3_aldi_sensitivity_runs (runs already there are kept)
     py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
     py -3.12 3_aldi.py --no-main --mean-diag --mean-reps 50
                                       four diagnostic series-mean scenarios (no lower bounds, bounds
                                       generated at the instrument limits, exchangeable truth;
                                       ~1 hour), then --checks to report them
+    py -3.12 3_aldi.py --no-main --ry-check
+                                      regional anomalies of single-series region-years: the networks of
+                                      the main A_fit scenario drawn as before, with model A's likelihood
+                                      exactly, and refitted with an anomaly in every region-year (~25 min)
 
 A  One hierarchical Bayesian trend model for all ALT series: each site's rate of change
    (% per decade), its 90 % interval and its class (rapid / gradual thickening, stable,
@@ -34,7 +39,8 @@ Writes  data/3_aldi/
           aldi_v6_summary.txt    counts, network rates, B variants, diagnostics
           aldi_v6_network.csv    network parameters (median and 95 % interval)
           aldi_v6_network_summaries.csv  mu, mean of the regions and means over cells, places
-                                 and series, from the posterior draws (Table 2 of the paper)
+                                 and series, from the posterior draws (Table 2 of the paper), with
+                                 the scale each averages and its value on the other scale
           aldi_v6_regions.csv    regional trends (median, 90 and 95 % intervals, P > 0)
           aldi_v6_dependence.csv dependence left in the residuals of each fit
           aldi_v6_fig_*.png      figures
@@ -160,6 +166,13 @@ model:
   # Shared region-year anomalies (sites within 250 km see the same warm or cold summer).
   # true: modelled as a random effect (main run); false: left in each site's noise.
   region_year: true
+  # Region-years the anomaly is estimated in (added 2026-11-15, seventh review of the paper).
+  # false (main): only those observed by at least two series; in a region-year with one series
+  # the anomaly cannot be told apart from that series' error, so it is left in the error.
+  # true (sensitivity run region_year_all): every region-year, the single-series ones
+  # included, with the SD learnt mostly from the shared ones; this marginalizes the anomaly
+  # there, so a lone value has the variance sigma_i^2 + sd_ry^2 instead of sigma_i^2.
+  region_year_all: false
   # Site deviations from their region: normal (main) or student (t with 4 df,
   # sensitivity for the few heavy-tailed BNZ / Mackenzie rates).
   slope_dist: normal
@@ -1109,15 +1122,24 @@ def build_arrays(d: pd.DataFrame, cfg: dict, tdd: pd.DataFrame | None = None,
             n_dated = int(ok.sum())
 
     # region-year cells observed by >= 2 sites: shared year-to-year anomaly (weather
-    # shocks common to nearby sites). Cells with one site get index -1 (no effect).
+    # shocks common to nearby sites). Cells with one site get index -1 (no effect), unless
+    # model.region_year_all (sensitivity run) gives every region-year its anomaly.
     r_obs = reg_idx[s_idx]
     ry = pd.Series(list(zip(r_obs, d["year"].to_numpy(int))))
     counts = ry.map(ry.value_counts())
-    ry_codes = {c: i for i, c in enumerate(sorted(set(ry[counts >= 2])))}
+    ry_min = 1 if cfg.get("model", {}).get("region_year_all") else 2
+    ry_codes = {c: i for i, c in enumerate(sorted(set(ry[counts >= ry_min])))}
     ry_idx = np.array([ry_codes.get(c, -1) for c in ry])
+    # every region-year with its own index, whatever the setting (seventh review: the simulation
+    # check refits networks with the anomaly in every region-year, scenario suffix _gall), and
+    # the values that are alone in their region-year
+    ry_all = {c: i for i, c in enumerate(sorted(set(ry)))}
+    ry_idx_all = np.array([ry_all[c] for c in ry])
+    single_ry = (counts < 2).to_numpy()
 
     out = dict(d=d, sites=sites, n_sites=len(sites), n_regions=len(reg_codes),
-               ry_idx=ry_idx, n_ry=len(ry_codes),
+               ry_idx=ry_idx, n_ry=len(ry_codes), ry_idx_all=ry_idx_all, n_ry_all=len(ry_all),
+               single_ry=single_ry,
                s_idx=s_idx, r_idx_site=reg_idx, f_idx_site=fam_idx_site,
                t=t, y=y, cens=cens, prev=prev, gap=gap, ybar=ybar, tdd_dropped=dropped,
                extra_dropped=n_extra_dropped, ivl_idx=ivl_idx, ivl_lo=ivl_lo, ivl_hi=ivl_hi,
@@ -2442,19 +2464,35 @@ def run_aldi(cfg, annual_file, out, tdd_file=None, tdd_all_file=None, weather_fi
     # whole regions of the posterior median series trends (which places are monitored).
     rm_, sm_ = runs["main"], runs["main"]["s"]
     b_lo, b_hi = region_bootstrap(sm_["rate_v6"].to_numpy(float), sm_["region_id"].to_numpy())
+    # Scale of the averaging (seventh review). mu and the mean of the regional trends are means of
+    # log rates, transformed to %/dec afterwards: 100 (exp(mu) - 1) is the rate of the median
+    # region of the fitted distribution. The means over cells, places and series average the
+    # series' rates in %/dec. Each row also gives the same summary on the other scale (in every
+    # draw): for mu the mean of the regional rates in %/dec, 100 (exp(mu + tau_region^2 / 2) - 1);
+    # for the mean of the regions the mean of their rates in %/dec; for the others the mean of
+    # the log rates, transformed afterwards.
+    lrate_ = np.log1p(rm_["rate"] / 100.0)                       # draws x series, log units per decade
+    tau_r_ = rm_["net"]["tau_region"] / 100.0
+    mu_pct_mean = pct(np.log1p(rm_["net"]["mu"] / 100.0) + tau_r_ ** 2 / 2)
     srows = [("network trend mu (mean of the distribution of regional trends)", "regions", arr["n_regions"],
-              rm_["net"]["mu"], (np.nan, np.nan)),
+              rm_["net"]["mu"], (np.nan, np.nan), "log rates (transformed after averaging)", mu_pct_mean),
              ("equal-weight mean of the regional trends", "regions", arr["n_regions"],
-              rm_["net"]["equal_region_mean"], (np.nan, np.nan))]
+              rm_["net"]["equal_region_mean"], (np.nan, np.nan), "log rates (transformed after averaging)",
+              rm_["net"]["region_draws"].mean(1))]
     srows += [(f"mean over equal-area cells of {cs} km", "cells", nunits[f"cell{cs}km"],
-               rm_["rate"] @ wts[f"cell{cs}km"] / wts[f"cell{cs}km"].sum(), (np.nan, np.nan)) for cs in DECLUSTER_KM]
+               rm_["rate"] @ wts[f"cell{cs}km"] / wts[f"cell{cs}km"].sum(), (np.nan, np.nan), "rates in %/dec (averaged as rates)",
+               pct(lrate_ @ wts[f"cell{cs}km"] / wts[f"cell{cs}km"].sum())) for cs in DECLUSTER_KM]
     srows += [("mean over places (series within 1 km joined)", "places", nunits["place"],
-               rm_["rate"] @ wts["place"] / wts["place"].sum(), (np.nan, np.nan)),
-              ("mean of the series trends", "series", len(sm_), rm_["rate"].mean(1), (b_lo, b_hi))]
+               rm_["rate"] @ wts["place"] / wts["place"].sum(), (np.nan, np.nan), "rates in %/dec (averaged as rates)",
+               pct(lrate_ @ wts["place"] / wts["place"].sum())),
+              ("mean of the series trends", "series", len(sm_), rm_["rate"].mean(1), (b_lo, b_hi), "rates in %/dec (averaged as rates)",
+               pct(lrate_.mean(1)))]
     summ_t = pd.DataFrame([{"summary": a_, "unit": u_, "n_units": n_, "median": float(np.median(v_)),
                             "lo95": float(np.quantile(v_, 0.025)), "hi95": float(np.quantile(v_, 0.975)),
-                            "region_bootstrap_lo95": bb_[0], "region_bootstrap_hi95": bb_[1]}
-                           for a_, u_, n_, v_, bb_ in srows])
+                            "region_bootstrap_lo95": bb_[0], "region_bootstrap_hi95": bb_[1], "averaged": sc_,
+                            "other_scale_median": float(np.median(o_)), "other_scale_lo95": float(np.quantile(o_, 0.025)),
+                            "other_scale_hi95": float(np.quantile(o_, 0.975))}
+                           for a_, u_, n_, v_, bb_, sc_, o_ in srows])
     summ_t.to_csv(out / f"{pre}_network_summaries.csv", index=False)
 
     # --- regional trends of the main fit (added 2026-11-14): one row per region ---
@@ -2704,8 +2742,38 @@ SENSITIVITY = [
     dict(name="mcmc_long_seed", draws=5000, seed_offset=1, skip_B=True,
          why="as mcmc_long with another seed of the sampler (seed + 1): the Monte Carlo variation of the "
              "classes left at that length"),
+    # Added 2026-11-15 (seventh review): the regional anomaly in every region-year. The main fit
+    # estimates it only where at least two series were measured (688 region-years) and leaves it
+    # in the error of the 411 values that are alone in their region-year; the simulation check
+    # draws it everywhere. Model A only, like the long-chain runs.
+    dict(name="region_year_all", set={"model.region_year_all": True}, skip_B=True,
+         why="regional anomalies also in the region-years observed by one series (model A only): the "
+             "anomaly is marginalized there with the SD learnt from the shared region-years, instead of "
+             "being left in the series error"),
 ]
 SENS_MARGINS = [(2.5, 10.0), (5.0, 15.0)]     # (stable margin, rapid threshold), %/dec
+
+
+def merge_earlier_runs(work, final):
+    """--sensitivity --runs adds to data/3_aldi_sensitivity_runs (added 2026-11-15): the runs
+    already there that this call did not refit are kept. main is refitted by every call with the
+    same settings and seed, so each kept run is still compared with an identical main fit."""
+    work, final = Path(work), Path(final)
+    kept = set()
+    for name in ("aldi_v6_sensitivity.csv", "aldi_v6_sensitivity_sites.csv"):
+        f_old, f_new = final / name, work / name
+        if not (f_old.exists() and f_new.exists()):
+            continue
+        new, old = pd.read_csv(f_new), pd.read_csv(f_old)
+        keep = old[~old["run"].isin(set(new["run"]))]
+        if len(keep):
+            pd.concat([new, keep], ignore_index=True).to_csv(f_new, index=False)
+            kept |= set(keep["run"])
+    if kept:
+        msg = f"\nkept from the earlier {final.name}: " + ", ".join(sorted(kept))
+        with open(work / "aldi_v6_sensitivity.txt", "a") as fh:
+            fh.write(msg + "\n")
+        print(msg, flush=True)
 DISTURBED_NOTE = re.compile(r"burned|fire line|safety region", re.I)
 DISTURBED_NOT = re.compile(r"control|did not burn", re.I)
 
@@ -2856,6 +2924,14 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
                      priors=pri, survey_doy=c["model"]["survey_doy"], **kw)
             sA, netA, rateA = summarise_A(mc, arr, c)
             diags.append(diagnostics(mc))
+            # seventh review: the noise parameters of each run (SD of the region-year anomalies,
+            # AR(1) coefficient per method), so that runs that change the noise model can be compared
+            smpA = mc.get_samples()
+            if "sd_region_year" in smpA:
+                row["A_sd_region_year_pct"] = float(np.median(100 * np.asarray(smpA["sd_region_year"])))
+            for i_, f_ in enumerate(FAMILIES):
+                row[f"A_rho_{f_}"] = float(np.median(netA["rho_family"][:, i_]))
+            row["A_n_region_years"] = int(arr["n_ry"])
             if c["model"]["survey_doy"]:
                 gd = 100 * (np.exp(np.asarray(mc.get_samples()["gamma_doy"])) - 1)
                 row.update(A_doy_pct_per_10d=float(np.median(gd)), A_doy_lo95=float(np.quantile(gd, 0.025)),
@@ -2887,7 +2963,8 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
             row.update(max_rhat=max(x["max_rhat"] for x in diags), divergences=sum(x["divergences"] for x in diags),
                        seconds=round(time.time() - t0))
             rows.append(row)
-            site_rows.append(sA[["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6"]].assign(run=sc["name"]))
+            site_rows.append(sA[["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6", "sigma_pct"]]
+                             .assign(run=sc["name"]))
             log.append(f"{sc['name']}: {row['n_sites']} sites, model A only ({kw['draws']} draws per chain); max R-hat "
                        f"{row['max_rhat']:.3f}, divergences {row['divergences']} ({row['seconds']} s)")
             print(log[-1], flush=True)
@@ -2922,7 +2999,7 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
         row.update(max_rhat=max(x["max_rhat"] for x in diags), divergences=sum(x["divergences"] for x in diags),
                    seconds=round(time.time() - t0))
         rows.append(row)
-        st = sA[["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6"]].merge(
+        st = sA[["site_id", "rate_v6", "rate_v6_lo", "rate_v6_hi", "class_v6", "sigma_pct"]].merge(
             sB[["site_id", "expected_rate", "resid_rate", "class_resid"]], on="site_id", how="outer")
         if ex is not None:
             st = st.merge(sW[["site_id", "expected_rate", "resid_rate", "class_resid"]].rename(
@@ -3310,6 +3387,12 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
     d = eligible_sites(data, cfg)
     d = d[d.site_id.isin(set(res.site_id))]
     r = res.set_index("site_id")
+    # values alone in their region-year (seventh review): model A has no region-year anomaly there
+    reg_obs_ = d.site_id.map(r["region_id"])
+    cnt_ry_ = d.groupby([reg_obs_, d.year]).site_id.transform("size")
+    single_real = cnt_ry_ < 2
+    share_single_real = single_real.groupby(d.site_id).mean()
+    n_series_region_ = r.groupby("region_id").size()
     lb_ = d.groupby("family").censored.agg(["size", "sum"])
     L.append("site-years by method, all (lower bounds): " + "; ".join(
         f"{f} {int(lb_.at[f, 'size'])} ({int(lb_.at[f, 'sum'])})" for f in FAMILIES if f in lb_.index))
@@ -4225,7 +4308,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         # regional trends and the part from the series' departures from them, and by record
         # length and method; mu and the region bootstrap on the same networks; and the count with
         # the main networks of the scenario added (descriptive).
-        mfiles = sorted(Path(val_dir).glob("aldi_v6_simulation_mean_reps*.csv")) if val_dir else []
+        # (the _ry file of --ry-check repeats the networks of the main A_fit scenario; it has its own block below)
+        mfiles = ([f for f in sorted(Path(val_dir).glob("aldi_v6_simulation_mean_reps*.csv")) if not f.stem.endswith("_ry")]
+                  if val_dir else [])
         if mfiles:
             mm = pd.concat([pd.read_csv(f).assign(source_file=f.name) for f in mfiles], ignore_index=True)
             rows_x = []
@@ -4294,6 +4379,142 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                     ln += (f"; with the {r_['main_networks']} main networks {r_['all_covered95']} of {r_['all_networks']} "
                            f"(p {r_['all_p_nominal95']:.3f})")
                 L.append(ln)
+
+        # --- regional anomalies in single-series region-years (added 2026-11-15, seventh review) ---
+        # Model A estimates the region-year anomaly only where two or more series share a region-year
+        # and leaves it in the error of a value alone in its region-year; the main simulations draw it
+        # in every region-year. On the same networks (--ry-check, model A only; the first 8 are those of
+        # the main A_fit scenario): A_fit as before, A_fit_gfit with the anomalies drawn only where
+        # model A estimates them (the networks then follow model A's likelihood exactly), and A_fit_gall
+        # refitted with the anomaly in every region-year. Scores by the share of a series' values alone
+        # in their region-year (alone: all, partly, shared: none), with the fitted noise SD against the
+        # true one; differences from A_fit paired by network.
+        f_ry = Path(val_dir) / "aldi_v6_simulation_mean_reps_ry.csv" if val_dir else None
+        if f_ry is not None and f_ry.exists():
+            ry_ = pd.read_csv(f_ry)
+            se_ry = lambda v: float(np.std(v, ddof=1) / np.sqrt(len(v))) if len(v) > 1 else np.nan  # noqa: E731
+            base_ry = ry_[ry_.scenario == "A_fit"].set_index("rep")
+            rows_ry = []
+            for sc_, g_ in ry_.groupby("scenario", sort=False):
+                g_ = g_.set_index("rep")
+                q_ = {"scenario": sc_, "networks": len(g_), "series_coverage90": float(g_.coverage90.mean()),
+                      "series_coverage90_se": se_ry(g_.coverage90), "rmse_pct_dec": float(g_.rmse_pct_dec.mean()),
+                      "sd_ry_est_pct": float(g_.sd_ry_est.mean()), "sd_ry_true_pct": float(g_.sd_ry_true.mean()),
+                      "sigma_ratio_all": float(g_.sigma_ratio.mean()),
+                      "series_mean_bias": float(g_.network_err.mean()), "series_mean_covered95": int(g_.network_cover95.sum()),
+                      "mu_bias": float(g_.mu_err.mean()), "mu_covered95": int(g_.mu_cover95.sum()),
+                      "mu_mean_width95": float(g_.mu_width95.mean()),
+                      "max_rhat": float(g_.max_rhat.max()), "divergences": int(g_.divergences.sum())}
+                for f in FAMILIES:
+                    if f"rho_{f}_err" in g_:
+                        q_[f"rho_{f}_err"] = float(g_[f"rho_{f}_err"].mean())
+                for gn in ("alone", "partly", "shared"):
+                    if f"cov90_{gn}" in g_:
+                        q_.update({f"n_{gn}": int(g_[f"n_{gn}"].iloc[0]), f"coverage90_{gn}": float(g_[f"cov90_{gn}"].mean()),
+                                   f"coverage90_{gn}_se": se_ry(g_[f"cov90_{gn}"]),
+                                   f"width90_{gn}": float(g_[f"width90_{gn}"].mean()),
+                                   f"rmse_{gn}": float(g_[f"rmse_{gn}"].mean()),
+                                   f"sigma_ratio_{gn}": float(g_[f"sigma_ratio_{gn}"].mean())})
+                if sc_ != "A_fit" and len(base_ry):
+                    j_ = g_.index.intersection(base_ry.index)
+                    for c_ in ["coverage90", "rmse_pct_dec", "network_err", "mu_err"] + [
+                            f"{k}_{gn}" for k in ("cov90", "width90", "rmse") for gn in ("alone", "partly", "shared")]:
+                        if c_ in g_ and c_ in base_ry:
+                            dv = (g_.loc[j_, c_] - base_ry.loc[j_, c_]).to_numpy(float)
+                            q_[f"diff_{c_}"], q_[f"diff_{c_}_se"] = float(dv.mean()), se_ry(dv)
+                rows_ry.append(q_)
+            # the first networks of A_fit are those of the main scenario: same scores?
+            repro_ = np.nan
+            if rp_all is not None and len(base_ry):
+                m0_ = rp_all[(rp_all.scenario == "A_fit") & (rp_all.method == "v6_ry")].set_index("rep")
+                j_ = m0_.index.intersection(base_ry.index)
+                if len(j_):
+                    repro_ = float(np.max(np.abs(m0_.loc[j_, "coverage90"].to_numpy(float)
+                                                 - base_ry.loc[j_, "coverage90"].to_numpy(float))))
+            ryt = pd.DataFrame(rows_ry)
+            ryt.to_csv(out / "aldi_v6_checks_region_years.csv", index=False)
+            L.append("\nREGIONAL ANOMALIES IN SINGLE-SERIES REGION-YEARS (seventh review; aldi_v6_simulation_mean_reps_ry, "
+                     "model A only, the same networks in each scenario: A_fit as in the main simulation, anomalies drawn in "
+                     "every region-year; A_fit_gfit drawn only where model A estimates them, so the networks follow its "
+                     "likelihood exactly; A_fit_gall refitted with an anomaly in every region-year; series groups by the "
+                     "share of their values alone in their region-year: alone = all, partly, shared = none; sigma ratio = "
+                     "fitted / true noise SD; differences paired by network):")
+            L.append(f"  real network: {int((~single_real).sum())} values in region-years with two or more series, "
+                     f"{int(single_real.sum())} alone in their region-year ({int(single_real[reg_obs_.map(n_series_region_) == 1].sum())} "
+                     f"in the {int((n_series_region_ == 1).sum())} single-series regions); series alone throughout "
+                     f"{int((share_single_real == 1).sum())}, partly {int(((share_single_real > 0) & (share_single_real < 1)).sum())}, "
+                     f"never {int((share_single_real == 0).sum())}")
+            if np.isfinite(repro_):
+                L.append(f"  the first networks of A_fit reproduce the main A_fit scenario: largest difference in series "
+                         f"coverage {repro_:.4f}")
+            for q_ in rows_ry:
+                ln = (f"  region-years, {q_['scenario']} ({q_['networks']} networks): series 90 % coverage "
+                      f"{q_['series_coverage90']:.3f} (SE {q_['series_coverage90_se']:.3f}); "
+                      + "; ".join(f"{gn} ({q_.get(f'n_{gn}', 0)} series) {q_.get(f'coverage90_{gn}', np.nan):.3f}, width "
+                                  f"{q_.get(f'width90_{gn}', np.nan):.1f}, RMSE {q_.get(f'rmse_{gn}', np.nan):.2f}, sigma ratio "
+                                  f"{q_.get(f'sigma_ratio_{gn}', np.nan):.2f}" for gn in ("alone", "partly", "shared"))
+                      + f"; region-year SD {q_['sd_ry_est_pct']:.1f} (true {q_['sd_ry_true_pct']:.1f}); AR(1) error "
+                      + ", ".join(f"{f} {q_[f'rho_{f}_err']:+.3f}" for f in FAMILIES if f"rho_{f}_err" in q_)
+                      + f"; series mean bias {q_['series_mean_bias']:+.2f}, covered {q_['series_mean_covered95']}; mu bias "
+                        f"{q_['mu_bias']:+.2f}, covered {q_['mu_covered95']}; max R-hat {q_['max_rhat']:.3f}, divergences "
+                        f"{q_['divergences']}")
+                if "diff_coverage90" in q_:
+                    ln += ("; minus A_fit: coverage " + f"{q_['diff_coverage90']:+.4f} (SE {q_['diff_coverage90_se']:.4f})"
+                           + "".join(f", {gn} {q_[f'diff_cov90_{gn}']:+.4f} (SE {q_[f'diff_cov90_{gn}_se']:.4f}) width "
+                                     f"{q_[f'diff_width90_{gn}']:+.2f}" for gn in ("alone", "partly", "shared")
+                                     if f"diff_cov90_{gn}" in q_)
+                           + f", RMSE {q_['diff_rmse_pct_dec']:+.3f}, series mean {q_['diff_network_err']:+.3f}, mu "
+                             f"{q_['diff_mu_err']:+.3f}")
+                L.append(ln)
+        # the same choice on the real data: run region_year_all of --sensitivity --runs against its own main fit
+        sr_ = Path(sens_dir).with_name(Path(sens_dir).name + "_runs") if sens_dir else None
+        if sr_ is not None and (sr_ / "aldi_v6_sensitivity_sites.csv").exists():
+            st_ = pd.read_csv(sr_ / "aldi_v6_sensitivity_sites.csv")
+            tb_ = pd.read_csv(sr_ / "aldi_v6_sensitivity.csv").set_index("run")
+            if {"main", "region_year_all"} <= set(st_.run) and "sigma_pct" in st_:
+                a0 = st_[st_.run == "main"].set_index("site_id")
+                a1 = st_[st_.run == "region_year_all"].set_index("site_id")
+                j_ = a0.index.intersection(a1.index)
+                a0, a1 = a0.loc[j_], a1.loc[j_]
+                shr = share_single_real.reindex(j_).fillna(0).to_numpy()
+                grp_ = np.where(shr == 1, "alone", np.where(shr > 0, "partly", "shared"))
+                sig_r = (a1.sigma_pct / a0.sigma_pct).to_numpy()
+                wid_r = ((a1.rate_v6_hi - a1.rate_v6_lo) / (a0.rate_v6_hi - a0.rate_v6_lo)).to_numpy()
+                d_rate = (a1.rate_v6 - a0.rate_v6).to_numpy()
+                chg = (a1.class_v6 != a0.class_v6).to_numpy()
+                rows_rr = []
+                for gn in ("alone", "partly", "shared", "all"):
+                    k_ = np.ones(len(j_), bool) if gn == "all" else grp_ == gn
+                    if not k_.any():
+                        continue
+                    rows_rr.append({"group": gn, "series": int(k_.sum()),
+                                    "sigma_ratio_median": float(np.median(sig_r[k_])), "sigma_ratio_min": float(sig_r[k_].min()),
+                                    "sigma_ratio_max": float(sig_r[k_].max()),
+                                    "width_ratio_median": float(np.median(wid_r[k_])), "width_ratio_min": float(wid_r[k_].min()),
+                                    "width_ratio_max": float(wid_r[k_].max()),
+                                    "rate_change_median_abs": float(np.median(np.abs(d_rate[k_]))),
+                                    "rate_change_max_abs": float(np.abs(d_rate[k_]).max()),
+                                    "class_changes": int(chg[k_].sum()),
+                                    "class_changes_sites": "; ".join(f"{s_} ({c0} -> {c1})" for s_, c0, c1 in zip(
+                                        np.asarray(j_)[k_ & chg], a0.class_v6.to_numpy()[k_ & chg], a1.class_v6.to_numpy()[k_ & chg]))})
+                rr_ = pd.DataFrame(rows_rr)
+                rr_.to_csv(out / "aldi_v6_checks_region_years_real.csv", index=False)
+                t0r, t1r = tb_.loc["main"], tb_.loc["region_year_all"]
+                gv = lambda t_, k: float(t_[k]) if k in t_ and pd.notna(t_[k]) else np.nan  # noqa: E731
+                L.append(f"  real data, run region_year_all against its main fit ({sr_.name}): mu "
+                         f"{gv(t1r, 'A_network_rate'):.2f} ({gv(t1r, 'A_network_lo95'):.2f}-{gv(t1r, 'A_network_hi95'):.2f}) "
+                         f"against {gv(t0r, 'A_network_rate'):.2f} ({gv(t0r, 'A_network_lo95'):.2f}-{gv(t0r, 'A_network_hi95'):.2f}); "
+                         f"mean series rate {gv(t1r, 'A_mean_site_rate'):.2f} against {gv(t0r, 'A_mean_site_rate'):.2f}; "
+                         f"region-year SD {gv(t1r, 'A_sd_region_year_pct'):.2f} against {gv(t0r, 'A_sd_region_year_pct'):.2f} % "
+                         f"({gv(t1r, 'A_n_region_years'):.0f} against {gv(t0r, 'A_n_region_years'):.0f} region-years); AR(1) "
+                         + ", ".join(f"{f} {gv(t1r, f'A_rho_{f}'):.3f} against {gv(t0r, f'A_rho_{f}'):.3f}" for f in FAMILIES)
+                         + f"; max R-hat {gv(t1r, 'max_rhat'):.3f}, divergences {gv(t1r, 'divergences'):.0f}")
+                for q_ in rows_rr:
+                    L.append(f"    {q_['group']} ({q_['series']} series): noise SD ratio median {q_['sigma_ratio_median']:.3f} "
+                             f"({q_['sigma_ratio_min']:.3f}-{q_['sigma_ratio_max']:.3f}); interval width ratio median "
+                             f"{q_['width_ratio_median']:.3f} ({q_['width_ratio_min']:.3f}-{q_['width_ratio_max']:.3f}); rate "
+                             f"change median |{q_['rate_change_median_abs']:.2f}|, largest |{q_['rate_change_max_abs']:.2f}| %/dec; "
+                             f"class changes {q_['class_changes']}" + (f": {q_['class_changes_sites']}" if q_['class_changes'] else ""))
 
         # --- trend targets under a change of trend (added 2026-11-14, fourth review) ---
         tg_ = rp[rp.scenario == "A_misspec"]
@@ -4576,6 +4797,11 @@ def simulate(arr, truth, rng):
     else:
         cells = {}
         g = np.array([cells.setdefault((r, yy), rng.normal(0, truth["sd_ry"])) for r, yy in zip(r_obs, years)])
+    if truth.get("ry_mask") is not None:
+        # seventh review: anomalies only where the mask is true (region-years with two or more
+        # series, as in the likelihood of model A). They are drawn everywhere first, so the
+        # random numbers, and with them every other part of the network, stay those without the mask.
+        g = g * np.asarray(truth["ry_mask"], float)
     mean = truth["a"][s_idx] + truth["slope"][s_idx] * arr["t"] + g
     if "extra" in truth:
         mean = mean + truth["extra"]
@@ -5091,12 +5317,33 @@ def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
     ns, nr = arr["n_sites"], arr["n_regions"]
     fam = np.asarray(arr["f_idx_site"])
     r_site = np.asarray(arr["r_idx_site"])
-    # censoring of the simulated networks (see the note above): fixed, none or generated
-    base, mode = scen, "fixed"
-    for suf, md in (("_nocens", "none"), ("_gencens", "generated")):
-        if scen.endswith(suf):
-            base, mode = scen[: -len(suf)], md
+    # censoring of the simulated networks (see the note above): fixed, none or generated; and
+    # (seventh review) where the regional anomalies are drawn and fitted: _gfit draws them only in
+    # the region-years with two or more series, as the likelihood of model A has them (otherwise
+    # they are drawn in every region-year); _gall refits with the anomaly in every region-year
+    # (model.region_year_all) instead of model A as it is
+    base, mode, g_fit_only, fit_all = scen, "fixed", False, False
+    found = True
+    while found:
+        found = False
+        for suf in ("_nocens", "_gencens", "_gfit", "_gall"):
+            if base.endswith(suf):
+                base, found = base[: -len(suf)], True
+                if suf == "_nocens":
+                    mode = "none"
+                elif suf == "_gencens":
+                    mode = "generated"
+                elif suf == "_gfit":
+                    g_fit_only = True
+                else:
+                    fit_all = True
     arr_s = arr if mode == "fixed" else dict(arr, cens=np.zeros(len(arr["y"]), bool))
+    single = np.asarray(arr["single_ry"], bool)
+    s_obs_all = np.asarray(arr["s_idx"])
+    # share of each series' values that are alone in their region-year: 1 for the series alone in
+    # their region, 0 for series whose every value shares its region-year with another series
+    share_single = np.bincount(s_obs_all, weights=single.astype(float), minlength=ns) / np.bincount(s_obs_all, minlength=ns)
+    groups = {"alone": share_single == 1, "partly": (share_single > 0) & (share_single < 1), "shared": share_single == 0}
     a_true = arr["ybar"]
     if mode == "generated":
         cens_real, s_obs = np.asarray(arr["cens"], bool), np.asarray(arr["s_idx"])
@@ -5132,7 +5379,10 @@ def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
             mu_true_net = float(pct(fitted["mu"]))
             ta = 0.9                                      # as v6_ry in run_A
         else:
-            raise ValueError(f"run_A_mean: {scen} (A_fit, A_ppc or A_ppc_redraw, optionally with _nocens or _gencens)")
+            raise ValueError(f"run_A_mean: {scen} (A_fit, A_ppc or A_ppc_redraw, optionally with _nocens or _gencens, "
+                             f"_gfit and _gall)")
+        if g_fit_only:
+            tr["ry_mask"] = ~single
         sim = simulate(arr_s, tr, rng)
         if mode == "generated":                           # a bound at the limit wherever the value exceeds it
             y_s = np.asarray(sim["y"], float).copy()
@@ -5143,9 +5393,27 @@ def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
         n_cens = int(np.asarray(sim["cens"], bool).sum())
         true_rate = pct(slope)
         mu_true = float(np.mean(true_rate))
-        mc = fit(sim, "A", region_year=True, seed=rep, target_accept=ta, **fit_kw)
-        s, net, rate = summarise_A(mc, sim, cfg)
+        sim_fit = dict(sim, ry_idx=sim["ry_idx_all"], n_ry=sim["n_ry_all"]) if fit_all else sim
+        mc = fit(sim_fit, "A", region_year=True, seed=rep, target_accept=ta, **fit_kw)
+        s, net, rate = summarise_A(mc, sim_fit, cfg)
         mu_draw = rate.mean(1)
+        # seventh review: coverage, width and error of the series intervals, and the fitted noise
+        # SD against the true one, by the share of a series' values alone in their region-year
+        smp_ = mc.get_samples()
+        lo_, hi_, est_ = s.rate_v6_lo.to_numpy(), s.rate_v6_hi.to_numpy(), s.rate_v6.to_numpy()
+        sig_ratio = s.sigma_pct.to_numpy() / 100 / np.asarray(tr["sigma"], float)
+        gstats = {"sd_ry_est": float(100 * np.mean(smp_["sd_region_year"])), "sd_ry_true": float(100 * tr["sd_ry"]),
+                  "sigma_ratio": float(np.mean(sig_ratio))}
+        rho_est = np.asarray(smp_["rho_family"]).mean(0) * 0.95
+        for k, f in enumerate(FAMILIES):
+            gstats[f"rho_{f}_err"] = float(rho_est[k] - np.asarray(tr["rho_f"])[k])
+        for gname, gm in groups.items():
+            if gm.any():
+                gstats.update({f"n_{gname}": int(gm.sum()),
+                               f"cov90_{gname}": float(np.mean((lo_[gm] <= true_rate[gm]) & (true_rate[gm] <= hi_[gm]))),
+                               f"width90_{gname}": float(np.mean(hi_[gm] - lo_[gm])),
+                               f"rmse_{gname}": float(np.sqrt(np.mean((est_[gm] - true_rate[gm]) ** 2))),
+                               f"sigma_ratio_{gname}": float(np.mean(sig_ratio[gm]))})
         row = score(scen, "v6_ry", s.rate_v6.to_numpy(), s.rate_v6_lo.to_numpy(), s.rate_v6_hi.to_numpy(),
                     s.class_v6.to_numpy(), true_rate, bins, np.median(mu_draw),
                     *np.quantile(mu_draw, [0.025, 0.975]), mu_true)
@@ -5163,13 +5431,15 @@ def run_A_mean(arr, cfg, fitted, scen, rng, reps, fit_kw):
             row[f"err_{b}"] = float(e[bins == b].sum() / ns)
         for k, f in enumerate(FAMILIES):
             row[f"err_{f}"] = float(e[fam == k].sum() / ns)
-        row.update(rep=rep, n_cens=n_cens, cens_mode=mode, **diagnostics(mc))
+        row.update(rep=rep, n_cens=n_cens, cens_mode=mode, **gstats, **diagnostics(mc))
         rows.append(row)
         del mc
         free_jit()
         print(f"{scen} (series mean) rep {rep}: error {row['network_err']:+.2f}, SD {row['network_sd']:.2f}, "
               f"covered {int(row['network_cover95'])}; regional {row['err_regional']:+.2f}, within "
-              f"{row['err_within']:+.2f}; mu covered {int(row['mu_cover95'])}", flush=True)
+              f"{row['err_within']:+.2f}; mu covered {int(row['mu_cover95'])}; series coverage {row['coverage90']:.3f} "
+              f"(alone in their region-years {row.get('cov90_alone', np.nan):.3f}, sigma ratio "
+              f"{row.get('sigma_ratio_alone', np.nan):.2f})", flush=True)
     return rows
 
 
@@ -5265,6 +5535,9 @@ def simulation_check(cfg, argv=None):
                     help="model A only, more networks for the series-mean interval (run_A_mean; A_fit, A_ppc, "
                          "A_ppc_redraw, each optionally with _nocens or _gencens)")
     ap.add_argument("--seed", type=int, default=None, help="seed of the simulated networks (default random_seed)")
+    ap.add_argument("--paired", action="store_true",
+                    help="start every scenario from the same seed, so that scenarios that differ only in one "
+                         "feature (e.g. A_fit and A_fit_gfit) simulate the same networks")
     args = ap.parse_args(argv)
     import numpyro
     numpyro.set_host_device_count(args.chains)
@@ -5288,10 +5561,13 @@ def simulation_check(cfg, argv=None):
     fitted = fitted_values(arr, arrB, cfg, fit_kw)
     print("fitted truth:", {k: (np.round(v, 3) if np.ndim(v) == 0 else np.round(np.mean(v), 3)) for k, v in fitted.items()})
 
-    rng = np.random.default_rng(cfg.get("random_seed", 42) if args.seed is None else args.seed)
+    seed_ = cfg.get("random_seed", 42) if args.seed is None else args.seed
+    rng = np.random.default_rng(seed_)
     stem = "aldi_v6_simulation_mean" if args.mean_only else "aldi_v6_simulation"
     rows = []
     for sc in args.scenarios.split(","):
+        if args.paired:                       # the same networks in every scenario
+            rng = np.random.default_rng(seed_)
         if args.mean_only:
             rows += run_A_mean(arr, cfg, fitted, sc, rng, args.reps, fit_kw)
         elif sc in ("A_thin", "A_ppc"):
@@ -5395,6 +5671,13 @@ def main():
                          "hyperparameters of a posterior draw with new exchangeable trends, no bounds), model A only, "
                          "seed MEAN_DIAG_SEED, --mean-reps networks each; added to data/3_aldi_validation as "
                          "aldi_v6_simulation_mean*_diag")
+    ap.add_argument("--ry-check", action="store_true",
+                    help="regional anomalies in single-series region-years (seventh review): A_fit, A_fit_gfit "
+                         "(anomalies drawn only where model A estimates them) and A_fit_gall (refitted with an "
+                         "anomaly in every region-year) on the same networks, model A only, seed random_seed, so "
+                         "the first 8 are the networks of the main A_fit scenario; added to data/3_aldi_validation "
+                         "as aldi_v6_simulation_mean*_ry")
+    ap.add_argument("--ry-reps", type=int, default=24, help="networks per scenario for --ry-check")
     ap.add_argument("--annual", type=Path, default=ANNUAL, help="ALT input (default: step 1 output)")
     ap.add_argument("--ee-dir", type=Path, default=EE_DIR, help="Earth Engine files (default: step 2 output)")
     ap.add_argument("--out", type=Path, default=OUT, help="output folder (default data/3_aldi)")
@@ -5451,10 +5734,13 @@ def main():
         if unknown:
             sys.exit(f"--runs: unknown run(s) {sorted(unknown)}; known: {[sc['name'] for sc in SENSITIVITY]}")
 
+        final_s = a.out.with_name(a.out.name + ("_sensitivity" if only is None else "_sensitivity_runs"))
+
         def sensitivity_run(work):
             sensitivity_runs(cfg, a.annual, a.out / "temperature", work, fit_kw, only)
-        stage(a.out.with_name(a.out.name + ("_sensitivity" if only is None else "_sensitivity_runs")),
-              sensitivity_run)
+            if only is not None:
+                merge_earlier_runs(work, final_s)
+        stage(final_s, sensitivity_run)
 
     if a.checks:
         def checks_run(work):
@@ -5509,6 +5795,22 @@ def main():
                         shutil.copy2(f, work / f.name)
             simulation_check(cfg, argv_d)
         stage(final_v, diag_run)
+
+    if a.ry_check:
+        temp = a.out / "temperature"
+        final_v = a.out.with_name(a.out.name + "_validation")
+        argv_r = [str(a.annual), "", str(temp / "tdd_site_years.csv"), "--reps", str(a.ry_reps),
+                  "--scenarios", "A_fit,A_fit_gfit,A_fit_gall", "--mean-only", "--paired",
+                  "--seed", str(cfg.get("random_seed", 42)), "--tag", "_ry"]
+
+        def ry_run(work):
+            argv_r[1] = str(work)
+            if final_v.exists():                       # added to the simulation already there
+                for f in final_v.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, work / f.name)
+            simulation_check(cfg, argv_r)
+        stage(final_v, ry_run)
 
     print(f"\nDone. Start with {a.out / 'aldi_v6_summary.txt'}")
 
