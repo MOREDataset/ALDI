@@ -127,7 +127,7 @@ too narrow for a statement about the permafrost region.
 
 See the top of `3_aldi.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below). `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
+`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below), `--mean-check` 50 more simulated networks each of A_fit and A_ppc for the interval of the series mean (model A only, seed 2026, about 25 minutes; `aldi_v6_simulation_mean_reps.csv` in `data/3_aldi_validation/`, apart from the scenario files). `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Since 14 November 2026 (sixth review) the main fit also writes the Monte Carlo standard errors (Vehtari et al. 2021, the quantile method of ArviZ; checked to agree with ArviZ 1.3 to the last digit) of each series' median and interval ends (`rate_v6_mcse`, `rate_v6_lo_mcse`, `rate_v6_hi_mcse`), the margin of its class (`class_margin`: distance of the deciding interval end from its boundary, %/dec), `class_borderline` (margin below 1 %/dec), `class_mc_sensitive` (deciding end within 2 Monte Carlo SE of the boundary) and the same for the rapid threshold (`rapid_margin`, `rapid_mc_sensitive`), and rows `A_main_network_rate_pct_dec_mcse` and `A_main_mean_site_rate_pct_dec_mcse` in `aldi_v6_network.csv` (Monte Carlo SE of the median and of the 2.5 and 97.5 % quantiles). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
 
 ## Results of 12 November 2026 (230 sites, 4,614 site-years, 44 regions)
 
@@ -234,6 +234,13 @@ the rapid threshold (CALM_U27 9.99 -> 10.01, GSC_90TT08 9.98 -> 10.06). The medi
 change| of the group changes is 0.05 %/dec and the RMS rate change over all series 0.10.
 Three of the four class changes of the run with the low-variability series kept (CALM_U27,
 BNZ_WCM1, HPW_Shakwak_orig_natural) also change here, so those are of Monte Carlo size.
+
+Runs `mcmc_long` and `mcmc_long_seed` (added 14 November 2026, sixth review) refit model A only
+with 5000 instead of 1500 draws per chain, with the main seed and seed + 1: how many classes
+longer sampling settles, and how many still change between two seeds at that length (paper
+checks, "class changes, mcmc_long_seed against mcmc_long"; Table S4). Run with the seed run:
+`py -3.12 3_aldi.py --no-main --sensitivity --runs mcmc_seed,mcmc_long,mcmc_long_seed` (the
+folder `data/3_aldi_sensitivity_runs/` is replaced by each `--runs` call, so all three go in one).
 
 Class margins without refit (main draws): stable +/-2.5 %/dec leaves no stable site (the
 13 become indeterminate: no record is precise enough to show a change below 2.5 %/dec);
@@ -740,6 +747,40 @@ Results of the 12 November 2026 run (PC; `data/3_aldi_checks/aldi_v6_checks.txt`
   (CALM_U27 gradual to rapid; BNZ_BFCONTROL, BNZ_WCM1 and HPW_Shakwak_orig_natural gradual to
   indeterminate), with rates moving by less than 0.1 and three of the four also changing in
   `mcmc_seed`. A network rate that holds across choices does not make every class robust.
+
+Added 14 November 2026 (sixth review of the paper):
+
+- **Robustness of each class** (`aldi_v6_checks_series_robustness.csv`, released as
+  `TableS10_series_results.csv`): one row per series with the rate, interval, P(thickening)
+  and class of model A, the trend-unpooled fit, the Akritas-Theil-Sen method and per-site OLS;
+  the class margin and deciding end, the Monte Carlo SE of the interval ends and the flags
+  above; `class_changes_in` (every run of the same period whose class differs, with the new
+  class), `runs_compared`, `runs_changed`; and one label, the first that applies:
+  `monte_carlo` (changes between runs of the sampler, or the deciding end within 2 Monte Carlo
+  SE of its boundary), `choice` (changes in a processing run or with the low-variability series
+  kept), `borderline` (margin below 1 %/dec), `robust`.
+- **Per-site GLS in the simulation** (`gls_site`, `gls_true`; block "POOLING AGAINST THE NOISE
+  MODEL", Table S8): generalized least squares of each series under the noise of model A
+  (AR(1) in calendar years with its sigma and its method's rho, plus the region-year variance
+  in region-years shared with another series), with the posterior means of the trend-unpooled
+  fit (`gls_site`, the comparator of the review) or with the true noise of the network
+  (`gls_true`, an oracle); bounds used as values as in OLS, normal-quantile interval. Per-site
+  OLS -> GLS is what modelling the temporal dependence and the shared anomalies gives; GLS ->
+  trend-unpooled what the Bayesian fit adds (censoring, region-year anomalies estimated from
+  the other series, uncertainty of the noise parameters, priors).
+- **Series mean on more networks** (`aldi_v6_checks_series_mean_more_networks.csv`, Table S8):
+  the networks of `--mean-check`, with 95 and 90 % coverage, bias and its SE, RMSE over the
+  posterior SD, the standardized errors (mean 0 and SD 1 if calibrated), the error split into
+  regional trends and the series' departures from them, by record length and method, mu and
+  the region bootstrap on the same networks. The main scenarios now also store `network_sd`,
+  `network_cover90`, `network_z`, and A_thin and A_ppc the interval of mu and the bootstrap.
+- **Randomization test of the method contrasts** (block "AGREEMENT OF THE METHODS",
+  `aldi_v6_checks_method.csv` columns `randomization_*` and `regional_differences`): the
+  difference of each method from the probes in every region that holds both, their weighted
+  mean (fixed-effects weights) and Fisher's exact sign-flip test (no difference; equivalence
+  within +-5 %/dec as two one-sided tests). With R regions the smallest attainable one-sided p
+  is 1 / 2^R, so with the four regions that thaw tubes share with probes equivalence cannot be
+  shown at the 5 % level by any test that treats regions as the independent units.
 
 ## Spatial checks (`spatial_checks`, also `--spatial`)
 
