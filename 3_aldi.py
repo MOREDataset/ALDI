@@ -3280,6 +3280,10 @@ CLASS_BORDER = 1.0                                   # %/dec
 OTHER_PERIOD_RUNS = ("window_2000_2024",)            # a different period, not a processing choice of the same trend
 CLASS_REFERENCE_RUNS = ("mcmc_seed", "mcmc_long", "mcmc_long_seed", "keep_low_variability")   # reported apart
 MONTE_CARLO_RUNS = ("mcmc_seed", "mcmc_long", "mcmc_long_seed")    # the same model and data, other draws
+# a variant of the model's structure, not a processing choice (seventh review): its class changes
+# are listed, but like the structural variants of the main run (no_region_year, student_slopes)
+# it does not enter the robustness label or the summary of the processing runs
+STRUCTURAL_RUNS = ("region_year_all",)
 
 
 def class_margin(cls, lo, hi, stable_margin):
@@ -4044,8 +4048,9 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
         shared_sets["keep_low_variability"] = set(kpr.site_id) & set(res.site_id)
     if cc_rows:
         cc = pd.DataFrame(cc_rows)
-        cc["kind"] = np.where(cc.run.isin(OTHER_PERIOD_RUNS), "other period",
-                              np.where(cc.run.isin(CLASS_REFERENCE_RUNS), "reference", "processing choice"))
+        cc["kind"] = np.select([cc.run.isin(OTHER_PERIOD_RUNS), cc.run.isin(CLASS_REFERENCE_RUNS),
+                                cc.run.isin(STRUCTURAL_RUNS)], ["other period", "reference", "structural variant"],
+                               "processing choice")
         cc.to_csv(out / "aldi_v6_checks_class_changes.csv", index=False)
         ccs = pd.concat(cc_sites, ignore_index=True)
         ccs.to_csv(out / "aldi_v6_checks_class_changes_sites.csv", index=False)
@@ -4076,7 +4081,7 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                      f"{pc_.group_changes.max()}); {int(pc_.group_changes_borderline.sum())} of the "
                      f"{int(pc_.group_changes.sum())} changes between groups are borderline; {sel.site_id.nunique()} "
                      f"series change group in at least one run")
-        for run_ in ["survey_doy", "keep_low_variability", "mcmc_seed", "mcmc_long", "mcmc_long_seed"]:
+        for run_ in ["survey_doy", "keep_low_variability", "mcmc_seed", "mcmc_long", "mcmc_long_seed", "region_year_all"]:
             x_ = ccs[ccs.run == run_]
             if len(x_):
                 L.append(f"    changed in {run_}: " + "; ".join(
@@ -4110,11 +4115,11 @@ def paper_checks(cfg, annual_file, main_out, out, sens_dir=None, val_dir=None):
                            "p_resolved_network"] if c in ck]
     rob = rob.merge(ck[ck_cols], on="site_id", how="left")
     chg = pd.concat(cc_sites, ignore_index=True) if cc_sites else pd.DataFrame(columns=["site_id", "run", "class_v6_run"])
-    chg = chg[~chg.run.isin(OTHER_PERIOD_RUNS)]
+    chg = chg[~chg.run.isin(OTHER_PERIOD_RUNS + STRUCTURAL_RUNS)]
     lists = chg.groupby("site_id").apply(lambda g: "; ".join(f"{w.run} ({w.class_v6_run})" for w in g.itertuples()),
                                          include_groups=False) if len(chg) else pd.Series(dtype=object)
     rob["class_changes_in"] = rob.site_id.map(lists).fillna("")
-    runs_cmp = [r_ for r_ in shared_sets if r_ not in OTHER_PERIOD_RUNS]
+    runs_cmp = [r_ for r_ in shared_sets if r_ not in OTHER_PERIOD_RUNS + STRUCTURAL_RUNS]
     rob["runs_compared"] = [sum(sid in shared_sets[r_] for r_ in runs_cmp) for sid in rob.site_id]
     rob["runs_changed"] = rob.site_id.map(chg.groupby("site_id").run.nunique()).fillna(0).astype(int)
     mc_chg = set(chg.site_id[chg.run.isin(MONTE_CARLO_RUNS)])
