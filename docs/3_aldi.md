@@ -45,12 +45,28 @@ sd(e) per site, log-normal around a family mean
   Against the main fit it isolates what pooling the trends adds to a site's interval and
   P(thickening); the per-site Sen + AR(1) and OLS tests also change the estimator, and their
   P(thickening), Phi(rate / SE), is a normal approximation, not a posterior.
+- Region-years with one series (seventh review of the paper, 15 November 2026): `g` is
+  estimated only in the 688 region-years observed by at least two series (4,203 of the 4,614
+  values). In the other 411 (253 of them in the 13 single-series regions) it cannot be told
+  apart from the series' error and is left in `e`, so sd(e) of a series alone in its region
+  includes it. `model.region_year_all: true` (run `region_year_all` of `--sensitivity --runs`,
+  a structural variant that the robustness labels of the classes leave out) gives every
+  region-year its anomaly, which marginalizes it where a series is alone, with sd_ry learnt
+  mostly from the shared region-years. The simulation check draws `g` in every region-year;
+  `--ry-check` measures what that mismatch changes (rerun of 15 November below).
 - Network summaries (`aldi_v6_network_summaries.csv`, Table 2 of the paper): mu, the
   equal-weight mean of the regional trends, and means over equal-area cells of 100, 250 and
   500 km, over places and over series, each computed in every posterior draw (median and
   95 % interval). Cells: Lambert azimuthal equal-area projection centred on the North Pole
   (sphere, R = 6371.0088 km), cell = floor(x / size), floor(y / size) from the pole, each
   cell weighted once (1 / series in it). Places: series within 1 km (single linkage).
+  Since the seventh review the file says how each summary is averaged (`averaged`: mu and the
+  mean of the regional trends are means of log rates, transformed to %/dec afterwards, so
+  100 (exp(mu) - 1) is the rate of the median region; the cell, place and series means average
+  the series' rates in %/dec) and gives each on the other scale (`other_scale_median`, `_lo95`,
+  `_hi95`): for mu the mean of the regional rates in %/dec, 100 (exp(mu + tau_region^2 / 2) - 1),
+  for the regional mean the mean of the regional rates, and for the others the mean of the
+  log rates, transformed afterwards.
 
 ## B. Climate-adjusted ALDI
 
@@ -127,7 +143,7 @@ too narrow for a statement about the permafrost region.
 
 See the top of `3_aldi.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below), `--mean-check` 50 more simulated networks each of A_fit and A_ppc for the interval of the series mean (model A only, seed 2026, about 25 minutes; `aldi_v6_simulation_mean_reps.csv` in `data/3_aldi_validation/`, apart from the scenario files), `--mean-diag` four diagnostic sets of 50 networks for the same interval, each changing one feature of A_fit or A_ppc (seed 2027, about 1 hour; files with the suffix `_diag`, then the paper checks; see "Diagnostic scenarios of the series mean" below). `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Since 14 November 2026 (sixth review) the main fit also writes the Monte Carlo standard errors (Vehtari et al. 2021, the quantile method of ArviZ; checked to agree with ArviZ 1.3 to the last digit) of each series' median and interval ends (`rate_v6_mcse`, `rate_v6_lo_mcse`, `rate_v6_hi_mcse`), the margin of its class (`class_margin`: distance of the deciding interval end from its boundary, %/dec), `class_borderline` (margin below 1 %/dec), `class_mc_sensitive` (deciding end within 2 Monte Carlo SE of the boundary) and the same for the rapid threshold (`rapid_margin`, `rapid_mc_sensitive`), and rows `A_main_network_rate_pct_dec_mcse` and `A_main_mean_site_rate_pct_dec_mcse` in `aldi_v6_network.csv` (Monte Carlo SE of the median and of the 2.5 and 97.5 % quantiles). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
+`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below), `--mean-check` 50 more simulated networks each of A_fit and A_ppc for the interval of the series mean (model A only, seed 2026, about 25 minutes; `aldi_v6_simulation_mean_reps.csv` in `data/3_aldi_validation/`, apart from the scenario files), `--mean-diag` four diagnostic sets of 50 networks for the same interval, each changing one feature of A_fit or A_ppc (seed 2027, about 1 hour; files with the suffix `_diag`, then the paper checks; see "Diagnostic scenarios of the series mean" below), `--ry-check` the regional anomalies of single-series region-years (24 networks each of `A_fit`, `A_fit_gfit` and `A_fit_gall`, model A only, seed 42, so the first 8 are the networks of the main `A_fit`; about 20-45 minutes; files with the suffix `_ry` in `data/3_aldi_validation/`, then the paper checks; see the rerun of 15 November after PR #47 below). `--runs a,b` with `--sensitivity` runs only the named runs (and main) into `data/3_aldi_sensitivity_runs`; since PR #47 the runs already there are kept. `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Since 14 November 2026 (sixth review) the main fit also writes the Monte Carlo standard errors (Vehtari et al. 2021, the quantile method of ArviZ; checked to agree with ArviZ 1.3 to the last digit) of each series' median and interval ends (`rate_v6_mcse`, `rate_v6_lo_mcse`, `rate_v6_hi_mcse`), the margin of its class (`class_margin`: distance of the deciding interval end from its boundary, %/dec), `class_borderline` (margin below 1 %/dec), `class_mc_sensitive` (deciding end within 2 Monte Carlo SE of the boundary) and the same for the rapid threshold (`rapid_margin`, `rapid_mc_sensitive`), and rows `A_main_network_rate_pct_dec_mcse` and `A_main_mean_site_rate_pct_dec_mcse` in `aldi_v6_network.csv` (Monte Carlo SE of the median and of the 2.5 and 97.5 % quantiles). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
 
 ## Results of 12 November 2026 (230 sites, 4,614 site-years, 44 regions)
 
@@ -591,12 +607,87 @@ and `--scenarios A_thin,A_ppc --reps 10`, each now with per-site GLS, then `--me
   in which the precisely known regions are slow (the 7 regions with 10 or more series average
   5.6 %/dec, the 25 with 1-2 series 9.7; Table S9), so a refit, which weights regions by
   precision, shrinks the fast imprecise regions towards them a second time. The series intervals
-  of these networks cover 0.87 for the same reason (0.896 with exchangeable trends). If the
-  configuration is systematic rather than chance, mu and the mean of the regional trends lean
-  towards the densely monitored regions by about 1 %/dec (paper, Sect. 3.4 and Discussion).
+  of these networks cover 0.87 for the same reason (0.896 with exchangeable trends). Since the
+  seventh review the paper reports this as a sensitivity of mu to configurations in which the
+  regional trends and the monitoring density are associated, conditional on the simulated
+  configuration, not as a bias of mu in the real network, where mu and the mean of the regional
+  trends agree (8.8 and 8.9 %/dec; paper, Sect. 3.4 and Discussion). These checks take the
+  hyperparameters from the fit (posterior means or draws), so they test calibration conditional
+  on plausible hyperparameters, not the unconditional calibration of simulation-based
+  calibration, which draws them from the prior.
   Apart from the shifts, the spread of the series-mean errors is 0.94-1.04 times the posterior SD
   in the main scenarios with fixed hyperparameters, except with changes of trend (about 1.3); the
   interval is not widened.
+
+Rerun on the PC on 15 November 2026 after PR #47 and PR #48 (seventh review; logs
+`data\review7_a.log` to `_d.log`): the main fit (`py -3.12 3_aldi.py`, 11.3 minutes), `--no-main
+--sensitivity --runs region_year_all` (2.9 minutes; `mcmc_seed`, `mcmc_long` and `mcmc_long_seed`,
+already in `data/3_aldi_sensitivity_runs`, were kept), `--no-main --ry-check` (19.7 minutes),
+`--checks` and `paper_figures`. The main fit was reproduced exactly (every R-hat, ESS and
+divergence count identical; Table 2 unchanged apart from its new columns). New:
+
+- **Table 2 on both averaging scales** (`aldi_v6_network_summaries.csv`):
+
+  | summary | averaged | median (95 %) | on the other scale |
+  |---|---|---|---|
+  | mu | log rates | 8.82 (6.58-11.56) | 8.95 (6.71-11.77) |
+  | equal-weight mean of the 44 regional trends | log rates | 8.86 (7.03-10.78) | 8.99 (7.11-10.94) |
+  | 78 cells of 100 km | rates | 9.14 (7.72-10.64) | 8.88 (7.50-10.30) |
+  | 52 cells of 250 km | rates | 9.95 (8.27-11.78) | 9.67 (8.04-11.41) |
+  | 37 cells of 500 km | rates | 9.50 (7.87-11.24) | 9.24 (7.64-10.93) |
+  | 174 places | rates | 7.65 (6.58-8.72) | 7.41 (6.35-8.45) |
+  | 230 series | rates | 7.15 (6.14-8.16) | 6.91 (5.93-7.92) |
+
+  The scale moves a summary by 0.12-0.28 %/dec; for mu the 0.13 is the
+  100 (exp(mu + tau^2 / 2) - 1) - 100 (exp(mu) - 1) of the review at tau_region = 0.048.
+- **Run `region_year_all`** against its main fit (block "REGIONAL ANOMALIES IN SINGLE-SERIES
+  REGION-YEARS", `aldi_v6_checks_region_years_real.csv`, Table S4): mu 8.73 (6.52-11.40) against
+  8.82 (6.58-11.56); mean series rate 7.04 against 7.05; sd_ry 5.74 against 5.74 % (1099 against
+  688 region-years); AR(1) probe 0.410 against 0.413, thaw tube 0.538 against 0.542, temperature
+  0.743 against 0.724; R-hat 1.005, no divergences. Classes 60 rapid, 59 gradual thickening, 13
+  stable, 1 thinning, 97 indeterminate (main 57, 63, 13, 1, 96). Five change: BNZ_WCM1 and
+  HPW_Shakwak_orig_natural (gradual -> indeterminate; lower ends 0.19 -> -0.11 and 0.02 -> -1.39),
+  PARKS_T_C27 (indeterminate -> rapid; -0.91 -> 0.38), CALM_U27 and GSC_90TT08 (gradual -> rapid at
+  the threshold; medians 9.99 -> 10.15 and 9.98 -> 10.10); the three group changes were borderline.
+  By series group (share of a series' values alone in their region-year):
+
+  | series | n | noise SD ratio, median (range) | interval width ratio, median (range) | rate change, median / largest (%/dec) | class changes |
+  |---|---|---|---|---|---|
+  | alone throughout | 13 | 0.801 (0.682-1.071) | 0.951 (0.906-1.219) | 0.36 / 1.24 | 2 |
+  | partly | 37 | 0.962 (0.524-1.056) | 0.990 (0.747-1.163) | 0.29 / 1.74 | 0 |
+  | never | 180 | 0.997 (0.931-1.036) | 0.999 (0.945-1.077) | 0.10 / 0.92 | 3 |
+
+  sd(e) of the lone series falls by a fifth because it no longer holds the regional anomaly
+  (sqrt(sigma^2 - sd_ry^2) / sigma = 0.82 at sigma = 0.099 and sd_ry = 0.057).
+- **Paired simulation** (`--ry-check`; 24 networks per scenario, seed 42, the first 8 those of
+  the main `A_fit`, reproduced exactly; `aldi_v6_simulation_mean_reps_ry.csv`,
+  `aldi_v6_checks_region_years.csv`, Table S8). `A_fit` draws `g` in every region-year and refits
+  model A; `A_fit_gfit` draws it only where model A estimates it (the same random numbers, the
+  other 411 anomalies set to zero), so the networks follow model A's likelihood exactly;
+  `A_fit_gall` refits the `A_fit` networks with an anomaly in every region-year:
+
+  | | `A_fit` | `A_fit_gfit` | `A_fit_gall` |
+  |---|---|---|---|
+  | series 90 % coverage (SE) | 0.899 (0.005) | 0.902 (0.004) | 0.901 (0.004) |
+  | alone (13 series): coverage / width / sigma ratio | 0.894 / 20.0 / 1.27 | 0.885 / 18.5 / 1.02 | 0.878 / 19.4 / 1.06 |
+  | partly (37): coverage / width / sigma ratio | 0.887 / 15.4 / 1.06 | 0.909 / 15.2 / 1.02 | 0.901 / 15.4 / 1.02 |
+  | never (180): coverage / width / sigma ratio | 0.901 / 13.1 / 1.03 | 0.902 / 13.1 / 1.03 | 0.903 / 13.1 / 1.03 |
+  | RMSE alone / partly / never | 5.85 / 5.07 / 4.12 | 5.62 / 4.88 / 4.09 | 5.85 / 5.02 / 4.10 |
+  | sd_ry fitted (true 5.8) | 5.7 | 5.8 | 5.8 |
+  | AR(1) error probe / thaw tube / temperature | -0.014 / -0.006 / -0.070 | -0.004 / -0.006 / -0.019 | -0.004 / -0.006 / -0.022 |
+  | series mean: bias, covered of 24 | +0.13, 21 | +0.14, 21 | +0.14, 21 |
+  | mu: bias, covered of 24 | +0.32, 24 | +0.35, 24 | +0.36, 23 |
+  | largest R-hat / divergences | 1.024 / 9 | 1.043 / 4 | 1.026 / 1 |
+
+  Paired differences from `A_fit` (SE): `A_fit_gfit` coverage +0.0036 (0.0021), alone -0.0096
+  (0.0107), partly +0.0214 (0.0065), never +0.0009 (0.0019), series mean +0.017, mu +0.034;
+  `A_fit_gall` coverage +0.0025 (0.0013), alone -0.0160 (0.0065), partly +0.0135 (0.0043), never
+  +0.0016 (0.0017), series mean +0.012, mu +0.035. The mismatch thus hardly changes the overall
+  coverage, the series mean or mu. It inflates sd(e) of the lone series (intervals 8 % wider,
+  coverage unchanged), lowers the coverage of the partly shared series by about 2 points and
+  makes the temperature AR(1) coefficient 0.07 too small, which the variant repairs; on the
+  real data the variant raises that coefficient from 0.724 to 0.743. Model A stays the main
+  model, with the variant reported beside it (paper, Sects. 2.2, 2.3, 3.1, 3.4).
 
 ### Thaw-subsidence bounds (sensitivity runs `subsidence_0.2`, `_0.5`, `_1.0`; added 2026-11-09)
 
@@ -894,6 +985,16 @@ Added 14 November 2026 (sixth review of the paper):
   without lower bounds) and `A_ppc_redraw_nocens` (the hyperparameters of one posterior draw per
   network with new exchangeable regional and series trends, no lower bounds). Each changes one
   feature, so a bias that disappears names its cause (results in the rerun of 15 November above).
+- **Regional anomalies of single-series region-years** (added 15 November 2026, seventh review,
+  PR #47; block "REGIONAL ANOMALIES IN SINGLE-SERIES REGION-YEARS"): from `--ry-check`,
+  `aldi_v6_checks_region_years.csv` (Table S8 file `TableS8_simulation_region_years.csv`) with
+  the coverage, width, RMSE and fitted / true noise SD of the series intervals by group (alone
+  in their region-year throughout, partly, never), sd_ry, the AR(1) errors, the series mean and
+  mu of each scenario and the paired differences from `A_fit`; from the run `region_year_all`,
+  `aldi_v6_checks_region_years_real.csv` (Table S4 file `TableS4_region_year_all.csv`) with
+  the noise SD ratio, interval width ratio, rate change and class changes by the same groups.
+  The class-change block lists `region_year_all` as a structural run (`STRUCTURAL_RUNS`, PR
+  #48), so it does not enter the robustness label of a class.
 - **Randomization test of the method contrasts** (block "AGREEMENT OF THE METHODS",
   `aldi_v6_checks_method.csv` columns `randomization_*` and `regional_differences`): the
   difference of each method from the probes in every region that holds both, their weighted
