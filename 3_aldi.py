@@ -112,6 +112,14 @@ sample:
   # -0.1 C crossing is below the deepest sensor. all: every temperature year as such an
   # interval (sensor accuracy as the observation error, so precise years count more).
   temp_interval: none
+  # Series whose surface lowering was measured while ALT was probed (MEASURED_SUBSIDENCE: the
+  # two Kilpisjarvi palsas of Verdonen et al. 2023, added 2026-11-16). drop (main, decided
+  # 16 Nov 2026 after the full rerun): left out, because their reference surface sank by
+  # 31 and 74 cm while probed (Laassaniemi: more than its ALT), so their ALT, read from that
+  # surface, measures the collapse of the mound rather than the active layer, and region
+  # pooling passed that to the other series of the region. keep: used as measured (run
+  # with_palsas). The run subsidence_palsas keeps them and adds the measured lowering.
+  measured_subsidence: drop
   # One method family per series. Probe, thaw tube and temperature ALT differ in level
   # (processing_notes.md), so a family switch inside a series creates a step that a
   # trend test reads as change. Years of the minority family are dropped (20 sites).
@@ -373,6 +381,13 @@ def load_series(annual: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataF
     d["family"] = d["method"].map(fam)
 
     log = []
+    ms = s.get("measured_subsidence", "drop")
+    assert ms in ("drop", "keep"), f"sample.measured_subsidence must be drop or keep, not {ms}"
+    if ms == "drop":
+        out = d["site_id"].isin(measured_subsidence_ids(d["site_id"]))
+        log.append(d.loc[out].assign(reason="surface lowering measured while probed (MEASURED_SUBSIDENCE; "
+                                            "sample.measured_subsidence = drop)"))
+        d = d[~out]
     keep = (d["lat"] >= s["min_lat"]) & d["year"].between(s["min_year"], s["max_year"])
     log.append(d.loc[~keep].assign(reason="outside latitude / year window"))
     d = d[keep]
@@ -2699,11 +2714,14 @@ SENSITIVITY = [
          why="one series per place (series within 1 km: keep the one with most years), so a "
              "thaw tube and its grid do not count twice"),
     # Added 2026-11-16 with the Kilpisjarvi palsas (Verdonen et al. 2023): the only series whose
-    # surface lowering was measured while ALT was probed (MEASURED_SUBSIDENCE below).
-    dict(name="drop_palsas", drop="measured_subsidence",
-         why="without the two Kilpisjarvi palsas, whose top-of-palsa surface sank by 31 and 74 cm while they "
-             "were probed (2007-2021), so their ALT, read from that surface, misses most of the deepening of "
-             "the permafrost table"),
+    # surface lowering was measured while ALT was probed (MEASURED_SUBSIDENCE below). Since the
+    # review of the full rerun (16 Nov 2026) the main fit leaves them out
+    # (sample.measured_subsidence = drop); this run puts them back as measured. Replaces the
+    # run drop_palsas of PR #51 (which gave the main fit of today).
+    dict(name="with_palsas", set={"sample.measured_subsidence": "keep"},
+         why="with the two Kilpisjarvi palsas as measured: their top-of-palsa surface sank by 31 and 74 cm "
+             "while they were probed (2007-2021), so their ALT, read from that surface, misses most of the "
+             "deepening of the permafrost table"),
     dict(name="window_2000_2024", set={"sample.min_year": 2000, "sample.max_year": 2024},
          why="common window 2000-2024 (the Streletskiy et al. 2026 period)"),
     dict(name="min_obs_8", set={"sample.min_obs": 8},
@@ -2726,9 +2744,10 @@ SENSITIVITY = [
     dict(name="subsidence_1.0", subsidence_cm_yr=1.0,
          why="as above with 1.0 cm/yr (high end: Utqiagvik, warm Interior Alaska)"),
     # Added 2026-11-16 with the Kilpisjarvi palsas: their measured lowering of the surface
-    # (MEASURED_SUBSIDENCE below; drop_palsas above leaves them out), as the runs above add a
-    # published rate, so it is listed with them, a different quantity.
-    dict(name="subsidence_palsas", subsidence_measured=True,
+    # (MEASURED_SUBSIDENCE below; the main fit leaves them out, with_palsas above keeps them as
+    # measured), as the runs above add a published rate, so it is listed with them, a different
+    # quantity.
+    dict(name="subsidence_palsas", subsidence_measured=True, set={"sample.measured_subsidence": "keep"},
          why="ALT + the measured lowering of the top-of-palsa surface since 2007 at the two Kilpisjarvi palsas "
              "(Verdonen et al. 2023, Table S5; 31 and 74 cm by 2021): the thaw depth below the 2007 surface"),
     # Added 2026-11-13 (review of the 12 November run): survey timing and the reading of
@@ -2835,8 +2854,6 @@ def sens_drop(flags, rule):
         return set(flags.site_id[flags.disturbed])
     if rule == "one_per_place":
         return set(flags.site_id[~flags.place_rep])
-    if rule == "measured_subsidence":
-        return measured_subsidence_ids(flags.site_id)
     raise ValueError(rule)
 
 
@@ -2865,8 +2882,9 @@ def add_subsidence(d, ice, s_cm_yr):
 # 30.6 cm at Peera and 74.2 cm at Laassaniemi in 2007-2021 (whole surveyed palsa about 30 and
 # 60 cm, their Sect. 4.3), while the TOP ALT, read from that surface, stayed level (Peera) or
 # fell (Laassaniemi). Their Sect. 3.1 adds the lowering since 2007 to the TOP ALT, as run
-# subsidence_palsas does. Used only by the sensitivity runs drop_palsas and subsidence_palsas;
-# the main fit keeps these series as measured, like every other probe series.
+# subsidence_palsas does. The main fit leaves these series out (sample.measured_subsidence =
+# drop, since 16 Nov 2026); the sensitivity runs with_palsas (as measured) and subsidence_palsas
+# (lowering added) put them back.
 MEASURED_SUBSIDENCE = {
     "VERDONEN_PEERA_TOP": dict(zip(range(2008, 2022), [0.48, 1.12, 0.60, 1.73, 2.99, 1.31, 3.90, 1.33, 3.85,
                                                         2.29, 2.44, 2.44, 2.12, 3.96])),
@@ -3110,8 +3128,9 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
     L.append(f"  fire-disturbed plots {int(flags.disturbed.sum())}: " + ", ".join(flags.site_id[flags.disturbed]))
     L.append(f"  places (series within 1 km joined) {flags.location_id.nunique()}; series that are not their "
              f"place's representative {int((~flags.place_rep).sum())}")
-    ms_ = sorted(measured_subsidence_ids(flags.site_id))
-    L.append(f"  surface lowering measured while probed (MEASURED_SUBSIDENCE) {len(ms_)}: " + ", ".join(ms_))
+    ms_ = sorted(measured_subsidence_ids(annual.site_id))
+    L.append(f"  surface lowering measured while probed (MEASURED_SUBSIDENCE; main sample: "
+             f"{cfg['sample'].get('measured_subsidence', 'drop')}) {len(ms_)}: " + ", ".join(ms_))
     L.append("\nA: class counts and network rates (%/dec; network = model mean mu with its 95 % interval; "
              "declustered = 250 km equal-area cells count once):")
     cols_a = ["n_sites", "n_site_years"] + [f"A_{k}" for k in ORDER] + [

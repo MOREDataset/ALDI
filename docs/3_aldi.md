@@ -725,41 +725,56 @@ analysis of ALT). They change the quantity, so they are reported apart, as hypot
 scenarios in Text S1 and Table S11 of the supplement (`paper_figures.m` writes
 `TableS11_subsidence_scenarios.csv`).
 
-### Kilpisjärvi palsas (sensitivity runs `drop_palsas` and `subsidence_palsas`; added 2026-11-16)
+### Kilpisjärvi palsas (left out of the main fit; runs `with_palsas` and `subsidence_palsas`; added 2026-11-16)
 
 The two palsa series of Verdonen et al. (2023; `verdonen_palsa` in step 1) are the only ones
 whose surface lowering was measured while ALT was probed: by RTK-GNSS, the top-of-palsa (TOP)
 surface sank by 30.6 cm at Peera and 74.2 cm at Laassaniemi in 2007-2021 (sum of the annual
 values of Table S5 of their supplement; about 30 and 60 cm for the whole surveyed palsas,
 their Sect. 4.3). Measured from that surface, TOP ALT stayed level at Peera and fell at
-Laassaniemi. The main fit keeps both series as measured, like every other probe series. Two
-sensitivity runs show what they do:
+Laassaniemi (52-57 cm in 2007-2011, 40-45 cm in 2017-2021) while the permafrost table went
+about 60 cm deeper.
 
-- `drop_palsas` (drop rule `measured_subsidence`, a processing choice like the other drop
-  rules: in Fig S2, Table S4 and the class changes) leaves them out;
-- `subsidence_palsas` adds the measured lowering since 2007, year by year
+**Main fit: left out** (`sample.measured_subsidence: drop`; `load_series` logs their
+site-years as removed). Decided on 16 November 2026 after the full rerun with both palsas in
+the main fit (below). At Laassaniemi the reference surface sank by more than the active layer
+is thick, so the surface-referenced ALT there measures the collapse of the mound, not the
+response of the active layer, and the sign of its trend is the opposite of the change in thaw
+depth. In a model that pools the series of a region, that signal passed to the other series of
+the region, which have no such artefact. The other probe series have no measured surface change;
+their possible subsidence is treated by the hypothetical scenarios above.
+Two runs put the palsas back:
+
+- `with_palsas` (`sample.measured_subsidence: keep`, a processing choice: in Fig S2, Table S4
+  and the class changes) uses them as measured. It replaces the run `drop_palsas` of PR #51,
+  which was the main fit of today;
+- `subsidence_palsas` keeps them and adds the measured lowering since 2007, year by year
   (`MEASURED_SUBSIDENCE`, the annual values of Table S5), to their ALT, as Verdonen et al.
   (2023, Sect. 3.1) do: the thaw depth below the 2007 surface, a different quantity, so
   reported with the subsidence scenarios (Table S11; the name starts with `subsidence`, which
   keeps it out of Fig S2 and of the class changes).
 
-Preview on the PC, 16 November 2026 (`--out data/3_aldi_palsa_preview`, main fit only, on the
-step-1 build of that day: 360 sites, 6,635 valid site-years): 232 series, 4,644 site-years
-(75 lower bounds), 44 regions; mu 8.49 (6.35-11.03) %/dec against 8.82 (6.58-11.56) without
-the palsas; mean of the 44 regional trends 8.51 (6.81-10.42) against 8.86; series mean 7.06
-against 7.15; classes 58 rapid, 57 gradual thickening, 13 stable, 1 thinning, 103
-indeterminate (57 / 63 / 13 / 1 / 96). Both palsas join the region of CALM_S2 and Stordalen
-Dry (Abisko), whose trend falls from 12.1 to 6.8 %/dec. On its own record Laassaniemi thins
-fast (trend-unpooled -23.7 %/dec, 90 % interval -31.5 to -15.1; per-site Sen + AR(1) -23.4),
-Peera does not move (+0.6, -8.9 to +10.4); in Model A they are -3.2 (-12.6 to +7.5) and +5.3
-(-1.9 to +13.2), both indeterminate. Stordalen Dry moves from rapid thickening (11.3, lower
-end 0.85) to indeterminate (6.2, -4.2 to 17.2); the six other class changes are at a class
-boundary (CALM_U27 and GSC_90TT08 gradual -> rapid at the threshold; BNZ_BFCONTROL, BNZ_WCM1,
-BNZ_WCM2 and HPW_Shakwak_orig_natural gradual -> indeterminate, lower ends 0.02-0.20 ->
--0.43 to -0.20). Model A main: R-hat 1.006, ESS >= 923, no divergences. The only strongly
-negative surface-referenced trend among the new series is that of a palsa whose surface sank
-by 74 cm while its permafrost table went deeper: an example of the surface-reference caveat
-with measured subsidence, beside the hypothetical rates of the three runs above.
+Full rerun with both palsas in the main fit (PC, 16 November 2026, main 7f32415, every step;
+now the run `with_palsas`): 232 series, 4,644 site-years (75 lower bounds), 44 regions; mu 8.5
+(6.4-11.0) %/dec against 8.8 (6.6-11.6) without the palsas; series mean 7.06 against 7.15;
+classes 58 rapid, 57 gradual thickening, 13 stable, 1 thinning, 103 indeterminate (57 / 63 /
+13 / 1 / 96). Both palsas join the region of CALM_S2 and Stordalen Dry (Abisko, about 110 km
+away), whose trend falls from 12.1 to 6.8 %/dec. On its own record Laassaniemi thins fast
+(trend-unpooled -23.7 %/dec, 90 % interval -31.5 to -15.1; per-site Sen + AR(1) -23.4), Peera
+does not move (+0.6, -8.9 to +10.4); in Model A they are -3.2 (-12.6 to +7.5) and +5.3 (-1.9 to
++13.2), both indeterminate. Of the 230 other series 7 change class: Stordalen Dry from rapid
+thickening (11.3, lower end 0.85) to indeterminate (6.2, -4.2 to 17.2), pulled down by its
+region; six at a class boundary (CALM_U27 and GSC_90TT08 gradual -> rapid at the threshold;
+BNZ_BFCONTROL, BNZ_WCM1, BNZ_WCM2 and HPW_Shakwak_orig_natural gradual -> indeterminate, lower
+ends 0.02-0.20 -> -0.43 to -0.20), as another sampler seed alone moves 3-4. The palsas also
+widened the spread of the series trends in their regions (5.07 -> 5.31 %/dec) and narrowed that
+of the regional trends (4.77 -> 4.42). With the measured lowering added: mu 9.4 (7.0-12.2),
+classes 61 / 57 / 13 / 1 / 100. The two series thus move mu by -0.3 or +0.6 %/dec, depending
+on the reference surface. Without refitting, leaving out any one of the other regions moves
+the mean of the regional trends by at most 0.17 %/dec; the palsas moved it by 0.35: too much
+leverage for two series known to measure something else, and the reason they are out of the
+main fit. Without them the main fit is the draft-8 fit: the run `drop_palsas` of that rerun
+gave 8.8 (6.6-11.6) and 57 / 63 / 13 / 1 / 96 exactly.
 
 ## Paper checks (`paper_checks`, `--checks`, `data/3_aldi_checks/`; added 2026-11-09)
 
