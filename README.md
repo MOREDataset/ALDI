@@ -87,7 +87,13 @@ step, with its settings at the top.
   region-years (from `--ry-check` and the run `region_year_all`); about a minute, no refit), `--spatial` (only the spatial checks on the existing results, about
   a minute; needs geopandas for the permafrost-map part). `--no-main` skips the main fit
   and adds the other runs to the existing `data/3_aldi`. Everything at once:
-  `py -3.12 3_aldi.py --power --sensitivity --checks --validate`.
+  `py -3.12 3_aldi.py --power --sensitivity --checks --validate`. The paper's full set (as
+  rerun on 16-17 November 2026), in this order: (1) `py -3.12 3_aldi.py --power --sensitivity
+  --validate`; (2) `--no-main --sensitivity --runs mcmc_seed,mcmc_long,mcmc_long_seed,region_year_all`
+  (the reference runs, which a full `--sensitivity` leaves out); (3) `--no-main --validate
+  --scenarios A_thin,A_ppc --reps 10`; (4) `--no-main --mean-check --mean-reps 50`, `--no-main
+  --mean-diag --mean-reps 50` and `--no-main --ry-check`; (5) the keep-pinned build of step 1
+  (below) and its fit; (6) `--no-main --checks` and `--spatial`; then step 4.
 - **Step 4** (MATLAB R2021a or newer, no toolboxes) draws Figs 1-4 and S1-S5 of the
   Results (PNG and PDF) and writes Tables 2 and S1-S11 (CSV) and `key_numbers.txt` (the
   numbers quoted in the text). It uses the outputs of `3_aldi.py --power --sensitivity

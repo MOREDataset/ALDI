@@ -2687,13 +2687,15 @@ def read_stordalen(raw) -> pd.DataFrame:
 
 # Peera and Laassaniemi palsa mires near Kilpisjärvi, NW Finland (Verdonen et al. 2023,
 # The Cryosphere 17, 1803-1819, Sect. 2.1): position (given there in degrees, minutes and
-# seconds), elevation, size of the top-of-palsa (TOP) area and the subsidence of its surface
-# 2007-2021 measured by RTK-GNSS (rounded, as in the paper's text).
+# seconds), elevation, size of the top-of-palsa (TOP) area and the lowering of the TOP surface
+# in 2007-2021 measured by RTK-GNSS (sum of the annual values of Table S5 of the supplement,
+# 30.6 and 74.2 cm; the whole surveyed palsa sank by about 30 and 60 cm, their Sect. 4.3).
+# 3_aldi.py holds the annual values (MEASURED_SUBSIDENCE) for two sensitivity runs.
 VERDONEN_PALSAS = {
     "Peera": dict(lat=68 + 52 / 60 + 41 / 3600, lon=21 + 4 / 60 + 41 / 3600, elev_m=460,
-                  top_m2=309, subsidence_cm=30),
+                  top_m2=309, subsidence_cm=31),
     "Laassaniemi": dict(lat=68 + 56 / 60 + 39 / 3600, lon=20 + 54 / 60 + 40 / 3600, elev_m=475,
-                        top_m2=49, subsidence_cm=60),
+                        top_m2=49, subsidence_cm=74),
 }
 
 
@@ -2772,8 +2774,8 @@ def read_verdonen_palsa(raw) -> pd.DataFrame:
         info = VERDONEN_PALSAS[name]
         note = (f"palsa mire, {info['elev_m']} m a.s.l.; mean ALT of the top-of-palsa (TOP) area "
                 f"({info['top_m2']} m2, not visibly affected by lateral degradation), 1 m steel rod, "
-                f"RTK-GNSS; the TOP surface subsided about {info['subsidence_cm']} cm in 2007-2021 "
-                f"(Verdonen et al. 2023), ALT measured from the surface")
+                f"RTK-GNSS; the TOP surface sank by {info['subsidence_cm']} cm in 2007-2021 "
+                f"(Verdonen et al. 2023, Table S5), ALT measured from the surface")
         for dd, mm, yy, n_all, m_all, sd_all, n_top, m_top, sd_top in block:
             year = int(yy)
             recs.append(dict(source_site_id=f"VERDONEN_{name.upper()}_TOP",
