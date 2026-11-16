@@ -770,8 +770,10 @@ ends 0.02-0.20 -> -0.43 to -0.20), as another sampler seed alone moves 3-4. The 
 widened the spread of the series trends in their regions (5.07 -> 5.31 %/dec) and narrowed that
 of the regional trends (4.77 -> 4.42). With the measured lowering added: mu 9.4 (7.0-12.2),
 classes 61 / 57 / 13 / 1 / 100. The two series thus move mu by -0.3 or +0.6 %/dec, depending
-on the reference surface. Without refitting, leaving out any one of the other regions moves
-the mean of the regional trends by at most 0.17 %/dec; the palsas moved it by 0.35: too much
+on the reference surface. The equal-weight mean of the 44 regional posterior medians
+(`region_rate_v6`) fell from 8.86 to 8.52 with them (two full fits); leaving out any one region
+of the 230-series fit and averaging the other 43 (no refit, so shrinkage and regional spread
+held fixed) moves it by at most 0.19 %/dec. That is too much
 leverage for two series known to measure something else, and the reason they are out of the
 main fit. Without them the main fit is the draft-8 fit: the run `drop_palsas` of that rerun
 gave 8.8 (6.6-11.6) and 57 / 63 / 13 / 1 / 96 exactly.
