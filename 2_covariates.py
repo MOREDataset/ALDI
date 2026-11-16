@@ -23,7 +23,8 @@ Reads   data/1_alt_target/alt_multisource_for_ALDI.csv   (the site list, step 1)
         data/raw/permafrost_map/permaice.shp             (IPA map, for --all)
 Writes  data/2_covariates/  static.csv, era5_YYYY.csv, t2m_daily_YYYY.csv, ... (one file
         per group and ALT year). Files already there are skipped, so you can stop the
-        script and run it again to continue. Six files are computed at a time; one
+        script and run it again to continue; when step 1 has added sites, the static, era5
+        and t2m_daily files get only the new sites. Six files are computed at a time; one
         t2m_daily year takes about 10 minutes, the default set about 2 hours.
 
 What it extracts
@@ -1012,7 +1013,10 @@ def download_all(sites, out_dir, years=None, groups=ALL_GROUPS, chunk=60, worker
     3_aldi.py read the folder unchanged. No Google Drive needed.
 
     Files already in out_dir are skipped, so an interrupted run continues where it stopped.
-    Each file is written under a temporary name and renamed when complete. Large groups
+    When step 1 adds sites, a static, era5 or t2m_daily file already there gets only the
+    missing sites, appended to its rows (the other groups can lack a site legitimately and
+    are left as they are). Each file is written under a temporary name and renamed when
+    complete. Large groups
     are requested `chunk` sites at a time; a request that is too large is split. `workers`
     files are computed at the same time (Earth Engine allows a few dozen parallel requests);
     one t2m_daily year takes about 10 minutes on its own."""
@@ -1020,18 +1024,29 @@ def download_all(sites, out_dir, years=None, groups=ALL_GROUPS, chunk=60, worker
     from concurrent.futures import ThreadPoolExecutor, as_completed
     years = list(range(cfg["first_year"], cfg["last_year"] + 1)) if years is None else list(years)
     os.makedirs(out_dir, exist_ok=True)
-    jobs, skipped = [], 0
+    # groups with a row for every site (and day): sites added to the list since a file was
+    # written are computed and appended (added 16 November 2026, for the two Kilpisjärvi palsas)
+    topup_groups = ("static", "era5", "t2m_daily")
+    jobs, skipped, topups = [], 0, 0
     for group in groups:
         for y in ([None] if group == "static" else _years_for(group, years, cfg)):
             name = group if y is None else f"{group}_{y}"
-            if os.path.exists(os.path.join(out_dir, name + ".csv")):
-                skipped += 1
-            else:
-                jobs.append((group, y, name))
-    print(f"{len(jobs)} files to download, {skipped} already in {out_dir}; "
-          f"{workers} at a time", flush=True)
+            path = os.path.join(out_dir, name + ".csv")
+            if not os.path.exists(path):
+                jobs.append((group, y, name, sites))
+                continue
+            if group in topup_groups:
+                have = set(pd.read_csv(path, usecols=["site_id"], dtype=str).site_id)
+                new = sites[~sites.site_id.astype(str).isin(have)]
+                if len(new):
+                    jobs.append((group, y, name, new))
+                    topups += 1
+                    continue
+            skipped += 1
+    print(f"{len(jobs) - topups} files to download, {topups} to complete with new sites, "
+          f"{skipped} already complete in {out_dir}; {workers} at a time", flush=True)
 
-    def one(group, y, name):
+    def one(group, y, name, sub):
         path = os.path.join(out_dir, name + ".csv")
         if group in ("era5", "t2m_daily") and not _check_era5_complete(y, cfg):
             return name, None
@@ -1040,9 +1055,16 @@ def download_all(sites, out_dir, years=None, groups=ALL_GROUPS, chunk=60, worker
             cols = ["site_id"] + STATIC_BANDS
         else:
             make_fc = lambda fc: group_collection(group, y, fc, cfg)[0]
-            cols = group_collection(group, y, make_sites_fc(sites.head(1)), cfg)[1]
-        n = chunk if group != "fire" else len(sites)   # fire rows are few: one request
-        df = _fetch_chunked(make_fc, sites, cols, n)
+            cols = group_collection(group, y, make_sites_fc(sub.head(1)), cfg)[1]
+        n = chunk if group != "fire" else len(sub)     # fire rows are few: one request
+        df = _fetch_chunked(make_fc, sub, cols, n)
+        if os.path.exists(path):
+            # completing a file: its rows stay as written (read as text), the new sites follow
+            old = pd.read_csv(path, dtype=str)
+            if set(df.columns) != set(old.columns):
+                raise ValueError(f"{name}.csv has other columns than this script writes now; "
+                                 f"move it away and run again to compute it for all sites")
+            df = pd.concat([old, df[list(old.columns)]], ignore_index=True)
         tmp = path + ".part"
         df.to_csv(tmp, index=False)
         os.replace(tmp, path)

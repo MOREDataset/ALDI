@@ -274,7 +274,9 @@ CONFIG = {
                  # 1930-1990 ALT product of the same stations (it reads shallow)
                  "roshydromet_soil": 2,
                  # Janssonhaugen P11 is the borehole behind CALM N1, so CALM stays first
-                 "metno_janssonhaugen": 4, "other": 7},
+                 "metno_janssonhaugen": 4,
+                 # Kilpisjärvi palsas (Verdonen et al. 2023): the only source of these sites
+                 "verdonen_palsa": 3, "other": 7},
     # Known site problems, from earlier ALDI v5 QC: CALM code -> first affected year.
     # Pearl Creek (U19) and Bonanza Creek (U18) thaw into a talik: thaw depth stops
     # being ALT. Values from that year are flagged "talik".
@@ -2683,6 +2685,128 @@ def read_stordalen(raw) -> pd.DataFrame:
     return finish(end_of_season(p, min_last_doy=244), "stordalen")
 
 
+# Peera and Laassaniemi palsa mires near Kilpisjärvi, NW Finland (Verdonen et al. 2023,
+# The Cryosphere 17, 1803-1819, Sect. 2.1): position (given there in degrees, minutes and
+# seconds), elevation, size of the top-of-palsa (TOP) area and the subsidence of its surface
+# 2007-2021 measured by RTK-GNSS (rounded, as in the paper's text).
+VERDONEN_PALSAS = {
+    "Peera": dict(lat=68 + 52 / 60 + 41 / 3600, lon=21 + 4 / 60 + 41 / 3600, elev_m=460,
+                  top_m2=309, subsidence_cm=30),
+    "Laassaniemi": dict(lat=68 + 56 / 60 + 39 / 3600, lon=20 + 54 / 60 + 40 / 3600, elev_m=475,
+                        top_m2=49, subsidence_cm=60),
+}
+
+
+def _verdonen_counts(raw) -> pd.DataFrame | None:
+    """Points probed and points deeper than the 1 m rod per site and year, from the sheet
+    that M. Verdonen sent (Peera_and_Laassaniemi_*.xlsx), or None when it is not there."""
+    f = next(iter(files(raw, "Peera_and_Laassaniemi*.xlsx")), None)
+    if f is None:
+        return None
+    x = pd.read_excel(f, header=None, dtype=object)
+    rows, site = [], None
+    for r in x.itertuples(index=False):
+        vals = [v for v in r if v is not None and v == v]
+        name = next((str(v).strip() for v in vals if str(v).strip() in VERDONEN_PALSAS), None)
+        if name:
+            site = name
+            continue
+        nums = [v for v in vals if isinstance(v, (int, float)) or str(v).strip().isdigit()]
+        if site and len(nums) >= 3 and 2000 <= int(nums[0]) <= 2100:
+            rows.append(dict(site=site, year=int(nums[0]), n_total=int(nums[1]), n_over_1m=int(nums[2])))
+    return pd.DataFrame(rows) if rows else None
+
+
+def read_verdonen_palsa(raw) -> pd.DataFrame:
+    """
+    Peera and Laassaniemi palsa mires, Kilpisjärvi, NW Finland (University of Eastern
+    Finland; Verdonen et al. 2023, The Cryosphere 17, 1803-1819). ALT was probed with a 1 m
+    steel rod in the last week of August 2007-2021 (9-10 September in 2013), at points along
+    transects positioned by RTK-GNSS. Table S1 of the supplement gives, per site and survey,
+    the number, mean and SD of the points with ALT <= 1 m, for all points and for the
+    top-of-palsa (TOP) areas, the parts of the palsas not visibly affected by lateral
+    degradation (309 and 49 m2).
+
+    The series are the TOP means. The mean of all points is not used: a point deeper than the
+    1 m rod is left out of it, and the share of such points rose from 0 and 7 % in 2007 to 30
+    and 38 % in 2021 (58 % at Laassaniemi in 2018), largely where the permafrost thawed through
+    at the eroding palsa margins (points were abolished after years without permafrost within
+    1 m). That mean therefore falls as the palsas degrade, and by the rule for grids (a lower
+    bound when 20 % or more of the points are capped) most Laassaniemi years would be lower
+    bounds. No TOP point passed the rod: the TOP counts stay at 68 (Peera, 2016-2021) and 46
+    (Laassaniemi, 2011-2021) while the number of points deeper than 1 m varies between 19 and
+    138; the smaller TOP counts of the early years are shorter transects. The counts of all
+    points and of points deeper than 1 m come from the sheet sent by M. Verdonen by email on
+    16 November 2026 (_verdonen_counts), read when present to check Table S1 and to log the
+    shares; the series need only the supplement. ALT is taken from the surface, as at every
+    other site, although the TOP surfaces subsided by about 30 and 60 cm in 2007-2021
+    (RTK-GNSS; Verdonen et al. 2023), so the thaw reached well below the 2007 permafrost table
+    while ALT stayed level (Peera) or decreased (Laassaniemi). In 2018 the RTK-GNSS failed and
+    the values were interpolated (natural neighbour) from that year's points to the 2019
+    points: flag interpolated_points (informational; the value is used).
+    """
+    pdfs = files(raw, "tc-17-1803-2023-supplement*.pdf")
+    if not pdfs:
+        return empty_records()
+    import pdfplumber
+    with pdfplumber.open(pdfs[-1]) as pdf:
+        text = "\n".join(pg.extract_text() or "" for pg in pdf.pages)
+    # date, n (all), mean ± SD (all), n (TOP), mean ± SD (TOP); the site names of Table S1
+    # are rotated and come out as scattered letters, so the sites follow the table order
+    row_re = re.compile(r"(\d{2})\.(\d{2})\.((?:19|20)\d{2})\s+(\d+)\s+(\d+(?:\.\d+)?)\s*±\s*"
+                        r"(\d+(?:\.\d+)?)\s+(\d+)\s+(\d+(?:\.\d+)?)\s*±\s*(\d+(?:\.\d+)?)")
+    blocks, last = [], None
+    for m in row_re.finditer(text):
+        year = int(m.group(3))
+        if last is None or year <= last:
+            blocks.append([])
+        blocks[-1].append(m.groups())
+        last = year
+    names = list(VERDONEN_PALSAS)
+    if len(blocks) != len(names) or any(len(b) < 8 for b in blocks):
+        _unread("verdonen_palsa", pdfs[-1].name, f"Table S1 not found as expected ({[len(b) for b in blocks]} rows)")
+        return empty_records()
+    counts = _verdonen_counts(raw)
+    recs = []
+    for name, block in zip(names, blocks):
+        info = VERDONEN_PALSAS[name]
+        note = (f"palsa mire, {info['elev_m']} m a.s.l.; mean ALT of the top-of-palsa (TOP) area "
+                f"({info['top_m2']} m2, not visibly affected by lateral degradation), 1 m steel rod, "
+                f"RTK-GNSS; the TOP surface subsided about {info['subsidence_cm']} cm in 2007-2021 "
+                f"(Verdonen et al. 2023), ALT measured from the surface")
+        for dd, mm, yy, n_all, m_all, sd_all, n_top, m_top, sd_top in block:
+            year = int(yy)
+            recs.append(dict(source_site_id=f"VERDONEN_{name.upper()}_TOP",
+                             site_name=f"{name} palsa mire, top-of-palsa area (Kilpisjärvi, Finland)",
+                             lat=info["lat"], lon=info["lon"], country="Finland", method="probe",
+                             year=year, obs_date=pd.Timestamp(year, int(mm), int(dd)),
+                             alt_cm=float(m_top), alt_sd_cm=float(sd_top), n_points=int(n_top),
+                             censored=False, flag="interpolated_points" if year == 2018 else "",
+                             site_note=note, source_file=f"Verdonen_Kilpisjarvi/{pdfs[-1].name}",
+                             n_all=int(n_all), mean_all=float(m_all)))
+    p = pd.DataFrame(recs)
+    if counts is not None:
+        c = p.assign(site=p.source_site_id.str.split("_").str[1].str.title()).merge(
+            counts, on=["site", "year"], how="left")
+        c["n_le_1m"] = c.n_total - c.n_over_1m
+        off = c[(c.year != 2018) & c.n_total.notna() & (c.n_le_1m != c.n_all)]
+        if len(off):
+            log(f"    verdonen_palsa: Table S1 and the count sheet differ in {len(off)} site-years: "
+                + ", ".join(f"{r.site} {r.year} ({r.n_all} vs {int(r.n_le_1m)})" for r in off.itertuples()))
+        for site, g in c.groupby("site", sort=False):
+            g = g.dropna(subset=["n_total"])
+            if len(g):
+                share = 100 * g.n_over_1m / g.n_total
+                log(f"    verdonen_palsa {site}: points deeper than the 1 m rod "
+                    + ", ".join(f"{int(y)} {v:.0f} %" for y, v in zip(g.year, share))
+                    + "; mean of the points <= 1 m (not used) "
+                    + f"{g.mean_all.iloc[0]:.1f} cm in {int(g.year.iloc[0])}, "
+                    + f"{g.mean_all.iloc[-1]:.1f} cm in {int(g.year.iloc[-1])}")
+    else:
+        log("    verdonen_palsa: count sheet Peera_and_Laassaniemi_*.xlsx not found (only the check is skipped)")
+    return finish(p.drop(columns=["n_all", "mean_all"]), "verdonen_palsa")
+
+
 def read_umiujaq_cables(raw) -> pd.DataFrame:
     """
     Umiujaq, Tasiapik Valley permafrost mound (lithalsa), Nunavik (CEN; Borealis
@@ -4657,6 +4781,7 @@ ADAPTERS = {
     "uio_boreholes": read_uio_boreholes,
     "roshydromet_soil": read_roshydromet_soil,
     "metno_janssonhaugen": read_metno_janssonhaugen,
+    "verdonen_palsa": read_verdonen_palsa,
 }
 
 
@@ -4760,6 +4885,12 @@ SOURCES = {
                             "1999-2025 (MET Norway, K. Isaksen; sent by email 10 November 2026; "
                             "Isaksen et al. 2000, 2001, 2022)", "https://cryo.met.no/en/permafrost/janssonhaugen",
                             "shared by the data owner for this analysis; cite Isaksen et al. 2000, 2001, 2022"),
+    "verdonen_palsa": ("Peera and Laassaniemi palsa mires, Kilpisjärvi, NW Finland: probing of the "
+                       "top-of-palsa areas 2007-2021, Table S1 of the supplement of Verdonen et al. 2023 "
+                       "(The Cryosphere 17, 1803-1819); the counts of all points and of points deeper than "
+                       "1 m sent by M. Verdonen (University of Eastern Finland) by email on 16 November 2026",
+                       "https://doi.org/10.5194/tc-17-1803-2023",
+                       "CC BY 4.0 (supplement); acknowledge M. Verdonen and cite Verdonen et al. 2023"),
     "g02189": ("NSIDC G02189 Russian station soil temperatures (check before 2000 only, never used as data)",
                "https://nsidc.org/data/g02189", "NSIDC (cite dataset)"),
     "tarfala_pace": ("PACE-1-2 borehole temperature data 2000-2014, Tarfalaryggen, Sweden (Stockholm University, "
@@ -5742,6 +5873,8 @@ usgs_npra,ALASKA_other/Red Sheep Creek.txt,https://www.sciencebase.gov/catalog/f
 usgs_npra,ALASKA_other/South Meade.txt,https://www.sciencebase.gov/catalog/file/get/59d6a458e4b05fe04cc6b47e?f=__disk__d0%2F9a%2F20%2Fd09a2058094439277e0c7ce3db0d1e2eef4017f7,61d4593bd442f0426c85b6e630f247273053d30f7b801c54401be69b4ee7ab7e,20329771,,open,"Data Release associated with Data Series - DOI/GTN-P Climate and Active-Layer Data Acquired in the National Petroleum Reserve-Alaska and the Arctic National Wildlife Refuge, 1998-2019 (ver. 3.0, March 2021) :: South Meade.txt"
 usgs_npra,ALASKA_other/Tunalik.txt,https://www.sciencebase.gov/catalog/file/get/59d6a458e4b05fe04cc6b47e?f=__disk__b4%2Ff4%2F1a%2Fb4f41a74ce685f175546a79318429394dc4bbe4a,2ee1ce7d1fb66f1920baf870a96234d54cdd0530efe83eb7f4fae76d92848046,25318594,Public domain (USGS),open,"Data Release associated with Data Series - DOI/GTN-P Climate and Active-Layer Data Acquired in the National Petroleum Reserve-Alaska and the Arctic National Wildlife Refuge, 1998-2019 (ver. 3.0, March 2021)"
 usgs_npra,ALASKA_other/Umiat.txt,https://www.sciencebase.gov/catalog/file/get/59d6a458e4b05fe04cc6b47e?f=__disk__cd%2Fb7%2F10%2Fcdb710ecd2fd6037569c188a373b4e2d11951e73,e21df4aa79828e13956baa598cdef4221e6a6806ff483bb2b6b714d738c8e7c2,23630538,Public domain (USGS),open,"Data Release associated with Data Series - DOI/GTN-P Climate and Active-Layer Data Acquired in the National Petroleum Reserve-Alaska and the Arctic National Wildlife Refuge, 1998-2019 (ver. 3.0, March 2021)"
+verdonen_palsa,Verdonen_Kilpisjarvi/tc-17-1803-2023-supplement.pdf,https://tc.copernicus.org/articles/17/1803/2023/tc-17-1803-2023-supplement.pdf,c11aeaa8d233b8fdc8bc4d320cddf03facce8b3e9f4bfb24263355d7f7b9f13c,855235,CC BY 4.0,open,"Supplement of Verdonen et al. 2023, The Cryosphere 17, 1803-1819; Table S1: ALT of all points and of the top-of-palsa areas, Peera and Laassaniemi, 2007-2021"
+verdonen_palsa,Verdonen_Kilpisjarvi/Peera_and_Laassaniemi_ALT_measurements_VerdonenM.xlsx,https://doi.org/10.5194/tc-17-1803-2023,2ad4ea449ee220606d1c3aa32291d5fdba515adb52510ec0d99a91ba5cd261ca,10107,"shared by the data owner; acknowledge M. Verdonen and cite Verdonen et al. 2023",email,"Sent by M. Verdonen (University of Eastern Finland) by email on 16 November 2026: points probed and points deeper than the 1 m rod per site and year; put it into Verdonen_Kilpisjarvi/. Only a check: the series need only the supplement."
 """
 
 
