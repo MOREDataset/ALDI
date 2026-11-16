@@ -8,9 +8,10 @@ STEP 3: ALDI A + B, the active layer dynamics index.
     py -3.12 3_aldi.py --checks       also the paper checks (detection time, per-site OLS test,
                                       residual by ice and method, cm per decade; ~1 min, no refit)
     py -3.12 3_aldi.py --no-main --sensitivity --checks   only these, on the existing data/3_aldi
-    py -3.12 3_aldi.py --no-main --sensitivity --runs survey_doy,temp_interval_flagged
+    py -3.12 3_aldi.py --no-main --sensitivity --runs mcmc_seed,mcmc_long,mcmc_long_seed,region_year_all
                                       only the named sensitivity runs (+ main), added to
-                                      data/3_aldi_sensitivity_runs (runs already there are kept)
+                                      data/3_aldi_sensitivity_runs (runs already there are kept);
+                                      these four references are run only so (runs_only in SENSITIVITY)
     py -3.12 3_aldi.py --spatial      only the spatial checks on the existing results (~1 min)
     py -3.12 3_aldi.py --no-main --mean-diag --mean-reps 50
                                       four diagnostic series-mean scenarios (no lower bounds, bounds
@@ -2697,6 +2698,12 @@ SENSITIVITY = [
     dict(name="one_per_place", drop="one_per_place",
          why="one series per place (series within 1 km: keep the one with most years), so a "
              "thaw tube and its grid do not count twice"),
+    # Added 2026-11-16 with the Kilpisjarvi palsas (Verdonen et al. 2023): the only series whose
+    # surface lowering was measured while ALT was probed (MEASURED_SUBSIDENCE below).
+    dict(name="drop_palsas", drop="measured_subsidence",
+         why="without the two Kilpisjarvi palsas, whose top-of-palsa surface sank by 31 and 74 cm while they "
+             "were probed (2007-2021), so their ALT, read from that surface, misses most of the deepening of "
+             "the permafrost table"),
     dict(name="window_2000_2024", set={"sample.min_year": 2000, "sample.max_year": 2024},
          why="common window 2000-2024 (the Streletskiy et al. 2026 period)"),
     dict(name="min_obs_8", set={"sample.min_obs": 8},
@@ -2718,6 +2725,12 @@ SENSITIVITY = [
          why="as above with 0.5 cm/yr (typical published rate)"),
     dict(name="subsidence_1.0", subsidence_cm_yr=1.0,
          why="as above with 1.0 cm/yr (high end: Utqiagvik, warm Interior Alaska)"),
+    # Added 2026-11-16 with the Kilpisjarvi palsas: their measured lowering of the surface
+    # (MEASURED_SUBSIDENCE below; drop_palsas above leaves them out), as the runs above add a
+    # published rate, so it is listed with them, a different quantity.
+    dict(name="subsidence_palsas", subsidence_measured=True,
+         why="ALT + the measured lowering of the top-of-palsa surface since 2007 at the two Kilpisjarvi palsas "
+             "(Verdonen et al. 2023, Table S5; 31 and 74 cm by 2021): the thaw depth below the 2007 surface"),
     # Added 2026-11-13 (review of the 12 November run): survey timing and the reading of
     # temperature ALT. See survey_doy and temp_interval in SETTINGS.
     dict(name="survey_doy", set={"model.survey_doy": True},
@@ -2730,23 +2743,28 @@ SENSITIVITY = [
          why="every temperature year as such an interval (sensor accuracy as observation error)"),
     # Added 2026-11-14 (fifth review): the same fits with another seed of the sampler, so the
     # classes that change by Monte Carlo error alone can be told from those a choice changes.
-    dict(name="mcmc_seed", seed_offset=1,
+    # This run and the three below are references, not processing choices: runs_only keeps
+    # them out of the full table (data/3_aldi_sensitivity, Fig S2), so they are run by name,
+    # --sensitivity --runs mcmc_seed,mcmc_long,mcmc_long_seed,region_year_all, into
+    # data/3_aldi_sensitivity_runs (since 2026-11-16; before, only their being added to the
+    # list after the full run of 12 November kept them out of the full table).
+    dict(name="mcmc_seed", seed_offset=1, runs_only=True,
          why="main settings, another random seed of the sampler (seed + 1): the Monte Carlo variation of the "
              "rates and classes, against which the class changes of the other runs are read"),
     # Added 2026-11-14 (sixth review): longer chains, with two seeds, so that the class changes
     # left by Monte Carlo error at 3.3 times the main number of draws can be counted. Model A
     # only (skip_B), run on their own like mcmc_seed.
-    dict(name="mcmc_long", draws=5000, skip_B=True,
+    dict(name="mcmc_long", draws=5000, skip_B=True, runs_only=True,
          why="main settings with 5000 instead of 1500 draws per chain (model A only): the classes that "
              "longer sampling settles"),
-    dict(name="mcmc_long_seed", draws=5000, seed_offset=1, skip_B=True,
+    dict(name="mcmc_long_seed", draws=5000, seed_offset=1, skip_B=True, runs_only=True,
          why="as mcmc_long with another seed of the sampler (seed + 1): the Monte Carlo variation of the "
              "classes left at that length"),
     # Added 2026-11-15 (seventh review): the regional anomaly in every region-year. The main fit
     # estimates it only where at least two series were measured (688 region-years) and leaves it
     # in the error of the 411 values that are alone in their region-year; the simulation check
     # draws it everywhere. Model A only, like the long-chain runs.
-    dict(name="region_year_all", set={"model.region_year_all": True}, skip_B=True,
+    dict(name="region_year_all", set={"model.region_year_all": True}, skip_B=True, runs_only=True,
          why="regional anomalies also in the region-years observed by one series (model A only): the "
              "anomaly is marginalized there with the SD learnt from the shared region-years, instead of "
              "being left in the series error"),
@@ -2817,6 +2835,8 @@ def sens_drop(flags, rule):
         return set(flags.site_id[flags.disturbed])
     if rule == "one_per_place":
         return set(flags.site_id[~flags.place_rep])
+    if rule == "measured_subsidence":
+        return measured_subsidence_ids(flags.site_id)
     raise ValueError(rule)
 
 
@@ -2835,6 +2855,45 @@ def add_subsidence(d, ice, s_cm_yr):
     on = d.family.isin(["probe", "thaw_tube"]) & d.site_id.map(ice).isin(["medium", "high"])
     first = d.groupby("site_id").year.transform("min")
     d.loc[on, "alt_cm"] = d.loc[on, "alt_cm"] + s_cm_yr * (d.loc[on, "year"] - first[on])
+    return d, int(d.loc[on, "site_id"].nunique())
+
+
+# Measured lowering of the ground surface while ALT was probed (added 2026-11-16), by the series
+# id of step 1 (the part after "source:"): cm in each year since the year before. Verdonen et al.
+# (2023, The Cryosphere 17, 1803-1819; supplement Table S5) surveyed the top-of-palsa (TOP)
+# areas by RTK-GNSS each year (2018 interpolated to the 2019 points): the TOP surface sank by
+# 30.6 cm at Peera and 74.2 cm at Laassaniemi in 2007-2021 (whole surveyed palsa about 30 and
+# 60 cm, their Sect. 4.3), while the TOP ALT, read from that surface, stayed level (Peera) or
+# fell (Laassaniemi). Their Sect. 3.1 adds the lowering since 2007 to the TOP ALT, as run
+# subsidence_palsas does. Used only by the sensitivity runs drop_palsas and subsidence_palsas;
+# the main fit keeps these series as measured, like every other probe series.
+MEASURED_SUBSIDENCE = {
+    "VERDONEN_PEERA_TOP": dict(zip(range(2008, 2022), [0.48, 1.12, 0.60, 1.73, 2.99, 1.31, 3.90, 1.33, 3.85,
+                                                        2.29, 2.44, 2.44, 2.12, 3.96])),
+    "VERDONEN_LAASSANIEMI_TOP": dict(zip(range(2008, 2022), [4.41, 6.83, 6.29, 7.73, 8.57, 6.74, 6.94, 6.30, 6.68,
+                                                              4.94, 2.38, 2.38, 1.03, 2.97])),
+}
+MEASURED_SUBSIDENCE_FROM = 2007        # the year the lowering is counted from (first year of both records)
+
+
+def measured_subsidence_ids(site_ids):
+    """The site_ids (of step 1, "source:series") whose series is in MEASURED_SUBSIDENCE."""
+    s = pd.Series(site_ids).drop_duplicates()
+    return set(s[s.astype(str).str.split(":").str[-1].isin(MEASURED_SUBSIDENCE)])
+
+
+def add_measured_subsidence(d):
+    """ALT plus the measured lowering of the surface since MEASURED_SUBSIDENCE_FROM: the thaw
+    depth below that year's surface (Verdonen et al. 2023, Sect. 3.1). Returns the table and the
+    number of series changed."""
+    d = d.copy()
+    key = d.site_id.astype(str).str.split(":").str[-1]
+    on = key.isin(MEASURED_SUBSIDENCE)
+    cum = {k: np.cumsum([0.0] + [v[y] for y in sorted(v)]) for k, v in MEASURED_SUBSIDENCE.items()}
+    years = {k: [MEASURED_SUBSIDENCE_FROM] + sorted(v) for k, v in MEASURED_SUBSIDENCE.items()}
+    low = [dict(zip(years[k], cum[k])).get(int(y), np.nan) for k, y in zip(key[on], d.year[on])]
+    assert not np.isnan(low).any(), "a year of a series in MEASURED_SUBSIDENCE has no measured lowering"
+    d.loc[on, "alt_cm"] = d.loc[on, "alt_cm"] + np.asarray(low)
     return d, int(d.loc[on, "site_id"].nunique())
 
 
@@ -2873,8 +2932,10 @@ def declustered_mean(lat, lon, v, km=250):
 
 
 def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
-    """The runs in SENSITIVITY (or main plus the names in `only`); see the comment above it."""
-    runs = [sc for sc in SENSITIVITY if only is None or sc["name"] == "main" or sc["name"] in only]
+    """The runs in SENSITIVITY without the runs_only ones (or main plus the names in `only`); see
+    the comment above it."""
+    runs = [sc for sc in SENSITIVITY if sc["name"] == "main"
+            or (sc["name"] in only if only is not None else not sc.get("runs_only"))]
     out, temp = Path(out), Path(temp)
     annual = pd.read_csv(annual_file, low_memory=False)
     tdd = pd.read_csv(temp / "tdd_site_years.csv")
@@ -2904,6 +2965,12 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
                 print(log[-1], flush=True)
                 continue
             d, n_subsided = add_subsidence(d, ice, sc["subsidence_cm_yr"])
+        if sc.get("subsidence_measured"):
+            d, n_subsided = add_measured_subsidence(d)
+            if not n_subsided:
+                log.append(f"{sc['name']}: skipped (no series of MEASURED_SUBSIDENCE in the sample)")
+                print(log[-1], flush=True)
+                continue
         t, n_retimed = (retime_undated(tdd, temp / "daily_t2m", sc["undated_doy"])
                         if sc.get("undated_doy") else (tdd, 0))
         row = {"run": sc["name"]}
@@ -3043,6 +3110,8 @@ def sensitivity_runs(cfg, annual_file, temp, out, fit_kw, only=None):
     L.append(f"  fire-disturbed plots {int(flags.disturbed.sum())}: " + ", ".join(flags.site_id[flags.disturbed]))
     L.append(f"  places (series within 1 km joined) {flags.location_id.nunique()}; series that are not their "
              f"place's representative {int((~flags.place_rep).sum())}")
+    ms_ = sorted(measured_subsidence_ids(flags.site_id))
+    L.append(f"  surface lowering measured while probed (MEASURED_SUBSIDENCE) {len(ms_)}: " + ", ".join(ms_))
     L.append("\nA: class counts and network rates (%/dec; network = model mean mu with its 95 % interval; "
              "declustered = 250 km equal-area cells count once):")
     cols_a = ["n_sites", "n_site_years"] + [f"A_{k}" for k in ORDER] + [
@@ -5654,7 +5723,8 @@ def main():
                     help="also run the sensitivity runs (one choice changed at a time; about 30-40 min)")
     ap.add_argument("--runs", default=None,
                     help="with --sensitivity: only these runs, comma-separated (main is always added); the "
-                         "table then goes to data/3_aldi_sensitivity_runs, so the full table is kept")
+                         "table then goes to data/3_aldi_sensitivity_runs, so the full table is kept. The reference "
+                         "runs mcmc_seed, mcmc_long, mcmc_long_seed and region_year_all are run only so")
     ap.add_argument("--checks", action="store_true",
                     help="also the paper checks (detection time, standard per-site test, residual by ice "
                          "and method, rates in cm; about a minute, no refit)")

@@ -143,7 +143,7 @@ too narrow for a statement about the permafrost region.
 
 See the top of `3_aldi.py` (and `README.md` in the main folder). Every setting is at the top of the script, with the reason for it.
 
-`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below), `--mean-check` 50 more simulated networks each of A_fit and A_ppc for the interval of the series mean (model A only, seed 2026, about 25 minutes; `aldi_v6_simulation_mean_reps.csv` in `data/3_aldi_validation/`, apart from the scenario files), `--mean-diag` four diagnostic sets of 50 networks for the same interval, each changing one feature of A_fit or A_ppc (seed 2027, about 1 hour; files with the suffix `_diag`, then the paper checks; see "Diagnostic scenarios of the series mean" below), `--ry-check` the regional anomalies of single-series region-years (24 networks each of `A_fit`, `A_fit_gfit` and `A_fit_gall`, model A only, seed 42, so the first 8 are the networks of the main `A_fit`; about 20-45 minutes; files with the suffix `_ry` in `data/3_aldi_validation/`, then the paper checks; see the rerun of 15 November after PR #47 below). `--runs a,b` with `--sensitivity` runs only the named runs (and main) into `data/3_aldi_sensitivity_runs`; since PR #47 the runs already there are kept. `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Since 14 November 2026 (sixth review) the main fit also writes the Monte Carlo standard errors (Vehtari et al. 2021, the quantile method of ArviZ; checked to agree with ArviZ 1.3 to the last digit) of each series' median and interval ends (`rate_v6_mcse`, `rate_v6_lo_mcse`, `rate_v6_hi_mcse`), the margin of its class (`class_margin`: distance of the deciding interval end from its boundary, %/dec), `class_borderline` (margin below 1 %/dec), `class_mc_sensitive` (deciding end within 2 Monte Carlo SE of the boundary) and the same for the rapid threshold (`rapid_margin`, `rapid_mc_sensitive`), and rows `A_main_network_rate_pct_dec_mcse` and `A_main_mean_site_rate_pct_dec_mcse` in `aldi_v6_network.csv` (Monte Carlo SE of the median and of the 2.5 and 97.5 % quantiles). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
+`py -3.12 3_aldi.py` builds the daily temperature series and TDD tables from the Earth Engine files of step 2 (`data/3_aldi/temperature/`) and runs v5.2, A and every B variant (about 10-30 minutes). `--power` adds the NASA POWER run (no account; the daily files are kept in `data/raw/nasa_power/`), `--validate` the simulation check (1-2 hours), `--sensitivity` the sensitivity runs (about 1 hour, `data/3_aldi_sensitivity/`), `--checks` the paper checks (about a minute, no refit, `data/3_aldi_checks/`; see below), `--mean-check` 50 more simulated networks each of A_fit and A_ppc for the interval of the series mean (model A only, seed 2026, about 25 minutes; `aldi_v6_simulation_mean_reps.csv` in `data/3_aldi_validation/`, apart from the scenario files), `--mean-diag` four diagnostic sets of 50 networks for the same interval, each changing one feature of A_fit or A_ppc (seed 2027, about 1 hour; files with the suffix `_diag`, then the paper checks; see "Diagnostic scenarios of the series mean" below), `--ry-check` the regional anomalies of single-series region-years (24 networks each of `A_fit`, `A_fit_gfit` and `A_fit_gall`, model A only, seed 42, so the first 8 are the networks of the main `A_fit`; about 20-45 minutes; files with the suffix `_ry` in `data/3_aldi_validation/`, then the paper checks; see the rerun of 15 November after PR #47 below). `--runs a,b` with `--sensitivity` runs only the named runs (and main) into `data/3_aldi_sensitivity_runs`; since PR #47 the runs already there are kept. Since 16 November 2026 the four reference runs `mcmc_seed`, `mcmc_long`, `mcmc_long_seed` and `region_year_all` carry `runs_only` in `SENSITIVITY` and are run only so (`--sensitivity --runs mcmc_seed,mcmc_long,mcmc_long_seed,region_year_all`), so that a full `--sensitivity` gives the table of processing choices of Fig S2 and Table S4, as the full run of 12 November did before they were added. `--no-main` reuses the existing `data/3_aldi` instead of refitting it. Since 14 November 2026 (sixth review) the main fit also writes the Monte Carlo standard errors (Vehtari et al. 2021, the quantile method of ArviZ; checked to agree with ArviZ 1.3 to the last digit) of each series' median and interval ends (`rate_v6_mcse`, `rate_v6_lo_mcse`, `rate_v6_hi_mcse`), the margin of its class (`class_margin`: distance of the deciding interval end from its boundary, %/dec), `class_borderline` (margin below 1 %/dec), `class_mc_sensitive` (deciding end within 2 Monte Carlo SE of the boundary) and the same for the rapid threshold (`rapid_margin`, `rapid_mc_sensitive`), and rows `A_main_network_rate_pct_dec_mcse` and `A_main_mean_site_rate_pct_dec_mcse` in `aldi_v6_network.csv` (Monte Carlo SE of the median and of the 2.5 and 97.5 % quantiles). Outputs in `data/3_aldi/`: `aldi_v6_results.csv` (one row per site: v5.2 columns, v6 rate, interval, class and band probabilities, B expected / residual / total trends and classes per variant), `aldi_v6_network.csv`, `aldi_v6_summary.txt`, three figures, `aldi_v6_period_check.csv`.
 
 ## Results of 12 November 2026 (230 sites, 4,614 site-years, 44 regions)
 
@@ -724,6 +724,42 @@ the sensitivity runs of the paper (Table S4, Fig S2 now show the 13 runs that ch
 analysis of ALT). They change the quantity, so they are reported apart, as hypothetical
 scenarios in Text S1 and Table S11 of the supplement (`paper_figures.m` writes
 `TableS11_subsidence_scenarios.csv`).
+
+### Kilpisjärvi palsas (sensitivity runs `drop_palsas` and `subsidence_palsas`; added 2026-11-16)
+
+The two palsa series of Verdonen et al. (2023; `verdonen_palsa` in step 1) are the only ones
+whose surface lowering was measured while ALT was probed: by RTK-GNSS, the top-of-palsa (TOP)
+surface sank by 30.6 cm at Peera and 74.2 cm at Laassaniemi in 2007-2021 (sum of the annual
+values of Table S5 of their supplement; about 30 and 60 cm for the whole surveyed palsas,
+their Sect. 4.3). Measured from that surface, TOP ALT stayed level at Peera and fell at
+Laassaniemi. The main fit keeps both series as measured, like every other probe series. Two
+sensitivity runs show what they do:
+
+- `drop_palsas` (drop rule `measured_subsidence`, a processing choice like the other drop
+  rules: in Fig S2, Table S4 and the class changes) leaves them out;
+- `subsidence_palsas` adds the measured lowering since 2007, year by year
+  (`MEASURED_SUBSIDENCE`, the annual values of Table S5), to their ALT, as Verdonen et al.
+  (2023, Sect. 3.1) do: the thaw depth below the 2007 surface, a different quantity, so
+  reported with the subsidence scenarios (Table S11; the name starts with `subsidence`, which
+  keeps it out of Fig S2 and of the class changes).
+
+Preview on the PC, 16 November 2026 (`--out data/3_aldi_palsa_preview`, main fit only, on the
+step-1 build of that day: 360 sites, 6,635 valid site-years): 232 series, 4,644 site-years
+(75 lower bounds), 44 regions; mu 8.49 (6.35-11.03) %/dec against 8.82 (6.58-11.56) without
+the palsas; mean of the 44 regional trends 8.51 (6.81-10.42) against 8.86; series mean 7.06
+against 7.15; classes 58 rapid, 57 gradual thickening, 13 stable, 1 thinning, 103
+indeterminate (57 / 63 / 13 / 1 / 96). Both palsas join the region of CALM_S2 and Stordalen
+Dry (Abisko), whose trend falls from 12.1 to 6.8 %/dec. On its own record Laassaniemi thins
+fast (trend-unpooled -23.7 %/dec, 90 % interval -31.5 to -15.1; per-site Sen + AR(1) -23.4),
+Peera does not move (+0.6, -8.9 to +10.4); in Model A they are -3.2 (-12.6 to +7.5) and +5.3
+(-1.9 to +13.2), both indeterminate. Stordalen Dry moves from rapid thickening (11.3, lower
+end 0.85) to indeterminate (6.2, -4.2 to 17.2); the six other class changes are at a class
+boundary (CALM_U27 and GSC_90TT08 gradual -> rapid at the threshold; BNZ_BFCONTROL, BNZ_WCM1,
+BNZ_WCM2 and HPW_Shakwak_orig_natural gradual -> indeterminate, lower ends 0.02-0.20 ->
+-0.43 to -0.20). Model A main: R-hat 1.006, ESS >= 923, no divergences. The only strongly
+negative surface-referenced trend among the new series is that of a palsa whose surface sank
+by 74 cm while its permafrost table went deeper: an example of the surface-reference caveat
+with measured subsidence, beside the hypothetical rates of the three runs above.
 
 ## Paper checks (`paper_checks`, `--checks`, `data/3_aldi_checks/`; added 2026-11-09)
 
