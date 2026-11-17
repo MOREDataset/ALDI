@@ -172,6 +172,7 @@ for i = 1:numel(old), delete(fullfile(OUT, old(i).name)); end
 % analysed site-years (one per site and year, inside the analysed window): Fig S1, Table S1
 ann = rd(fullfile(DATA, '1_alt_target', 'alt_multisource_annual.csv'));
 ann = ann(as_logical(ann.use), :);
+ann_used = ann;              % all used site-years, for the sensitivity-only sources of Table S1
 [tf, loc] = ismember(ann.site_id, res.site_id);
 ann = ann(tf, :); loc = loc(tf);
 inwin = ann.year >= res.year_min(loc) & ann.year <= res.year_max(loc);
@@ -421,12 +422,20 @@ if MODEL_B
 end
 
 %% Table S1: data sources of the analysed series
+% plus the sources used only by sensitivity runs: the two Kilpisjarvi palsas, left out of the
+% main fit since 16 Nov 2026 (sample.measured_subsidence in 3_aldi.py) and used by the runs
+% with_palsas and subsidence_palsas (window 1990-2025 of SETTINGS); column in_main_fit
+SENS_ONLY = "verdonen_palsa";
+extra = ann_used(ismember(ann_used.source, SENS_ONLY) & ann_used.year >= 1990 & ann_used.year <= 2025, :);
+t1src = [ann.source; extra.source]; t1sid = [ann.site_id; extra.site_id]; t1met = [ann.method; extra.method];
 inv_f = fullfile(DATA, '1_alt_target', 'source_inventory.csv');
-[src, ~, gi] = unique(ann.source);
+[src, ~, gi] = unique(t1src);
 T1 = table(src, accumarray(gi, 1), 'VariableNames', {'source', 'site_years'});
-T1.series = accumarray(gi, (1:height(ann))', [], @(i) numel(unique(ann.site_id(i))));
-T1.methods = accumarray(gi, (1:height(ann))', [], @(i) {strjoin(unique(ann.method(i)), ', ')});
+T1.series = accumarray(gi, (1:numel(t1src))', [], @(i) numel(unique(t1sid(i))));
+T1.methods = accumarray(gi, (1:numel(t1src))', [], @(i) {strjoin(unique(t1met(i)), ', ')});
 T1.methods = string(T1.methods);
+T1.in_main_fit = repmat("yes", height(T1), 1);
+T1.in_main_fit(ismember(T1.source, SENS_ONLY)) = "no (sensitivity runs with_palsas, subsidence_palsas)";
 if isfile(inv_f)
     inv = rd(inv_f);
     [tf, loc] = ismember(T1.source, inv.source);
