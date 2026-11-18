@@ -172,6 +172,7 @@ for i = 1:numel(old), delete(fullfile(OUT, old(i).name)); end
 % analysed site-years (one per site and year, inside the analysed window): Fig S1, Table S1
 ann = rd(fullfile(DATA, '1_alt_target', 'alt_multisource_annual.csv'));
 ann = ann(as_logical(ann.use), :);
+ann_used = ann;              % all used site-years, for the sensitivity-only sources of Table S1
 [tf, loc] = ismember(ann.site_id, res.site_id);
 ann = ann(tf, :); loc = loc(tf);
 inwin = ann.year >= res.year_min(loc) & ann.year <= res.year_max(loc);
@@ -421,12 +422,20 @@ if MODEL_B
 end
 
 %% Table S1: data sources of the analysed series
+% plus the sources used only by sensitivity runs: the two Kilpisjarvi palsas, left out of the
+% main fit since 16 Nov 2026 (sample.measured_subsidence in 3_aldi.py) and used by the runs
+% with_palsas and subsidence_palsas (window 1990-2025 of SETTINGS); column in_main_fit
+SENS_ONLY = "verdonen_palsa";
+extra = ann_used(ismember(ann_used.source, SENS_ONLY) & ann_used.year >= 1990 & ann_used.year <= 2025, :);
+t1src = [ann.source; extra.source]; t1sid = [ann.site_id; extra.site_id]; t1met = [ann.method; extra.method];
 inv_f = fullfile(DATA, '1_alt_target', 'source_inventory.csv');
-[src, ~, gi] = unique(ann.source);
+[src, ~, gi] = unique(t1src);
 T1 = table(src, accumarray(gi, 1), 'VariableNames', {'source', 'site_years'});
-T1.series = accumarray(gi, (1:height(ann))', [], @(i) numel(unique(ann.site_id(i))));
-T1.methods = accumarray(gi, (1:height(ann))', [], @(i) {strjoin(unique(ann.method(i)), ', ')});
+T1.series = accumarray(gi, (1:numel(t1src))', [], @(i) numel(unique(t1sid(i))));
+T1.methods = accumarray(gi, (1:numel(t1src))', [], @(i) {strjoin(unique(t1met(i)), ', ')});
 T1.methods = string(T1.methods);
+T1.in_main_fit = repmat("yes", height(T1), 1);
+T1.in_main_fit(ismember(T1.source, SENS_ONLY)) = "no (sensitivity runs with_palsas, subsidence_palsas)";
 if isfile(inv_f)
     inv = rd(inv_f);
     [tf, loc] = ismember(T1.source, inv.source);
@@ -571,14 +580,14 @@ if have_sens
     keep = intersect(cols_s, sens.Properties.VariableNames, 'stable');
     RUN_ID = ["main" "cens_sd_0.5" "cens_sd_1.0" "no_censored" "undated_doy_243" "drop_site_quality" ...
               "drop_disturbed" "one_per_place" "window_2000_2024" "min_obs_8" "region_150km" "region_500km" ...
-              "subsidence_0.2" "subsidence_0.5" "subsidence_1.0" "drop_palsas" "subsidence_palsas" ...
+              "subsidence_0.2" "subsidence_0.5" "subsidence_1.0" "with_palsas" "subsidence_palsas" ...
               "survey_doy" "temp_interval_flagged" "temp_interval_all" "mcmc_seed" "margins_2.5_10" "margins_5_15"];
     RUN_L  = ["Main run" "Censored years: HalfNormal(0.5)" "Censored years: HalfNormal(1.0)" ...
               "Censored years left out" "Undated surveys on 31 August" "Without imprecise locations" ...
               "Without fire-disturbed plots" "One series per place" "2000-2024 only" ...
               "At least 8 years (not 10)" "Regions of 150 km" "Regions of 500 km" ...
               "Subsidence 0.2 cm/yr, ice-rich" "Subsidence 0.5 cm/yr, ice-rich" "Subsidence 1.0 cm/yr, ice-rich" ...
-              "Without the two subsiding palsas" "Measured subsidence at the two palsas" ...
+              "With the two palsas, as measured" "Two palsas, measured subsidence added" ...
               "Probe survey day as covariate" "Flagged temperature years as intervals" ...
               "All temperature years as intervals" "Another sampler seed (Monte Carlo reference)" ...
               "Class margins 2.5 / 10 (no refit)" ...
@@ -935,9 +944,9 @@ if have_sens
                     ci([sens.A_network_rate(k) sens.A_network_lo95(k) sens.A_network_hi95(k)]));
             end
         end
-        % the two Kilpisjarvi palsas (16 Nov 2026): without them, and with their measured
-        % lowering of the surface added (thaw depth below the 2007 surface)
-        for r = ["drop_palsas" "subsidence_palsas"]
+        % the two Kilpisjarvi palsas (16 Nov 2026), left out of the main fit: back in as measured,
+        % and with their measured lowering of the surface added (thaw depth below the 2007 surface)
+        for r = ["with_palsas" "subsidence_palsas"]
             k = sens.run == r;
             if any(k)
                 [~, loc] = ismember(r, RUN_ID);
